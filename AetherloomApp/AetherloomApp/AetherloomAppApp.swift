@@ -68,6 +68,9 @@ private struct AboutAetherloomView: View {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
                     .frame(width: 72, height: 72)
+                    // App icon bitmaps include ~10% transparent margin around the
+                    // squircle; trim it from layout so gaps read evenly.
+                    .padding(-7)
                     .accessibilityHidden(true)
 
                 Text("Aetherloom")
@@ -94,7 +97,7 @@ private struct AboutAetherloomView: View {
                 Spacer()
                     .frame(height: 14)
 
-                Text("Created by [Álex Filipe Santos](https://alexfili.pe) in San Francisco")
+                Text("Created by [Álex Filipe Santos](https://alexfili.pe) in San Francisco.")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
