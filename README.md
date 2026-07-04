@@ -17,6 +17,10 @@
   <img src="https://img.shields.io/badge/UI-SwiftUI-purple" alt="SwiftUI" />
 </p>
 
+<p align="center">
+  <a href="https://aetherloom.app">aetherloom.app</a>
+</p>
+
 ---
 
 ## Why Aetherloom
@@ -59,7 +63,7 @@ Supported location types (planned): iCloud Drive (through its local folder on ma
 
 ## Status
 
-Aetherloom is in **early development**.
+Aetherloom is in **early development**. The project website is live at [aetherloom.app](https://aetherloom.app).
 
 | Area | State |
 | --- | --- |
