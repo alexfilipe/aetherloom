@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Design/AetherloomAppIcon-macOS27-gradient-cropped-1024.png" width="140" alt="Aetherloom app icon" />
+  <img src="Design/AetherloomAMark-transparent-tight.png" width="140" alt="Aetherloom app icon" />
 </p>
 
 <h1 align="center">Aetherloom</h1>
@@ -15,7 +15,6 @@
   <img src="https://img.shields.io/badge/platform-macOS-blue" alt="Platform: macOS" />
   <img src="https://img.shields.io/badge/swift-6.3-orange" alt="Swift 6.3" />
   <img src="https://img.shields.io/badge/UI-SwiftUI-purple" alt="SwiftUI" />
-  <img src="https://img.shields.io/badge/core%20tests-20%20passing-brightgreen" alt="Core tests: 20 passing" />
 </p>
 
 ---
@@ -64,8 +63,8 @@ Aetherloom is in **early development**.
 
 | Area | State |
 | --- | --- |
-| Core sync engine (models, planner, safety analyzer, conflict resolver, executor) | ✅ Implemented, fully tested against fake providers |
-| Safety test suite (20 Swift Testing tests) | ✅ Passing |
+| Core sync engine (models, planner, safety analyzer, conflict resolver, executor) | ✅ Implemented |
+| Safety test suite | 🔜 Planned |
 | SwiftUI app shell (overview, sync sets, activity, conflicts, preview sheet) | ✅ Demo UI with placeholder data |
 | Local folder provider | 🔜 Next up |
 | NAS-backed folder support | 🔜 Planned |
@@ -90,7 +89,7 @@ Aetherloom/
       Execution/        Plan executor
       Logging/          Activity log
       Storage/          Metadata storage
-    Tests/              Swift Testing suite
+    Tests/              Planned Swift Testing suite
 ```
 
 Design rules:
@@ -115,11 +114,13 @@ Or open `AetherloomApp/AetherloomApp.xcodeproj` in Xcode and hit Run.
 
 ## Testing
 
+Tests are planned for the core sync engine. Once the suite exists, run:
+
 ```bash
 swift test --package-path AetherloomCore
 ```
 
-The suite covers create/edit/rename/move/delete propagation plus the safety cases that matter most: mass-delete and mass-edit pauses, provider-unavailable-never-deletes, iCloud placeholders, disconnected volumes and NAS mounts, incomplete scans, conflict preservation, idempotent re-runs, Unicode and case-insensitive filenames, zero-byte files, empty folders, and exclusions.
+The suite should cover create/edit/rename/move/delete propagation plus the safety cases that matter most: mass-delete and mass-edit pauses, provider-unavailable-never-deletes, iCloud placeholders, disconnected volumes and NAS mounts, incomplete scans, conflict preservation, idempotent re-runs, Unicode and case-insensitive filenames, zero-byte files, empty folders, and exclusions.
 
 Any future tests against real providers are opt-in only and never run against a user's real cloud root or a real mounted share by default.
 
