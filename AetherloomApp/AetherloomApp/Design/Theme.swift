@@ -200,9 +200,11 @@ struct AppLogoMark: View {
     var size: CGFloat = 34
 
     var body: some View {
-        Image(systemName: "circle.hexagongrid.fill")
-            .font(.system(size: size * 0.52, weight: .medium))
+        Image("LogoMarkFlat")
+            .resizable()
+            .scaledToFit()
             .foregroundStyle(.white)
+            .frame(width: size * 0.6, height: size * 0.6)
             .frame(width: size, height: size)
             .background(Theme.weave, in: RoundedRectangle(cornerRadius: size * 0.28))
             .shadow(color: Theme.accent.opacity(0.45), radius: 5, y: 2)

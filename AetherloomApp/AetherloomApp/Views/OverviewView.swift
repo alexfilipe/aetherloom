@@ -67,11 +67,19 @@ private struct HeroCard: View {
                 Circle()
                     .strokeBorder(.white.opacity(0.25), lineWidth: 1)
                     .frame(width: 84, height: 84)
-                Image(systemName: store.isScanning ? "arrow.triangle.2.circlepath" : "circle.hexagongrid.fill")
-                    .font(.system(size: 34, weight: .medium))
-                    .foregroundStyle(.white)
-                    .symbolEffect(.rotate, isActive: store.isScanning)
-                    .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+                if store.isScanning {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 34, weight: .medium))
+                        .foregroundStyle(.white)
+                        .symbolEffect(.rotate, isActive: true)
+                        .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+                } else {
+                    Image("LogoMark")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 52, height: 52)
+                        .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
+                }
             }
 
             VStack(alignment: .leading, spacing: 7) {
