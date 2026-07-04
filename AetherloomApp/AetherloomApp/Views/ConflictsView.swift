@@ -1,52 +1,52 @@
 import SwiftUI
-import AetherloomCore
 
 struct ConflictsView: View {
-    var conflicts: [ConflictReviewItem]
+    @Environment(DemoStore.self) private var store
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 PageHeader(
                     title: "Conflicts",
-                    subtitle: "Both versions are preserved until review.",
-                    systemImage: "exclamationmark.triangle"
+                    subtitle: "When a file changes in more than one place, Aetherloom keeps both versions until you decide."
                 )
 
-                if conflicts.isEmpty {
+                if store.conflicts.isEmpty {
                     EmptyStateView(
                         systemImage: "checkmark.seal",
                         title: "No Conflicts",
-                        message: "Every tracked file is aligned."
+                        message: "Every tracked file is aligned across your clouds."
                     )
                 } else {
-                    ForEach(conflicts) { conflict in
+                    ForEach(store.conflicts) { conflict in
                         ConflictCard(conflict: conflict)
                     }
                 }
             }
             .padding(28)
             .frame(maxWidth: 900, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(ContentBackdrop())
     }
 }
 
 struct ConflictCard: View {
-    var conflict: ConflictReviewItem
+    @Environment(DemoStore.self) private var store
+    var conflict: FileConflict
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                Image(systemName: "doc.on.doc")
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "doc.on.doc.fill")
                     .font(.title2)
-                    .foregroundStyle(.orange)
-                    .frame(width: 34)
+                    .foregroundStyle(conflict.isResolved ? .green : .orange)
+                    .frame(width: 32)
 
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(conflict.filename)
                         .font(.title3.weight(.semibold))
-                    Text(conflict.path.rawValue)
+                    Text(conflict.path)
                         .font(.subheadline.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -55,60 +55,81 @@ struct ConflictCard: View {
 
                 Spacer()
 
-                StatusBadge(text: "Needs Review", tone: .attention)
+                StatusBadge(
+                    text: conflict.isResolved ? "Resolved" : "Needs review",
+                    tone: conflict.isResolved ? .healthy : .attention
+                )
             }
 
             Text("This file changed in more than one place. Aetherloom preserved both versions.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Label(conflict.providers.map(\.displayName).joined(separator: " and "), systemImage: "cloud")
-                Label(conflict.preservedCopyName, systemImage: "doc.badge.plus")
-                Label(conflict.detectedAt, systemImage: "clock")
+            HStack(spacing: 12) {
+                ForEach(conflict.versions) { version in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            ServiceMark(service: version.service, size: 24)
+                            Text(version.service.displayName)
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Modified \(version.modified)")
+                            Text(version.size)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.5)
+                    )
+                }
             }
-            .font(.subheadline)
+
+            Label {
+                Text("Preserved copy: \(conflict.preservedCopyName)")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } icon: {
+                Image(systemName: "doc.badge.plus")
+            }
+            .font(.caption)
             .foregroundStyle(.secondary)
 
-            HStack {
-                Button {
-                } label: {
-                    Label("Open", systemImage: "arrow.up.forward.square")
+            if !conflict.isResolved {
+                HStack {
+                    Button {
+                        store.resolveConflict(conflict, choice: "kept both versions")
+                    } label: {
+                        Label("Keep Both", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    ForEach(conflict.versions) { version in
+                        Button("Use \(version.service.displayName) Version") {
+                            store.resolveConflict(conflict, choice: "kept the \(version.service.displayName) version")
+                        }
+                    }
+                    Spacer()
                 }
-                Button {
-                } label: {
-                    Label("Keep Both", systemImage: "doc.on.doc")
-                }
-                Button {
-                } label: {
-                    Label("Resolve", systemImage: "checkmark.circle")
-                }
-                Spacer()
+                .buttonStyle(.bordered)
+            } else {
+                Label("Both versions preserved — nothing was overwritten.", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.green)
             }
-            .buttonStyle(.bordered)
         }
-        .aetherloomCard()
+        .card()
     }
 }
 
-struct EmptyStateView: View {
-    var systemImage: String
-    var title: String
-    var message: String
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.largeTitle)
-                .foregroundStyle(.green)
-            Text(title)
-                .font(.title3.weight(.semibold))
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 180)
-        .aetherloomCard()
-    }
+#Preview {
+    ConflictsView()
+        .environment(DemoStore())
+        .tint(Theme.accent)
+        .frame(width: 860, height: 640)
 }

@@ -1,202 +1,305 @@
 import SwiftUI
-import AetherloomCore
 
 struct OverviewView: View {
-    @ObservedObject var model: AetherloomDashboardModel
+    @Environment(DemoStore.self) private var store
 
     private let gridColumns = [
-        GridItem(.adaptive(minimum: 230), spacing: 12)
+        GridItem(.adaptive(minimum: 250), spacing: 14)
     ]
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                PageHeader(
-                    title: "Aetherloom",
-                    subtitle: "Keep your clouds interwoven.",
-                    systemImage: "sparkles"
-                )
+            VStack(alignment: .leading, spacing: 22) {
+                HeroCard()
 
-                LazyVGrid(columns: gridColumns, spacing: 12) {
-                    MetricTile(
-                        title: "Providers healthy",
-                        value: "\(model.healthyProviderCount) of \(model.providers.count)",
-                        systemImage: "checkmark.shield",
-                        tone: model.healthyProviderCount == model.providers.count ? .healthy : .attention
-                    )
-                    MetricTile(
-                        title: "Pending plan actions",
-                        value: "\(model.pendingActionCount)",
-                        systemImage: "list.bullet.rectangle",
-                        tone: .neutral
-                    )
-                    MetricTile(
-                        title: "Conflicts preserved",
-                        value: "\(model.conflicts.count)",
-                        systemImage: "doc.on.doc",
-                        tone: model.conflicts.isEmpty ? .healthy : .attention
-                    )
-                    MetricTile(
-                        title: "Paused sync sets",
-                        value: "\(model.pausedSyncSetCount)",
-                        systemImage: "pause.circle",
-                        tone: model.pausedSyncSetCount == 0 ? .healthy : .paused
-                    )
+                if store.massChangeReviewNeeded {
+                    SafetyBanner(
+                        title: "Paused for safety",
+                        message: "Aetherloom found many deletions in “Projects”. This may be intentional, but sync is paused until you review it.",
+                        actionTitle: "Review Changes"
+                    ) {
+                        store.showingPreviewChanges = true
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionHeader(title: "Providers", accessory: "Selected folders")
-                    LazyVGrid(columns: gridColumns, spacing: 12) {
-                        ForEach(model.providers) { provider in
-                            ProviderCard(provider: provider)
+                    SectionHeader(title: "Connected Clouds", accessory: "\(store.healthyServiceCount) of \(store.services.count) available")
+                    LazyVGrid(columns: gridColumns, spacing: 14) {
+                        ForEach(store.services) { service in
+                            ServiceCard(status: service)
                         }
                     }
                 }
 
                 HStack(alignment: .top, spacing: 18) {
                     VStack(alignment: .leading, spacing: 12) {
-                        SectionHeader(title: "Plan Preview", accessory: SyncRiskLevel.needsReview.displayName)
-                        PlanPreviewCard(lines: model.planPreview, riskLevel: .needsReview)
+                        SectionHeader(title: "Waiting for Preview", accessory: store.plannedChanges.isEmpty ? nil : "Nothing happens without you")
+                        PlanSummaryCard()
                     }
+                    .frame(maxWidth: .infinity)
 
                     VStack(alignment: .leading, spacing: 12) {
                         SectionHeader(title: "Recent Activity", accessory: "Today")
-                        RecentActivityCard(activity: Array(model.activity.prefix(4)))
+                        RecentActivityCard()
                     }
+                    .frame(maxWidth: .infinity)
                 }
             }
             .padding(28)
-            .frame(maxWidth: 1180, alignment: .leading)
+            .frame(maxWidth: 1220, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(ContentBackdrop())
     }
 }
 
-struct ProviderCard: View {
-    var provider: ProviderCardModel
+// MARK: - Hero
+
+private struct HeroCard: View {
+    @Environment(DemoStore.self) private var store
+
+    var body: some View {
+        HStack(spacing: 22) {
+            ZStack {
+                Circle()
+                    .fill(.white.opacity(0.12))
+                    .frame(width: 84, height: 84)
+                Circle()
+                    .strokeBorder(.white.opacity(0.25), lineWidth: 1)
+                    .frame(width: 84, height: 84)
+                Image(systemName: store.isScanning ? "arrow.triangle.2.circlepath" : "circle.hexagongrid.fill")
+                    .font(.system(size: 34, weight: .medium))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.rotate, isActive: store.isScanning)
+                    .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(heroTitle)
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+
+                Text("\(store.trackedFileCount.formatted()) files woven across iCloud Drive, Google Drive, and OneDrive · Last scan \(store.lastScan.lowercased())")
+                    .font(.callout)
+                    .foregroundStyle(.white.opacity(0.78))
+
+                HStack(spacing: 8) {
+                    if !store.plannedChanges.isEmpty {
+                        StatusBadge(text: "\(store.plannedChanges.count) changes waiting for preview", tone: .attention, onDark: true)
+                    }
+                    if store.unresolvedConflictCount > 0 {
+                        StatusBadge(text: "\(store.unresolvedConflictCount) conflict · both versions preserved", tone: .attention, onDark: true)
+                    }
+                    if store.pausedSyncSetCount > 0 {
+                        StatusBadge(text: "\(store.pausedSyncSetCount) paused for safety", tone: .paused, onDark: true)
+                    }
+                    if store.everythingInSync {
+                        StatusBadge(text: "Everything in sync", tone: .healthy, onDark: true)
+                    }
+                }
+                .padding(.top, 5)
+            }
+
+            Spacer(minLength: 20)
+
+            VStack(alignment: .trailing, spacing: 10) {
+                Button {
+                    store.scan()
+                } label: {
+                    Label(store.isScanning ? "Scanning…" : "Scan Now", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.headline)
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .frame(minWidth: 172)
+                        .background(.white, in: Capsule())
+                        .shadow(color: .black.opacity(0.2), radius: 5, y: 2)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isScanning)
+
+                Button {
+                    store.showingPreviewChanges = true
+                } label: {
+                    Label("Preview Changes", systemImage: "doc.text.magnifyingglass")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .frame(minWidth: 172)
+                        .background(.white.opacity(0.16), in: Capsule())
+                        .overlay(Capsule().strokeBorder(.white.opacity(0.3), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            WeaveMesh()
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 20)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.35), .white.opacity(0.06)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
+    }
+
+    private var heroTitle: String {
+        if store.isScanning {
+            "Scanning your clouds…"
+        } else if store.everythingInSync {
+            "Everything is in sync"
+        } else {
+            "Your clouds, woven together"
+        }
+    }
+}
+
+// MARK: - Service card
+
+struct ServiceCard: View {
+    var status: ServiceStatus
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                ProviderMark(provider: provider.id)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(provider.id.displayName)
-                        .font(.headline)
-                    Text(provider.status.rawValue)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 12)
-                StatusBadge(text: provider.health, tone: provider.tone)
+            HStack(alignment: .center) {
+                ServiceMark(service: status.service, size: 36)
+                Spacer(minLength: 8)
+                StatusBadge(text: status.statusText, tone: status.tone)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                if let account = provider.account {
-                    Label(account, systemImage: "person.crop.circle")
-                }
-                if let selectedLocation = provider.selectedLocation {
-                    Label(selectedLocation, systemImage: "folder")
-                }
-                Label(provider.permissions, systemImage: "lock.shield")
-                Label("Last checked \(provider.lastChecked)", systemImage: "clock")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(status.service.displayName)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(status.account ?? "This Mac")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Label(status.selectedFolder, systemImage: "folder")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Label("Checked \(status.lastChecked)", systemImage: "clock")
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
 
-            if let warning = provider.warning {
-                Label(warning, systemImage: "exclamationmark.triangle.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.orange)
+            if let note = status.safetyNote {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(status.tone.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             }
 
-            Button {
-            } label: {
-                Label(provider.actionTitle, systemImage: buttonIcon)
-            }
-            .buttonStyle(.bordered)
-        }
-        .aetherloomCard()
-    }
+            Spacer(minLength: 0)
 
-    private var buttonIcon: String {
-        switch provider.tone {
-        case .paused, .attention:
-            "eye"
-        case .healthy, .neutral:
-            "slider.horizontal.3"
+            Button(status.actionTitle) {}
+                .buttonStyle(.bordered)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
     }
 }
 
-struct PlanPreviewCard: View {
-    var lines: [PlanPreviewLine]
-    var riskLevel: SyncRiskLevel
+// MARK: - Plan summary
+
+private struct PlanSummaryCard: View {
+    @Environment(DemoStore.self) private var store
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                StatusBadge(
-                    text: riskLevel.displayName,
-                    tone: riskLevel == .safe ? .healthy : riskLevel == .needsReview ? .attention : .paused
-                )
-                Spacer()
-                Button {
-                } label: {
-                    Label("Preview Changes", systemImage: "doc.text.magnifyingglass")
+            if store.plannedChanges.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.title)
+                        .foregroundStyle(.green)
+                    Text("You're all caught up")
+                        .font(.headline)
+                    Text("New changes appear here for review before anything happens.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-                .buttonStyle(.borderedProminent)
-            }
+                .frame(maxWidth: .infinity, minHeight: 160)
+            } else {
+                ForEach(PlannedChange.Kind.allCases, id: \.self) { kind in
+                    let count = store.plannedChanges.filter { $0.kind == kind }.count
+                    if count > 0 {
+                        HStack(spacing: 10) {
+                            Image(systemName: kind.systemImage)
+                                .foregroundStyle(kind.tone.color)
+                                .frame(width: 22)
+                            Text(kind.title)
+                            Spacer()
+                            Text("\(count)")
+                                .font(.body.weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        .font(.subheadline)
+                    }
+                }
 
-            Divider()
+                Divider()
 
-            ForEach(lines) { line in
-                HStack(spacing: 10) {
-                    Image(systemName: line.systemImage)
-                        .foregroundStyle(color(for: line.tone))
-                        .frame(width: 22)
-                    Text(line.title)
+                HStack {
+                    Label("Nothing is applied without preview", systemImage: "hand.raised")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(line.count)")
-                        .font(.body.weight(.semibold))
-                        .monospacedDigit()
+                    Button {
+                        store.showingPreviewChanges = true
+                    } label: {
+                        Label("Preview Changes", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .font(.subheadline)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .aetherloomCard()
-    }
-
-    private func color(for tone: AetherloomTone) -> Color {
-        switch tone {
-        case .healthy:
-            .green
-        case .attention:
-            .orange
-        case .paused:
-            .red
-        case .neutral:
-            .secondary
-        }
+        .card()
     }
 }
 
-struct RecentActivityCard: View {
-    var activity: [ActivityLogItem]
+// MARK: - Recent activity
+
+private struct RecentActivityCard: View {
+    @Environment(DemoStore.self) private var store
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(activity) { item in
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(store.activity.prefix(4))) { item in
                 ActivityRow(item: item)
-                if item.id != activity.last?.id {
+                    .padding(.vertical, 8)
+                if item.id != store.activity.prefix(4).last?.id {
                     Divider()
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .aetherloomCard()
+        .card()
     }
+}
+
+#Preview {
+    OverviewView()
+        .environment(DemoStore())
+        .tint(Theme.accent)
+        .frame(width: 1100, height: 800)
 }

@@ -1,61 +1,94 @@
 import SwiftUI
-import AetherloomCore
 
 struct SyncSetsView: View {
-    @ObservedObject var model: AetherloomDashboardModel
+    @Environment(DemoStore.self) private var store
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 PageHeader(
                     title: "Sync Sets",
-                    subtitle: "Selected folders and drives grouped by mirror.",
-                    systemImage: "folder.badge.gearshape"
+                    subtitle: "Folders and drives you chose to keep in sync, grouped by mirror."
                 )
 
-                ForEach(model.syncSets) { syncSet in
+                ForEach(store.syncSets) { syncSet in
                     SyncSetCard(syncSet: syncSet)
                 }
+
+                Button {
+                    store.showingNewSyncSet = true
+                } label: {
+                    Label("New Sync Set", systemImage: "plus")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
             }
             .padding(28)
             .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(ContentBackdrop())
     }
 }
 
 struct SyncSetCard: View {
-    var syncSet: SyncSetSummary
+    @Environment(DemoStore.self) private var store
+    var syncSet: SyncSet
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(syncSet.name)
                         .font(.title3.weight(.semibold))
-                    Text("\(syncSet.trackedFiles.formatted()) files tracked")
+                    Text(syncSet.trackedFiles > 0
+                         ? "\(syncSet.trackedFiles.formatted()) files tracked"
+                         : "Not scanned yet")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
 
-                StatusBadge(text: syncSet.status, tone: syncSet.tone)
+                StatusBadge(text: syncSet.statusText, tone: syncSet.tone)
             }
 
             VStack(spacing: 8) {
-                ForEach(syncSet.providers) { provider in
-                    ProviderLocationRow(provider: provider.provider, location: provider.location)
+                ForEach(syncSet.folders) { folder in
+                    HStack(spacing: 10) {
+                        ServiceMark(service: folder.service, size: 22)
+                        Text(folder.service.displayName)
+                            .font(.subheadline.weight(.medium))
+                        Spacer(minLength: 10)
+                        Text(folder.location)
+                            .font(.subheadline.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+            }
+
+            if let note = syncSet.safetyNote {
+                Label {
+                    Text(note)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .foregroundStyle(.orange)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             }
 
             Divider()
 
-            HStack(spacing: 16) {
-                Label("Last sync \(syncSet.lastSync)", systemImage: "clock")
+            HStack(spacing: 14) {
+                Label("Last sync \(syncSet.lastSync.lowercased())", systemImage: "clock")
                 Label(syncSet.pendingSummary, systemImage: "list.bullet")
-                Label("\(syncSet.conflicts) conflicts", systemImage: "exclamationmark.triangle")
-                Label("\(syncSet.warnings) warnings", systemImage: "shield.lefthalf.filled")
                 Spacer()
             }
             .font(.subheadline)
@@ -65,26 +98,32 @@ struct SyncSetCard: View {
 
             HStack {
                 Button {
+                    store.scan()
                 } label: {
                     Label("Scan", systemImage: "arrow.triangle.2.circlepath")
                 }
                 Button {
+                    store.showingPreviewChanges = true
                 } label: {
                     Label("Preview Changes", systemImage: "doc.text.magnifyingglass")
                 }
-                Button {
-                } label: {
-                    Label("Apply Sync Plan", systemImage: "play.circle")
-                }
-                .disabled(syncSet.riskLevel != .safe)
                 Spacer()
                 Button {
+                    store.togglePause(syncSet)
                 } label: {
-                    Label("Pause", systemImage: "pause.circle")
+                    Label(syncSet.isPaused ? "Resume" : "Pause",
+                          systemImage: syncSet.isPaused ? "play.circle" : "pause.circle")
                 }
             }
             .buttonStyle(.bordered)
         }
-        .aetherloomCard()
+        .card()
     }
+}
+
+#Preview {
+    SyncSetsView()
+        .environment(DemoStore())
+        .tint(Theme.accent)
+        .frame(width: 900, height: 900)
 }

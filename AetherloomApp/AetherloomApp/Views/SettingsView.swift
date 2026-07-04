@@ -1,36 +1,64 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var model: AetherloomDashboardModel
+    @Environment(DemoStore.self) private var store
 
     var body: some View {
-        Form {
-            Section {
-                Toggle("Move deleted files to provider trash", isOn: $model.deletePropagationEnabled)
-                Toggle("Pause on suspicious mass changes", isOn: $model.pauseOnMassChanges)
-                Toggle("Require review for whole-drive sync", isOn: $model.requireReviewForWholeDrive)
-            } header: {
-                Text("Safety")
-            }
+        @Bindable var store = store
 
-            Section {
-                LabeledContent("Conflict behavior", value: "Preserve both copies")
-                LabeledContent("Delete behavior", value: "Never permanent in normal sync")
-                LabeledContent("Default mode", value: "Balanced Mirror")
-            } header: {
-                Text("Balanced Mirror")
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                PageHeader(
+                    title: "Settings",
+                    subtitle: "Aetherloom always chooses the safest option by default."
+                )
 
-            Section {
-                LabeledContent("Excluded files", value: ".DS_Store, temporary files")
-                LabeledContent("Provider adapters", value: "Fake providers")
-            } header: {
-                Text("Engine")
+                Form {
+                    Section("Safety") {
+                        Toggle(isOn: $store.moveDeletesToTrash) {
+                            Text("Move deleted files to provider trash")
+                            Text("Files are never permanently deleted during normal sync.")
+                        }
+                        Toggle(isOn: $store.pauseOnMassChanges) {
+                            Text("Pause on suspicious mass changes")
+                            Text("Large numbers of deletions or edits wait for your review.")
+                        }
+                        Toggle(isOn: $store.requireReviewForWholeDrive) {
+                            Text("Require review for whole-drive sync")
+                            Text("Whole-drive mirrors never run for the first time unattended.")
+                        }
+                        Toggle(isOn: $store.keepConflictCopies) {
+                            Text("Preserve both versions on conflict")
+                            Text("When a file changes in two places, nothing is overwritten.")
+                        }
+                    }
+
+                    Section("Sync Behavior") {
+                        LabeledContent("Conflict behavior", value: "Both versions preserved")
+                        LabeledContent("Delete behavior", value: "Move to trash, always recoverable")
+                        LabeledContent("When a provider is unreachable", value: "Pause — never infer deletions")
+                    }
+
+                    Section("Excluded Files") {
+                        LabeledContent("System files", value: ".DS_Store, .Trashes, temporary files")
+                        LabeledContent("Custom exclusions", value: "None")
+                    }
+                }
+                .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
+                .frame(maxWidth: 700)
             }
+            .padding(28)
+            .frame(maxWidth: 900, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .formStyle(.grouped)
-        .padding(28)
-        .frame(maxWidth: 760, alignment: .leading)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(ContentBackdrop())
     }
+}
+
+#Preview {
+    SettingsView()
+        .environment(DemoStore())
+        .tint(Theme.accent)
+        .frame(width: 860, height: 700)
 }
