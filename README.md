@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Design/AetherloomAMark-transparent-tight.png" width="140" alt="Aetherloom app icon" />
+  <img src="Design/AetherloomAppIcon-macOS27-gradient-cropped-1024.png" width="140" alt="Aetherloom app icon" />
 </p>
 
 <h1 align="center">Aetherloom</h1>
@@ -74,7 +74,7 @@ Aetherloom is in **early development**. The project website is live at [aetherlo
 
 | Area | State |
 | --- | --- |
-| Core sync engine (models, planner, safety analyzer, conflict resolver, executor) | ✅ Implemented |
+| Core sync engine (models, planner, safety analyzer, conflict resolver, executor) | 🚧 In progress |
 | Safety test suite | 🔜 Planned |
 | SwiftUI app shell (overview, sync sets, activity, conflicts, preview sheet) | ✅ Demo UI with placeholder data |
 | Local folder provider | 🔜 Next up |
