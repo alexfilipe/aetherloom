@@ -7,3 +7,5 @@ Package.resolved
 *.xcuserstate
 .env
 .env.*
+.claude/*
+!.claude/settings.json
