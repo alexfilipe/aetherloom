@@ -1064,8 +1064,35 @@
     let lastScrollY = window.scrollY;
     let ticking = false;
 
+    // Keep the bar visible while a topbar link smooth-scrolls the page.
+    let anchorScrolling = false;
+    let anchorIdleTimer = null;
+
+    const keepNavDuringAnchorScroll = () => {
+      anchorScrolling = true;
+      nav.classList.remove("nav-hidden");
+      clearTimeout(anchorIdleTimer);
+      anchorIdleTimer = setTimeout(() => {
+        anchorScrolling = false;
+      }, 200);
+    };
+
+    document.querySelectorAll('.nav a[href^="#"]').forEach((link) => {
+      link.addEventListener("click", keepNavDuringAnchorScroll);
+    });
+
     const updateNav = () => {
       const currentY = window.scrollY;
+
+      if (anchorScrolling) {
+        // Ignore direction while the anchor scroll settles; each scroll
+        // event extends the window until the animation goes idle.
+        keepNavDuringAnchorScroll();
+        lastScrollY = currentY;
+        ticking = false;
+        return;
+      }
+
       const delta = currentY - lastScrollY;
 
       // Always show near the very top of the page.
