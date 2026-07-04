@@ -8,7 +8,7 @@
         <title>Aetherloom: Keep your clouds interwoven</title>
         <meta
             name="description"
-            content="Aetherloom is a native macOS app for keeping selected folders synchronized across iCloud Drive, Google Drive, OneDrive, local folders, and NAS-backed folders."
+            content="Aetherloom is a native macOS app that keeps selected folders synchronized across iCloud Drive, Google Drive, OneDrive, your Mac, and your NAS — so your files stay available even if you lose access to one of them."
         />
         <meta name="application-name" content="Aetherloom" />
         <meta name="apple-mobile-web-app-title" content="Aetherloom" />
@@ -30,7 +30,7 @@
         <meta property="og:title" content="Aetherloom: Keep your clouds interwoven" />
         <meta
             property="og:description"
-            content="A native macOS app for synchronizing selected folders across clouds, local folders, and NAS-backed folders with safety-first conflict handling."
+            content="A native macOS app that mirrors your folders across clouds, your Mac, and your NAS — every location holds a full copy, so losing access to one never means losing your files."
         />
         <meta property="og:url" content="https://aetherloom.app/" />
         <meta property="og:image" content="https://aetherloom.app/assets/social-preview.png" />
@@ -49,7 +49,7 @@
         <meta name="twitter:title" content="Aetherloom: Keep your clouds interwoven" />
         <meta
             name="twitter:description"
-            content="A native macOS app for synchronizing selected folders across clouds, local folders, and NAS-backed folders safely."
+            content="A native macOS app that mirrors your folders across clouds, your Mac, and your NAS — so losing access to one location never means losing your files."
         />
         <meta name="twitter:image" content="https://aetherloom.app/assets/social-preview.png" />
         <meta
@@ -396,6 +396,11 @@
                 text-wrap: pretty;
             }
 
+            .hero-kicker {
+                display: block;
+                margin-top: 10px;
+            }
+
             .cta-row {
                 margin-top: 34px;
                 display: flex;
@@ -405,42 +410,24 @@
                 gap: 14px;
             }
 
-            .primary-cta,
-            .secondary-cta {
+            .primary-cta {
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
+                gap: 9px;
                 min-height: 48px;
                 padding: 12px 22px;
                 border-radius: 10px;
-                font-size: 15px;
-                font-weight: 600;
-                transition:
-                    filter 0.16s ease,
-                    background 0.16s ease,
-                    border-color 0.16s ease;
-            }
-
-            .primary-cta {
-                gap: 9px;
                 background: var(--accent);
                 color: var(--accent-fg);
                 box-shadow: 0 8px 24px rgba(217, 154, 60, 0.35);
+                font-size: 15px;
+                font-weight: 600;
+                transition: filter 0.16s ease;
             }
 
             .primary-cta:hover {
                 filter: brightness(1.08);
-            }
-
-            .secondary-cta {
-                border: 1px solid var(--line-strong);
-                background: rgba(255, 255, 255, 0.04);
-                color: var(--text);
-                font-weight: 500;
-            }
-
-            .secondary-cta:hover {
-                background: rgba(255, 255, 255, 0.09);
             }
 
             .tag-row {
@@ -1002,8 +989,7 @@
                     align-items: stretch;
                 }
 
-                .primary-cta,
-                .secondary-cta {
+                .primary-cta {
                     width: min(100%, 260px);
                 }
 
@@ -1158,9 +1144,12 @@
                         <div class="eyebrow-pill">Open source · Early development</div>
                         <h1>Keep your clouds interwoven.</h1>
                         <p class="hero-subtitle">
-                            Aetherloom is a native macOS app that keeps selected folders
-                            synchronized across iCloud Drive, Google Drive, OneDrive, local folders,
-                            and your NAS.
+                            Aetherloom is a native macOS app that keeps the same folders
+                            synchronized across your clouds, your Mac, and your NAS.
+                            <span class="hero-kicker"
+                                >Every location holds a full copy &mdash; lose access to one, and
+                                your files are still everywhere else.</span
+                            >
                         </p>
                         <div class="cta-row">
                             <a
@@ -1182,13 +1171,6 @@
                                 </svg>
                                 View on GitHub
                             </a>
-                            <a
-                                class="secondary-cta"
-                                href="https://github.com/alexfilipe/aetherloom#readme"
-                                target="_blank"
-                                rel="noopener"
-                                >Read the docs</a
-                            >
                         </div>
                         <div class="tag-row" aria-label="Supported and planned sync locations">
                             <span
@@ -1247,9 +1229,10 @@
                         Choose folders. Aetherloom keeps them aligned, everywhere.
                     </h2>
                     <p class="section-copy">
-                        Pick folders &mdash; or eventually whole drives &mdash; and keep them
-                        synchronized across cloud services, your Mac, and your NAS. Built for
-                        people whose files live in more than one place.
+                        Pick folders &mdash; or eventually whole drives &mdash; and keep them in
+                        sync everywhere you keep files. It's more than convenience: when your files
+                        live in several places at once, no locked account, failed disk, or provider
+                        outage can take them from you.
                     </p>
                     <div class="two-grid">
                         <article class="info-card">
@@ -1496,9 +1479,9 @@
                                 <p class="eyebrow">Local &amp; NAS</p>
                                 <h2>First-class sync locations, not an afterthought.</h2>
                                 <p>
-                                    For local folders, Aetherloom uses native macOS folder
-                                    selection, security-scoped access where needed, filesystem
-                                    metadata, and safe local writes.
+                                    A sync set that includes your Mac or NAS means a complete copy
+                                    on hardware you own &mdash; plain files and folders you can
+                                    open, move, or walk away with, no export required.
                                 </p>
                             </div>
                             <div>
@@ -1573,8 +1556,9 @@
                         <article class="fine-card">
                             <h3>Not a backup replacement</h3>
                             <p>
-                                Aetherloom is a synchronization app, not a full backup system. You
-                                should still keep an independent backup of important files.
+                                Synchronized copies keep your files available if you lose access to
+                                a location &mdash; but sync isn't versioned backup. Keep an
+                                independent backup of files you can't afford to lose.
                             </p>
                         </article>
                         <article class="fine-card">
