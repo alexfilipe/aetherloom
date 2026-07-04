@@ -108,7 +108,7 @@
       background: rgba(11, 13, 18, 0.76);
       -webkit-backdrop-filter: blur(20px);
       backdrop-filter: blur(20px);
-      transition: transform 0.35s ease;
+      transition: transform 0.35s ease-in-out;
       will-change: transform;
     }
 
@@ -190,7 +190,7 @@
     .hero {
       position: relative;
       text-align: center;
-      padding-top: 96px;
+      padding-top: 56px;
     }
 
     .hero-copy {
@@ -199,6 +199,12 @@
       display: flex;
       flex-direction: column;
       align-items: center;
+    }
+
+    .hero-mark-wrap {
+      position: relative;
+      display: flex;
+      justify-content: center;
     }
 
     .hero-mark {
@@ -210,11 +216,31 @@
 
     @keyframes hero-float {
       0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-10px); }
+      50% { transform: translateY(-14px); }
+    }
+
+    /* Soft pool of light under the mark; shrinks and dims as it rises. */
+    .hero-mark-wrap::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -22px;
+      width: 210px;
+      height: 38px;
+      border-radius: 50%;
+      background: radial-gradient(closest-side, rgba(174, 200, 255, 0.55), rgba(174, 200, 255, 0) 74%);
+      filter: blur(12px);
+      animation: hero-shadow 7s ease-in-out infinite;
+      pointer-events: none;
+    }
+
+    @keyframes hero-shadow {
+      0%, 100% { transform: translateX(-50%) scale(1); opacity: 1; }
+      50% { transform: translateX(-50%) scale(0.72); opacity: 0.5; }
     }
 
     .eyebrow-pill {
-      margin-top: 36px;
+      margin-top: 44px;
       display: inline-flex;
       align-items: center;
       gap: 8px;
@@ -717,12 +743,12 @@
       }
 
       .hero {
-        padding-top: 72px;
+        padding-top: 40px;
       }
 
       .hero-mark {
-        width: 88px;
-        height: 88px;
+        width: 128px;
+        height: 128px;
       }
 
       h1 {
@@ -857,7 +883,9 @@
     <main>
       <section id="top" class="section hero">
         <div class="hero-copy">
-          <img class="hero-mark" src="/assets/mark-gradient.png" alt="Aetherloom app mark">
+          <div class="hero-mark-wrap">
+            <img class="hero-mark" src="/assets/mark-gradient.png" alt="Aetherloom app mark">
+          </div>
           <div class="eyebrow-pill">Open source · Early development</div>
           <h1>Keep your clouds interwoven.</h1>
           <p class="hero-subtitle">Aetherloom is a native macOS app that keeps selected folders synchronized across iCloud Drive, Google Drive, OneDrive, local folders, and your NAS.</p>
