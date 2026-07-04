@@ -54,6 +54,7 @@ private final class AboutWindowController: NSWindowController {
         window?.center()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        window?.makeFirstResponder(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 }
@@ -85,8 +86,8 @@ private struct AboutAetherloomView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Link("aetherloom.app", destination: URL(string: "https://aetherloom.app")!)
-                    Link("hello@aetherloom.app", destination: URL(string: "mailto:hello@aetherloom.app")!)
+                    AboutLink(title: "aetherloom.app", destination: URL(string: "https://aetherloom.app")!)
+                    AboutLink(title: "hello@aetherloom.app", destination: URL(string: "mailto:hello@aetherloom.app")!)
                 }
                 .font(.system(size: 12))
 
@@ -105,5 +106,20 @@ private struct AboutAetherloomView: View {
         .padding(.horizontal, 28)
         .padding(.bottom, 24)
         .frame(width: width, height: 224)
+    }
+}
+
+private struct AboutLink: View {
+    let title: String
+    let destination: URL
+
+    var body: some View {
+        Text(title)
+            .foregroundStyle(.link)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                NSWorkspace.shared.open(destination)
+            }
+            .accessibilityAddTraits(.isLink)
     }
 }
