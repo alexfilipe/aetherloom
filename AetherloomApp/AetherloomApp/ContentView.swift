@@ -174,6 +174,9 @@ private final class WindowTitleHidingView: NSView {
     }
 
     func hideWindowTitle() {
+        window?.title = ""
+        window?.subtitle = ""
         window?.titleVisibility = .hidden
+        window?.titlebarAppearsTransparent = true
     }
 }
