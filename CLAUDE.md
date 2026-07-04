@@ -1,6 +1,6 @@
 # Aetherloom Agent Instructions
 
-Aetherloom is a native macOS app for keeping selected folders, or eventually whole drives, synchronized across iCloud Drive, Google Drive, and OneDrive.
+Aetherloom is a native macOS app for keeping selected folders, or eventually whole drives, synchronized across iCloud Drive, Google Drive, OneDrive, local folders, and NAS-backed folders.
 
 The project prioritizes reliability, data preservation, testability, and a polished native Mac experience.
 
@@ -11,6 +11,7 @@ The project prioritizes reliability, data preservation, testability, and a polis
 - Deletes must use provider trash/recycle-bin behavior where possible.
 - Never infer deletion from provider outages, authentication failures, network failures, incomplete scans, or inaccessible iCloud folders.
 - Never infer deletion from iCloud placeholder or unavailable local files.
+- Never infer deletion from unmounted, sleeping, disconnected, or temporarily unreachable local or NAS-backed volumes.
 - Never silently overwrite independently edited files.
 - Preserve conflicting versions with conflict copies.
 - Pause and require review for suspicious mass changes.
@@ -23,6 +24,8 @@ The project prioritizes reliability, data preservation, testability, and a polis
 - Do not put sync rules directly in SwiftUI views.
 - Build provider-independent logic before provider-specific integrations.
 - Use fake providers for planner and safety tests.
+- Treat local folders and NAS-backed folders as first-class provider targets in the architecture.
+- Model unavailable local volumes and unreachable NAS mounts as provider unavailability, not deletion.
 - Real Google Drive, OneDrive, and iCloud integrations should be added only after the core sync engine is well tested.
 
 Expected structure:
@@ -46,11 +49,12 @@ When starting new implementation work, prefer this order:
 6. Unit tests
 7. Minimal SwiftUI shell
 8. Local filesystem provider
-9. SQLite metadata
-10. iCloud Drive local-folder support
-11. OneDrive integration
-12. Google Drive integration
-13. Background sync
+9. NAS-backed folder support through mounted macOS network filesystems
+10. SQLite metadata
+11. iCloud Drive local-folder support
+12. OneDrive integration
+13. Google Drive integration
+14. Background sync
 
 Do not start with OAuth, background sync, menu bar agents, App Store sandboxing, or cloud-provider integrations unless explicitly asked.
 
@@ -72,6 +76,8 @@ Core tests should cover:
 - provider unavailable does not delete
 - incomplete scan does not delete
 - iCloud placeholder does not delete
+- disconnected local volume does not delete
+- unavailable NAS mount does not delete
 - destination changed after planning stops execution
 - idempotent re-runs
 - conflict filenames preserve extensions
@@ -82,6 +88,8 @@ Core tests should cover:
 - excluded files
 
 Real cloud-provider tests must be opt-in only and must never run against a user’s real cloud root by default.
+
+Local and NAS-backed provider tests must also be conservative: do not run destructive tests against a user-selected real folder or mounted share by default. Prefer temporary directories and fake mount/unavailable states.
 
 ## UI expectations
 
