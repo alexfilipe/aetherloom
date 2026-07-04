@@ -572,17 +572,30 @@
     }
 
     .tour-caption {
+      position: relative;
       min-height: 1.6em;
       margin: 16px auto 0;
       max-width: 760px;
       color: rgba(242, 244, 248, 0.46);
       font-size: 13.5px;
       text-align: center;
-      transition: opacity 0.22s ease;
     }
 
-    .tour-caption.is-changing {
+    .tour-caption-text {
+      display: block;
       opacity: 0;
+      transition: opacity 0.72s ease-in-out;
+      will-change: opacity;
+    }
+
+    .tour-caption-text:not(.is-current) {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+    }
+
+    .tour-caption-text.is-active {
+      opacity: 1;
     }
 
     .local-panel {
@@ -1028,7 +1041,7 @@
         <div class="tour-frame">
           <img class="tour-layer is-active is-current" src="/assets/ui-overview.png" alt="Aetherloom Overview screen" loading="lazy" decoding="async">
         </div>
-        <p id="tour-caption" class="tour-caption">Overview - every location, every pending change, at a glance.</p>
+        <p id="tour-caption" class="tour-caption"><span class="tour-caption-text is-active is-current">Overview - every location, every pending change, at a glance.</span></p>
       </section>
 
       <section class="section">
@@ -1122,9 +1135,9 @@
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let currentLayer = frame?.querySelector(".tour-layer.is-current");
+    let currentCaption = caption?.querySelector(".tour-caption-text.is-current");
     let transitionId = 0;
     let cleanupTimer = null;
-    let captionTimer = null;
     const imageCache = new Map();
     const crossfadeMs = 720;
 
@@ -1157,36 +1170,49 @@
       return promise;
     };
 
-    const setCaption = (text) => {
-      if (!caption || caption.textContent === text) return;
+    const prepareCaption = (text) => {
+      if (!caption || !currentCaption || currentCaption.textContent === text) return null;
 
-      clearTimeout(captionTimer);
       if (reduceMotion.matches) {
-        caption.textContent = text;
-        caption.classList.remove("is-changing");
-        return;
+        currentCaption.textContent = text;
+        currentCaption.classList.add("is-active", "is-current");
+        return null;
       }
 
-      caption.classList.add("is-changing");
-      captionTimer = setTimeout(() => {
-        caption.textContent = text;
-        caption.classList.remove("is-changing");
-      }, 130);
+      const outgoingCaptions = Array.from(caption.querySelectorAll(".tour-caption-text"));
+      const incomingCaption = document.createElement("span");
+      incomingCaption.className = "tour-caption-text";
+      incomingCaption.textContent = text;
+      caption.appendChild(incomingCaption);
+
+      return {
+        start() {
+          outgoingCaptions.forEach((item) => item.classList.remove("is-active", "is-current"));
+          incomingCaption.classList.add("is-active", "is-current");
+          currentCaption = incomingCaption;
+        },
+        cleanup() {
+          outgoingCaptions.forEach((item) => item.remove());
+        },
+        cancel() {
+          incomingCaption.remove();
+        },
+      };
     };
 
     const selectTab = async (tab) => {
-      if (!frame || !currentLayer) return;
+      if (!frame || !currentLayer || !currentCaption) return;
       tabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
 
       const { src, alt, caption: cap } = tab.dataset;
       if (currentLayer.getAttribute("src") === src) return;
 
-      setCaption(cap);
       transitionId += 1;
       const thisTransition = transitionId;
       clearTimeout(cleanupTimer);
 
       if (reduceMotion.matches) {
+        prepareCaption(cap);
         currentLayer.src = src;
         currentLayer.alt = alt;
         currentLayer.classList.add("is-active", "is-current");
@@ -1205,10 +1231,12 @@
       incoming.loading = "eager";
       incoming.decoding = "async";
       frame.appendChild(incoming);
+      const captionTransition = prepareCaption(cap);
 
       await nextPaint();
       if (thisTransition !== transitionId) {
         incoming.remove();
+        captionTransition?.cancel();
         return;
       }
 
@@ -1218,6 +1246,7 @@
         layer.alt = "";
       });
 
+      captionTransition?.start();
       incoming.classList.add("is-active", "is-current");
       incoming.removeAttribute("aria-hidden");
       currentLayer = incoming;
@@ -1225,6 +1254,7 @@
       const cleanup = () => {
         if (thisTransition !== transitionId) return;
         outgoingLayers.forEach((layer) => layer.remove());
+        captionTransition?.cleanup();
       };
 
       incoming.addEventListener("transitionend", (event) => {
