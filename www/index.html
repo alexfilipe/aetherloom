@@ -95,7 +95,9 @@
 
     .site {
       min-height: 100vh;
-      overflow-x: hidden;
+      /* clip, not hidden: overflow-x hidden turns .site into a scroll
+         container, which breaks the sticky nav. */
+      overflow-x: clip;
     }
 
     .nav {
@@ -106,6 +108,18 @@
       background: rgba(11, 13, 18, 0.76);
       -webkit-backdrop-filter: blur(20px);
       backdrop-filter: blur(20px);
+      transition: transform 0.35s ease;
+      will-change: transform;
+    }
+
+    .nav.nav-hidden {
+      transform: translateY(-100%);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .nav {
+        transition: none;
+      }
     }
 
     .nav-inner {
@@ -658,6 +672,7 @@
 
     .footer-contact {
       overflow-wrap: anywhere;
+      color: var(--accent);
     }
 
     .footer-links a:hover,
@@ -1043,6 +1058,37 @@
         caption.textContent = tab.dataset.caption;
       });
     });
+
+    // Hide the top bar when scrolling up, reveal it when scrolling down.
+    const nav = document.querySelector(".nav");
+    let lastScrollY = window.scrollY;
+    let ticking = false;
+
+    const updateNav = () => {
+      const currentY = window.scrollY;
+      const delta = currentY - lastScrollY;
+
+      // Always show near the very top of the page.
+      if (currentY <= 8) {
+        nav.classList.remove("nav-hidden");
+      } else if (delta < -4) {
+        // Scrolling up -> hide.
+        nav.classList.add("nav-hidden");
+      } else if (delta > 4) {
+        // Scrolling down -> show.
+        nav.classList.remove("nav-hidden");
+      }
+
+      lastScrollY = currentY;
+      ticking = false;
+    };
+
+    window.addEventListener("scroll", () => {
+      if (!ticking) {
+        window.requestAnimationFrame(updateNav);
+        ticking = true;
+      }
+    }, { passive: true });
   </script>
 </body>
 </html>
