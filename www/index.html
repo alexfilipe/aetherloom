@@ -522,6 +522,12 @@
       transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
     }
 
+    .tour-tab:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.2);
+      color: var(--text);
+    }
+
     .tour-tab[aria-selected="true"] {
       border-color: transparent;
       background: var(--accent);
@@ -542,6 +548,7 @@
       width: 100%;
       height: 100%;
       object-fit: contain;
+      transition: opacity 0.22s ease;
     }
 
     .tour-caption {
@@ -910,7 +917,7 @@
           </div>
         </div>
         <div class="hero-shot-wrap">
-          <img class="hero-shot" src="/assets/ui-overview.png" alt="Aetherloom Overview screen showing connected locations and safety review status" fetchpriority="high">
+          <img class="hero-shot" src="/assets/ui-overview-scanning.png" alt="Aetherloom Overview screen scanning your clouds, showing connected locations and safety review status" fetchpriority="high">
         </div>
       </section>
 
@@ -1082,14 +1089,38 @@
     const image = document.querySelector("#tour-image");
     const caption = document.querySelector("#tour-caption");
 
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let fadeTimer = null;
+
+    const selectTab = (tab) => {
+      tabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+
+      const { src, alt, caption: cap } = tab.dataset;
+      if (image.getAttribute("src") === src) return;
+
+      const apply = () => {
+        image.src = src;
+        image.alt = alt;
+        caption.textContent = cap;
+      };
+
+      if (reduceMotion.matches) {
+        apply();
+        return;
+      }
+
+      // Preload so the swap lands on a ready frame, then fade out -> in.
+      new Image().src = src;
+      image.style.opacity = "0";
+      clearTimeout(fadeTimer);
+      fadeTimer = setTimeout(() => {
+        apply();
+        image.style.opacity = "1";
+      }, 220);
+    };
+
     tabs.forEach((tab) => {
-      tab.addEventListener("click", () => {
-        tabs.forEach((item) => item.setAttribute("aria-selected", "false"));
-        tab.setAttribute("aria-selected", "true");
-        image.src = tab.dataset.src;
-        image.alt = tab.dataset.alt;
-        caption.textContent = tab.dataset.caption;
-      });
+      tab.addEventListener("click", () => selectTab(tab));
     });
 
     // Hide the top bar when scrolling up, reveal it when scrolling down.
