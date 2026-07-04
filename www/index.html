@@ -563,7 +563,8 @@
       height: 100%;
       object-fit: contain;
       opacity: 0;
-      transition: opacity 0.35s ease;
+      transition: opacity 0.72s ease-in-out;
+      will-change: opacity;
     }
 
     .tour-layer.is-active {
@@ -571,10 +572,17 @@
     }
 
     .tour-caption {
-      margin: 16px 0 0;
+      min-height: 1.6em;
+      margin: 16px auto 0;
+      max-width: 760px;
       color: rgba(242, 244, 248, 0.46);
       font-size: 13.5px;
       text-align: center;
+      transition: opacity 0.22s ease;
+    }
+
+    .tour-caption.is-changing {
+      opacity: 0;
     }
 
     .local-panel {
@@ -877,6 +885,10 @@
         padding-left: 12px;
         padding-right: 12px;
       }
+
+      .tour-caption {
+        min-height: 4.8em;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -1014,8 +1026,7 @@
           <button class="tour-tab" type="button" role="tab" aria-selected="false" data-src="/assets/ui-settings.png" data-alt="Aetherloom Settings screen" data-caption="Settings - Aetherloom always chooses the safest option by default.">Settings</button>
         </div>
         <div class="tour-frame">
-          <img class="tour-layer is-active" src="/assets/ui-overview.png" alt="Aetherloom Overview screen" loading="lazy">
-          <img class="tour-layer" alt="" aria-hidden="true" loading="lazy">
+          <img class="tour-layer is-active is-current" src="/assets/ui-overview.png" alt="Aetherloom Overview screen" loading="lazy" decoding="async">
         </div>
         <p id="tour-caption" class="tour-caption">Overview - every location, every pending change, at a glance.</p>
       </section>
@@ -1106,61 +1117,133 @@
 
   <script>
     const tabs = Array.from(document.querySelectorAll(".tour-tab"));
-    const layers = Array.from(document.querySelectorAll(".tour-layer"));
+    const frame = document.querySelector(".tour-frame");
     const caption = document.querySelector("#tour-caption");
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-    let activeLayer = 0;
-    let hideTimer = null;
+    let currentLayer = frame?.querySelector(".tour-layer.is-current");
+    let transitionId = 0;
+    let cleanupTimer = null;
+    let captionTimer = null;
+    const imageCache = new Map();
+    const crossfadeMs = 720;
 
-    const selectTab = (tab) => {
-      tabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+    const nextPaint = () => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
 
-      const { src, alt, caption: cap } = tab.dataset;
-      const current = layers[activeLayer];
-      if (current.getAttribute("src") === src) return;
+    const preloadImage = (src) => {
+      if (!src) return Promise.resolve();
+      if (imageCache.has(src)) return imageCache.get(src);
 
-      caption.textContent = cap;
+      const image = new Image();
+      image.decoding = "async";
+      const promise = new Promise((resolve) => {
+        const finish = () => {
+          if (image.decode) {
+            image.decode().catch(() => {}).finally(resolve);
+          } else {
+            resolve();
+          }
+        };
 
+        image.onload = finish;
+        image.onerror = resolve;
+        image.src = src;
+        if (image.complete) finish();
+      });
+
+      imageCache.set(src, promise);
+      return promise;
+    };
+
+    const setCaption = (text) => {
+      if (!caption || caption.textContent === text) return;
+
+      clearTimeout(captionTimer);
       if (reduceMotion.matches) {
-        current.src = src;
-        current.alt = alt;
+        caption.textContent = text;
+        caption.classList.remove("is-changing");
         return;
       }
 
-      // Crossfade: the incoming layer fades in on top of the outgoing one,
-      // which stays visible underneath until the new frame fully covers it.
-      const incoming = layers[1 - activeLayer];
-      const outgoing = current;
-      activeLayer = 1 - activeLayer;
+      caption.classList.add("is-changing");
+      captionTimer = setTimeout(() => {
+        caption.textContent = text;
+        caption.classList.remove("is-changing");
+      }, 130);
+    };
 
+    const selectTab = async (tab) => {
+      if (!frame || !currentLayer) return;
+      tabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+
+      const { src, alt, caption: cap } = tab.dataset;
+      if (currentLayer.getAttribute("src") === src) return;
+
+      setCaption(cap);
+      transitionId += 1;
+      const thisTransition = transitionId;
+      clearTimeout(cleanupTimer);
+
+      if (reduceMotion.matches) {
+        currentLayer.src = src;
+        currentLayer.alt = alt;
+        currentLayer.classList.add("is-active", "is-current");
+        currentLayer.removeAttribute("aria-hidden");
+        return;
+      }
+
+      await preloadImage(src);
+      if (thisTransition !== transitionId) return;
+
+      const outgoingLayers = Array.from(frame.querySelectorAll(".tour-layer"));
+      const incoming = document.createElement("img");
+      incoming.className = "tour-layer";
+      incoming.src = src;
       incoming.alt = alt;
+      incoming.loading = "eager";
+      incoming.decoding = "async";
+      frame.appendChild(incoming);
+
+      await nextPaint();
+      if (thisTransition !== transitionId) {
+        incoming.remove();
+        return;
+      }
+
+      outgoingLayers.forEach((layer) => {
+        layer.classList.remove("is-active", "is-current");
+        layer.setAttribute("aria-hidden", "true");
+        layer.alt = "";
+      });
+
+      incoming.classList.add("is-active", "is-current");
       incoming.removeAttribute("aria-hidden");
-      outgoing.setAttribute("aria-hidden", "true");
-      outgoing.alt = "";
-      incoming.style.zIndex = "2";
-      outgoing.style.zIndex = "1";
-      incoming.classList.remove("is-active");
+      currentLayer = incoming;
 
-      // Decode via a non-lazy preloader so the fade starts on a ready frame.
-      const reveal = () => {
-        incoming.src = src;
-        incoming.classList.add("is-active");
+      const cleanup = () => {
+        if (thisTransition !== transitionId) return;
+        outgoingLayers.forEach((layer) => layer.remove());
       };
-      const pre = new Image();
-      pre.onload = reveal;
-      pre.onerror = reveal;
-      pre.src = src;
-      if (pre.complete) reveal();
 
-      // Once the crossfade is done, drop the now-hidden outgoing layer.
-      clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => outgoing.classList.remove("is-active"), 450);
+      incoming.addEventListener("transitionend", (event) => {
+        if (event.propertyName === "opacity") cleanup();
+      }, { once: true });
+
+      cleanupTimer = setTimeout(cleanup, crossfadeMs + 160);
     };
 
     tabs.forEach((tab) => {
       tab.addEventListener("click", () => selectTab(tab));
     });
+
+    const warmTourImages = () => tabs.forEach((tab) => preloadImage(tab.dataset.src));
+    if ("requestIdleCallback" in window) {
+      requestIdleCallback(warmTourImages, { timeout: 2000 });
+    } else {
+      window.addEventListener("load", warmTourImages, { once: true });
+    }
 
     // Hide the top bar when scrolling up, reveal it when scrolling down.
     const nav = document.querySelector(".nav");
