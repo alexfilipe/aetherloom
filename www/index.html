@@ -647,9 +647,17 @@
     .footer-links {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
       gap: 24px;
+      margin-left: auto;
       color: rgba(242, 244, 248, 0.65);
       font-size: 14px;
+      text-align: right;
+    }
+
+    .footer-contact {
+      overflow-wrap: anywhere;
     }
 
     .footer-links a:hover,
@@ -737,6 +745,40 @@
 
       .roadmap {
         grid-template-columns: 1fr;
+      }
+
+      .footer-main {
+        flex-wrap: nowrap;
+      }
+
+      .footer-links {
+        justify-content: flex-end;
+        row-gap: 12px;
+      }
+
+      .footer-contact {
+        flex-basis: 100%;
+        text-align: right;
+      }
+    }
+
+    @media (max-width: 550px) {
+      .footer-main {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 20px;
+      }
+
+      .footer-links {
+        justify-content: flex-start;
+        text-align: left;
+        margin-left: 0;
+        row-gap: 12px;
+      }
+
+      .footer-contact {
+        flex-basis: auto;
+        text-align: left;
       }
     }
 
@@ -976,7 +1018,7 @@
             <a href="https://github.com/alexfilipe/aetherloom" target="_blank" rel="noopener">GitHub</a>
             <a href="https://github.com/alexfilipe/aetherloom/issues" target="_blank" rel="noopener">Issues</a>
             <a href="https://github.com/alexfilipe/aetherloom#readme" target="_blank" rel="noopener">Readme</a>
-            <a href="mailto:hello@aetherloom.app">hello@aetherloom.app</a>
+            <a class="footer-contact" href="mailto:hello@aetherloom.app">hello@aetherloom.app</a>
           </nav>
         </div>
         <div class="footer-meta">
