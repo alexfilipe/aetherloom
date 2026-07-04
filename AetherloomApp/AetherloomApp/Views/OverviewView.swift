@@ -23,7 +23,7 @@ struct OverviewView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionHeader(title: "Connected Clouds", accessory: "\(store.healthyServiceCount) of \(store.services.count) available")
+                    SectionHeader(title: "Connected Locations", accessory: "\(store.healthyServiceCount) of \(store.services.count) available")
                     LazyVGrid(columns: gridColumns, spacing: 14) {
                         ForEach(store.services) { service in
                             ServiceCard(status: service)
@@ -80,7 +80,7 @@ private struct HeroCard: View {
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
 
-                Text("\(store.trackedFileCount.formatted()) files woven across iCloud Drive, Google Drive, and OneDrive · Last scan \(store.lastScan.lowercased())")
+                Text("\(store.trackedFileCount.formatted()) files woven across three clouds, this Mac, and your NAS · Last scan \(store.lastScan.lowercased())")
                     .font(.callout)
                     .foregroundStyle(.white.opacity(0.78))
 

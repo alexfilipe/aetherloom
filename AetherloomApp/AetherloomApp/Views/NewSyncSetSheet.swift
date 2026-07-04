@@ -80,7 +80,7 @@ struct NewSyncSetSheet: View {
             }
             .padding(20)
         }
-        .frame(width: 480, height: 520)
+        .frame(width: 480, height: 620)
     }
 
     private func binding(for service: CloudService) -> Binding<Bool> {

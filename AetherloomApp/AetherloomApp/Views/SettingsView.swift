@@ -37,6 +37,7 @@ struct SettingsView: View {
                         LabeledContent("Conflict behavior", value: "Both versions preserved")
                         LabeledContent("Delete behavior", value: "Move to trash, always recoverable")
                         LabeledContent("When a provider is unreachable", value: "Pause — never infer deletions")
+                        LabeledContent("When a volume is asleep or unmounted", value: "Wait — never treat files as deleted")
                     }
 
                     Section("Excluded Files") {

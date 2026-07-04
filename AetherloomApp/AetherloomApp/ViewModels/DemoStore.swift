@@ -10,6 +10,8 @@ enum CloudService: String, CaseIterable, Identifiable, Hashable {
     case iCloudDrive
     case googleDrive
     case oneDrive
+    case localFolder
+    case nas
 
     var id: String { rawValue }
 
@@ -18,6 +20,8 @@ enum CloudService: String, CaseIterable, Identifiable, Hashable {
         case .iCloudDrive: "iCloud Drive"
         case .googleDrive: "Google Drive"
         case .oneDrive: "OneDrive"
+        case .localFolder: "Local Folder"
+        case .nas: "NAS Drive"
         }
     }
 
@@ -26,6 +30,8 @@ enum CloudService: String, CaseIterable, Identifiable, Hashable {
         case .iCloudDrive: "icloud.fill"
         case .googleDrive: "triangle.fill"
         case .oneDrive: "cloud.fill"
+        case .localFolder: "internaldrive.fill"
+        case .nas: "server.rack"
         }
     }
 
@@ -34,6 +40,8 @@ enum CloudService: String, CaseIterable, Identifiable, Hashable {
         case .iCloudDrive: .cyan
         case .googleDrive: .green
         case .oneDrive: .blue
+        case .localFolder: .gray
+        case .nas: .purple
         }
     }
 
@@ -45,6 +53,14 @@ enum CloudService: String, CaseIterable, Identifiable, Hashable {
             LinearGradient(colors: [.green, .teal], startPoint: .topLeading, endPoint: .bottomTrailing)
         case .oneDrive:
             LinearGradient(colors: [.blue, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .localFolder:
+            LinearGradient(
+                colors: [Color(red: 0.48, green: 0.53, blue: 0.60), Color(red: 0.28, green: 0.32, blue: 0.40)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .nas:
+            LinearGradient(colors: [.purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
         }
     }
 }
@@ -390,6 +406,26 @@ extension DemoStore {
             tone: .paused,
             safetyNote: "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.",
             actionTitle: "Retry"
+        ),
+        ServiceStatus(
+            service: .localFolder,
+            account: nil,
+            selectedFolder: "~/Documents",
+            statusText: "Ready",
+            lastChecked: "Just now",
+            tone: .healthy,
+            safetyNote: nil,
+            actionTitle: "Choose Folders"
+        ),
+        ServiceStatus(
+            service: .nas,
+            account: "smb://tank.local",
+            selectedFolder: "/Volumes/Tank/Media",
+            statusText: "Volume asleep",
+            lastChecked: "36 min ago",
+            tone: .neutral,
+            safetyNote: "This volume is asleep or unmounted. Aetherloom waits patiently — files on a sleeping drive are never treated as deleted.",
+            actionTitle: "Wake & Mount"
         )
     ]
 
@@ -399,7 +435,8 @@ extension DemoStore {
             folders: [
                 FolderSelection(service: .iCloudDrive, location: "/Documents"),
                 FolderSelection(service: .googleDrive, location: "/Documents"),
-                FolderSelection(service: .oneDrive, location: "/Documents")
+                FolderSelection(service: .oneDrive, location: "/Documents"),
+                FolderSelection(service: .localFolder, location: "~/Documents")
             ],
             statusText: "Up to date",
             tone: .healthy,
@@ -422,6 +459,21 @@ extension DemoStore {
             pendingSummary: "1 conflict copy preserved",
             isPaused: false,
             safetyNote: "Aetherloom found many deletions. This may be intentional, but sync is paused until you review it."
+        ),
+        SyncSet(
+            name: "Photos Archive",
+            folders: [
+                FolderSelection(service: .localFolder, location: "~/Pictures/Archive"),
+                FolderSelection(service: .nas, location: "/Volumes/Tank/Photos"),
+                FolderSelection(service: .googleDrive, location: "/Photos Archive")
+            ],
+            statusText: "Waiting for volume",
+            tone: .neutral,
+            lastSync: "36 min ago",
+            trackedFiles: 12_408,
+            pendingSummary: "Resumes when the NAS wakes — nothing is treated as deleted",
+            isPaused: false,
+            safetyNote: nil
         ),
         SyncSet(
             name: "Whole Drive Mirror",
@@ -509,6 +561,12 @@ extension DemoStore {
             service: .oneDrive,
             message: "Paused for safety — OneDrive became unreachable during a scan. Nothing was deleted.",
             tone: .paused
+        ),
+        ActivityItem(
+            time: "2:04 PM",
+            service: .nas,
+            message: "“Photos Archive” is waiting — the NAS volume went to sleep. Files on a sleeping drive are never treated as deleted.",
+            tone: .neutral
         ),
         ActivityItem(
             time: "2:15 PM",

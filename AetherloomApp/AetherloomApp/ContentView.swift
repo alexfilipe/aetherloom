@@ -51,7 +51,7 @@ struct ContentView: View {
                 Text("Aetherloom")
                     .font(.headline.weight(.bold))
                     .fontDesign(.rounded)
-                Text("Three clouds, one weave")
+                Text("Every drive, one weave")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
