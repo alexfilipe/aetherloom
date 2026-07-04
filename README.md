@@ -7,8 +7,9 @@
 <p align="center"><b>Every drive, one weave.</b></p>
 
 <p align="center">
-  A native macOS app that keeps folders synchronized across iCloud Drive, Google Drive, OneDrive,
-  local folders, and NAS-backed drives — with user data safety as the first priority.
+  A native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive,
+  OneDrive, local folders, and NAS-backed drives — every location holds a full copy, so losing
+  access to one never means losing your files.
 </p>
 
 <p align="center">
@@ -25,16 +26,19 @@
 
 ## Why Aetherloom
 
-If you use more than one cloud — or a mix of clouds, local disks, and a NAS — keeping the same files aligned everywhere is tedious and risky. Aetherloom weaves your storage locations together:
+Files that live in only one place are one failure away from being out of reach: a locked account, an expired subscription, a dead disk, a provider outage — or just a service you decide to leave. If you already use more than one cloud, plus a Mac and maybe a NAS, you have everything you need to be resilient against all of that. Keeping the copies aligned by hand is the tedious, error-prone part.
 
+Aetherloom weaves your storage locations together so the same folders exist — complete and current — in every place you choose:
+
+- **Lose access to one, keep everything.** Every location holds a full copy, so no single provider, account, or disk ever holds the only one.
+- **Own your copies.** A synced folder on your Mac or NAS is plain files on hardware you control — readable with or without Aetherloom, no export required.
 - **Sync across clouds.** Keep a folder identical in iCloud Drive, Google Drive, and OneDrive at the same time.
-- **Back up by redundancy.** One core use case is safely mirroring important folders across multiple clouds *and* local or NAS drives, so no single provider, account, or disk holds the only copy.
 - **Bring the NAS in.** Folders on SMB/AFP/NFS mounts are first-class sync targets, not an afterthought.
 - **See before it happens.** Every sync is planned first, and you can preview exactly what will change.
 
 ## Safety first
 
-Cloud sync tools have a long history of eating files. Aetherloom is built around the opposite bias: **when in doubt, pause and preserve.**
+Redundancy only protects you if sync itself never destroys data — a sync engine that propagates a mistake to every copy makes things worse, not safer. Cloud sync tools have a long history of eating files; Aetherloom is built around the opposite bias: **when in doubt, pause and preserve.**
 
 - Files are **never permanently deleted** during normal sync — deletes go to each provider's trash or recycle bin.
 - A provider outage, expired login, network failure, or incomplete scan is **never** treated as "the user deleted everything."
