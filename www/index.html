@@ -225,7 +225,7 @@
       position: absolute;
       left: 50%;
       bottom: -22px;
-      width: 210px;
+      width: 250px;
       height: 38px;
       border-radius: 50%;
       background: radial-gradient(closest-side, rgba(174, 200, 255, 0.55), rgba(174, 200, 255, 0) 74%);
@@ -647,7 +647,7 @@
     .footer-inner {
       width: min(100%, calc(var(--max) + 64px));
       margin: 0 auto;
-      padding: 56px 32px;
+      padding: 40px 32px 56px;
       display: flex;
       flex-direction: column;
       gap: 28px;
@@ -782,6 +782,12 @@
       .local-panel {
         padding: 28px;
         border-radius: 16px;
+      }
+
+      /* Columns stack here; drop the row gap so the space between the two
+         blocks matches the 16px top margin between paragraphs. */
+      .local-grid {
+        gap: 0;
       }
 
       .roadmap {
@@ -1065,8 +1071,8 @@
           </nav>
         </div>
         <div class="footer-meta">
-          <span>Created by <a href="https://alexfili.pe" target="_blank" rel="noopener">&Aacute;lex Filipe Santos</a> in San Francisco</span>
-          <span>Open source · License TBD</span>
+          <span>Created by <a href="https://alexfili.pe" target="_blank" rel="noopener">&Aacute;lex Filipe Santos</a> in San Francisco.</span>
+          <span>&copy; 2026 &nbsp;·&nbsp; Open source &nbsp;·&nbsp; License TBD</span>
         </div>
       </div>
     </footer>
