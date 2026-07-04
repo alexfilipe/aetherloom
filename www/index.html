@@ -198,18 +198,6 @@
                 background: rgba(11, 13, 18, 0.76);
                 -webkit-backdrop-filter: blur(20px);
                 backdrop-filter: blur(20px);
-                transition: transform 0.35s ease-in-out;
-                will-change: transform;
-            }
-
-            .nav.nav-hidden {
-                transform: translateY(-100%);
-            }
-
-            @media (prefers-reduced-motion: reduce) {
-                .nav {
-                    transition: none;
-                }
             }
 
             .nav-inner {
@@ -389,23 +377,12 @@
                 text-wrap: balance;
             }
 
-            .eyebrow,
-            .badge,
-            .status-pill,
-            .technical-label,
-            .protocol-label,
-            code,
-            kbd,
-            pre {
-                font-family: var(--font-mono);
-            }
-
             h1 {
                 margin-bottom: 0;
                 margin-top: 20px;
                 max-width: 720px;
                 font-size: clamp(44px, 7vw, 64px);
-                font-weight: 800;
+                font-weight: 700;
                 line-height: 1.05;
                 letter-spacing: -0.055em;
             }
@@ -478,12 +455,6 @@
                 font-size: 13px;
                 font-weight: 500;
                 letter-spacing: 0;
-            }
-
-            .protocol-label {
-                font-size: 0.95em;
-                font-weight: 500;
-                letter-spacing: 0.02em;
             }
 
             .nas-label {
@@ -649,11 +620,14 @@
                 align-items: center;
                 justify-content: center;
                 border-radius: 8px;
-                background: rgba(110, 92, 246, 0.14);
+                background: rgba(217, 154, 60, 0.12);
                 color: var(--accent);
-                font-family: var(--font-mono);
-                font-size: 15px;
-                font-weight: 600;
+            }
+
+            .safety-glyph svg {
+                width: 15px;
+                height: 15px;
+                fill: currentColor;
             }
 
             .safety-card h3 {
@@ -854,10 +828,47 @@
                 flex: 0 0 18px;
                 border: 1.5px solid rgba(255, 255, 255, 0.22);
                 border-radius: 50%;
+            }
+
+            .roadmap li.is-now::before {
+                border-color: rgba(217, 154, 60, 0.55);
                 background: radial-gradient(
                     circle at 50% 50%,
-                    var(--accent) 0 2px,
-                    transparent 2.5px
+                    var(--accent) 0 4px,
+                    transparent 4.5px
+                );
+            }
+
+            .roadmap-key {
+                margin: 20px 0 0;
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 10px 22px;
+                color: rgba(242, 244, 248, 0.45);
+                font-size: 13px;
+            }
+
+            .roadmap-key span {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .roadmap-key span::before {
+                content: "";
+                width: 12px;
+                height: 12px;
+                border: 1.5px solid rgba(255, 255, 255, 0.22);
+                border-radius: 50%;
+            }
+
+            .roadmap-key .key-now::before {
+                border-color: rgba(217, 154, 60, 0.55);
+                background: radial-gradient(
+                    circle at 50% 50%,
+                    var(--accent) 0 2.5px,
+                    transparent 3px
                 );
             }
 
@@ -1109,6 +1120,7 @@
                     <nav class="nav-links" aria-label="Main navigation">
                         <a class="nav-link" href="#what">What it does</a>
                         <a class="nav-link" href="#safety">Safety</a>
+                        <a class="nav-link" href="#inside">A look inside</a>
                         <a class="nav-link" href="#status">Status</a>
                         <a
                             class="github-button"
@@ -1235,9 +1247,9 @@
                         Choose folders. Aetherloom keeps them aligned, everywhere.
                     </h2>
                     <p class="section-copy">
-                        Pick folders - or eventually whole drives - and keep them synchronized
-                        across cloud services, local filesystem locations, and NAS-mounted folders.
-                        Built for people whose files live in more than one place.
+                        Pick folders &mdash; or eventually whole drives &mdash; and keep them
+                        synchronized across cloud services, your Mac, and your NAS. Built for
+                        people whose files live in more than one place.
                     </p>
                     <div class="two-grid">
                         <article class="info-card">
@@ -1246,8 +1258,8 @@
                                 <li>
                                     <span class="bullet-blue">●</span
                                     ><span
-                                        >Cloud folders and drives - iCloud Drive, Google Drive, and
-                                        OneDrive first</span
+                                        >Cloud folders and drives &mdash; iCloud Drive, Google
+                                        Drive, and OneDrive first</span
                                     >
                                 </li>
                                 <li>
@@ -1276,12 +1288,13 @@
                                 <li>
                                     <span class="bullet-gold">●</span
                                     ><span
-                                        >Deletes - using each provider's trash or recycle bin</span
+                                        >Deletes &mdash; using each provider's trash or recycle
+                                        bin</span
                                     >
                                 </li>
                                 <li>
                                     <span class="bullet-gold">●</span
-                                    ><span>Conflicts - by preserving both versions</span>
+                                    ><span>Conflicts &mdash; by preserving both versions</span>
                                 </li>
                             </ul>
                         </article>
@@ -1292,30 +1305,48 @@
                     <p class="eyebrow">Safety first</p>
                     <h2 class="section-title">Nothing happens without you.</h2>
                     <p class="section-copy">
-                        Cloud sync can be risky, so Aetherloom is designed to be cautious. It shows
-                        you what will happen before risky changes are applied - and pauses when a
-                        change set looks suspicious.
+                        Sync tools shouldn't surprise you. Aetherloom shows its work before
+                        touching your files &mdash; and pauses for review when a change set looks
+                        suspicious.
                     </p>
                     <div class="card-grid">
                         <article class="safety-card">
-                            <span class="safety-glyph" aria-hidden="true">⌫</span>
+                            <span class="safety-glyph" aria-hidden="true">
+                                <svg viewBox="0 0 24 24">
+                                    <path
+                                        d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                                    />
+                                </svg>
+                            </span>
                             <h3>Never permanently deletes</h3>
                             <p>
                                 During normal sync, deleted files move to each provider's trash or
-                                recycle bin where possible - never gone for good.
+                                recycle bin where possible &mdash; never gone for good.
                             </p>
                         </article>
                         <article class="safety-card">
-                            <span class="safety-glyph" aria-hidden="true">☁</span>
+                            <span class="safety-glyph" aria-hidden="true">
+                                <svg viewBox="0 0 24 24">
+                                    <path
+                                        d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"
+                                    />
+                                </svg>
+                            </span>
                             <h3>Outages aren't deletions</h3>
                             <p>
                                 A provider outage, an unmounted NAS, a sleeping volume, or a
-                                disconnected disk is treated as unavailability - not as deleted
-                                files.
+                                disconnected disk is treated as unavailability &mdash; not as
+                                deleted files.
                             </p>
                         </article>
                         <article class="safety-card">
-                            <span class="safety-glyph" aria-hidden="true">⎘</span>
+                            <span class="safety-glyph" aria-hidden="true">
+                                <svg viewBox="0 0 24 24">
+                                    <path
+                                        d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
+                                    />
+                                </svg>
+                            </span>
                             <h3>Conflicts keep both versions</h3>
                             <p>
                                 When a file was edited independently in two places, nothing is
@@ -1323,23 +1354,37 @@
                             </p>
                         </article>
                         <article class="safety-card">
-                            <span class="safety-glyph" aria-hidden="true">⏸</span>
+                            <span class="safety-glyph" aria-hidden="true">
+                                <svg viewBox="0 0 24 24">
+                                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                                </svg>
+                            </span>
                             <h3>Pauses when things look off</h3>
                             <p>
-                                A suspicious change set - like a mass deletion - pauses sync until
-                                you've reviewed exactly what would happen.
+                                A suspicious change set &mdash; like a mass deletion &mdash; pauses
+                                sync until you've reviewed exactly what would change.
                             </p>
                         </article>
                         <article class="safety-card">
-                            <span class="safety-glyph" aria-hidden="true">☰</span>
-                            <h3>Preview before it happens</h3>
+                            <span class="safety-glyph" aria-hidden="true">
+                                <svg viewBox="0 0 24 24">
+                                    <path
+                                        d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"
+                                    />
+                                </svg>
+                            </span>
+                            <h3>Every change starts as a plan</h3>
                             <p>
-                                Every risky change is shown as a sync plan first. You see what will
-                                happen before anything is applied.
+                                Risky changes are shown as a sync plan first. Nothing is applied
+                                until you've seen what Aetherloom intends to do.
                             </p>
                         </article>
                         <article class="safety-card">
-                            <span class="safety-glyph" aria-hidden="true">✓</span>
+                            <span class="safety-glyph" aria-hidden="true">
+                                <svg viewBox="0 0 24 24">
+                                    <path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+                                </svg>
+                            </span>
                             <h3>Verified writes</h3>
                             <p>
                                 Destination state is verified before overwriting, so independently
@@ -1349,7 +1394,7 @@
                     </div>
                 </section>
 
-                <section class="section" aria-labelledby="inside-title">
+                <section id="inside" class="section" aria-labelledby="inside-title">
                     <p class="eyebrow">A look inside</p>
                     <h2 id="inside-title" class="section-title">
                         Native on macOS, through and through.
@@ -1359,10 +1404,12 @@
                             class="tour-tab"
                             type="button"
                             role="tab"
-                            aria-selected="true"
+                            aria-selected="false"
+                            aria-controls="tour-panel"
+                            tabindex="-1"
                             data-src="/assets/ui-overview.png"
                             data-alt="Aetherloom Overview screen"
-                            data-caption="Overview - every location, every pending change, at a glance."
+                            data-caption="Overview &mdash; Every location, every pending change, at a glance."
                         >
                             Overview
                         </button>
@@ -1371,9 +1418,11 @@
                             type="button"
                             role="tab"
                             aria-selected="false"
+                            aria-controls="tour-panel"
+                            tabindex="-1"
                             data-src="/assets/ui-sync-sets.png"
                             data-alt="Aetherloom Sync Sets screen"
-                            data-caption="Sync Sets - folders and drives you chose to keep in sync, grouped by mirror."
+                            data-caption="Sync Sets &mdash; Folders and drives you chose to keep in sync, grouped by mirror."
                         >
                             Sync Sets
                         </button>
@@ -1382,9 +1431,11 @@
                             type="button"
                             role="tab"
                             aria-selected="false"
+                            aria-controls="tour-panel"
+                            tabindex="-1"
                             data-src="/assets/ui-activity.png"
                             data-alt="Aetherloom Activity screen"
-                            data-caption="Activity - everything Aetherloom did, and every time it paused to keep your files safe."
+                            data-caption="Activity &mdash; Everything Aetherloom did, and every time it paused to keep your files safe."
                         >
                             Activity
                         </button>
@@ -1392,10 +1443,11 @@
                             class="tour-tab"
                             type="button"
                             role="tab"
-                            aria-selected="false"
+                            aria-selected="true"
+                            aria-controls="tour-panel"
                             data-src="/assets/ui-conflicts.png"
                             data-alt="Aetherloom Conflicts screen"
-                            data-caption="Conflicts - when a file changes in more than one place, both versions are kept until you decide."
+                            data-caption="Conflicts &mdash; When a file changes in more than one place, both versions are kept until you decide."
                         >
                             Conflicts
                         </button>
@@ -1404,25 +1456,33 @@
                             type="button"
                             role="tab"
                             aria-selected="false"
+                            aria-controls="tour-panel"
+                            tabindex="-1"
                             data-src="/assets/ui-settings.png"
                             data-alt="Aetherloom Settings screen"
-                            data-caption="Settings - Aetherloom always chooses the safest option by default."
+                            data-caption="Settings &mdash; Aetherloom always chooses the safest option by default."
                         >
                             Settings
                         </button>
                     </div>
-                    <div class="tour-frame">
+                    <div
+                        id="tour-panel"
+                        class="tour-frame"
+                        role="tabpanel"
+                        aria-label="Selected app screenshot"
+                    >
                         <img
                             class="tour-layer is-active is-current"
-                            src="/assets/ui-overview.png"
-                            alt="Aetherloom Overview screen"
+                            src="/assets/ui-conflicts.png"
+                            alt="Aetherloom Conflicts screen"
                             loading="lazy"
                             decoding="async"
                         />
                     </div>
                     <p id="tour-caption" class="tour-caption">
                         <span class="tour-caption-text is-active is-current"
-                            >Overview - every location, every pending change, at a glance.</span
+                            >Conflicts &mdash; When a file changes in more than one place, both
+                            versions are kept until you decide.</span
                         >
                     </p>
                 </section>
@@ -1444,7 +1504,9 @@
                                     A mounted network share can disappear because the Mac slept, the
                                     network changed, credentials expired, or the NAS is temporarily
                                     unavailable. Aetherloom treats those states as
-                                    <strong>provider unavailability - never as file deletion</strong
+                                    <strong
+                                        >provider unavailability &mdash; never as file
+                                        deletion</strong
                                     >.
                                 </p>
                                 <p>
@@ -1463,8 +1525,8 @@
                             <p class="eyebrow">Current status</p>
                             <h2 class="section-title">Early development, built in the open.</h2>
                             <p class="section-copy">
-                                Aetherloom is young. The priorities below come first - follow along,
-                                open issues, or contribute on GitHub.
+                                Aetherloom is young. The priorities below come first &mdash; follow
+                                along, open issues, or contribute on GitHub.
                             </p>
                             <a
                                 class="text-link"
@@ -1474,20 +1536,25 @@
                                 >Follow the project →</a
                             >
                         </div>
-                        <ul class="roadmap">
-                            <li>Native macOS app</li>
-                            <li>Provider-independent sync engine</li>
-                            <li>Folder selection</li>
-                            <li>Sync plan preview</li>
-                            <li>Activity log</li>
-                            <li>Conflict detection</li>
-                            <li>Safe delete behavior</li>
-                            <li>Local folder support</li>
-                            <li>NAS-backed folder support</li>
-                            <li>iCloud Drive folder support</li>
-                            <li>Google Drive support</li>
-                            <li>OneDrive support</li>
-                        </ul>
+                        <div>
+                            <ul class="roadmap">
+                                <li class="is-now">Provider-independent sync&nbsp;engine</li>
+                                <li class="is-now">Folder selection</li>
+                                <li class="is-now">Sync plan preview</li>
+                                <li class="is-now">Activity log</li>
+                                <li class="is-now">Conflict detection</li>
+                                <li class="is-now">Safe delete behavior</li>
+                                <li class="is-now">Local folder support</li>
+                                <li>NAS-backed folder support</li>
+                                <li>iCloud Drive folder support</li>
+                                <li>Google Drive support</li>
+                                <li>OneDrive support</li>
+                            </ul>
+                            <p class="roadmap-key">
+                                <span class="key-now">In progress</span>
+                                <span>Planned</span>
+                            </p>
+                        </div>
                     </div>
                 </section>
 
@@ -1652,7 +1719,10 @@
 
             const selectTab = async (tab) => {
                 if (!frame || !currentLayer || !currentCaption) return;
-                tabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+                tabs.forEach((item) => {
+                    item.setAttribute("aria-selected", String(item === tab));
+                    item.tabIndex = item === tab ? 0 : -1;
+                });
 
                 const { src, alt, caption: cap } = tab.dataset;
                 if (currentLayer.getAttribute("src") === src) return;
@@ -1718,8 +1788,30 @@
                 cleanupTimer = setTimeout(cleanup, crossfadeMs + 160);
             };
 
-            tabs.forEach((tab) => {
+            // Roving tabindex + arrow keys, per the ARIA tabs pattern.
+            const focusTab = (index) => {
+                const tab = tabs[(index + tabs.length) % tabs.length];
+                tab.focus();
+                selectTab(tab);
+            };
+
+            tabs.forEach((tab, index) => {
                 tab.addEventListener("click", () => selectTab(tab));
+                tab.addEventListener("keydown", (event) => {
+                    if (event.key === "ArrowRight") {
+                        event.preventDefault();
+                        focusTab(index + 1);
+                    } else if (event.key === "ArrowLeft") {
+                        event.preventDefault();
+                        focusTab(index - 1);
+                    } else if (event.key === "Home") {
+                        event.preventDefault();
+                        focusTab(0);
+                    } else if (event.key === "End") {
+                        event.preventDefault();
+                        focusTab(tabs.length - 1);
+                    }
+                });
             });
 
             const warmTourImages = () => tabs.forEach((tab) => preloadImage(tab.dataset.src));
@@ -1728,68 +1820,6 @@
             } else {
                 window.addEventListener("load", warmTourImages, { once: true });
             }
-
-            // Hide the top bar when scrolling up, reveal it when scrolling down.
-            const nav = document.querySelector(".nav");
-            let lastScrollY = window.scrollY;
-            let ticking = false;
-
-            // Keep the bar visible while a topbar link smooth-scrolls the page.
-            let anchorScrolling = false;
-            let anchorIdleTimer = null;
-
-            const keepNavDuringAnchorScroll = () => {
-                anchorScrolling = true;
-                nav.classList.remove("nav-hidden");
-                clearTimeout(anchorIdleTimer);
-                anchorIdleTimer = setTimeout(() => {
-                    anchorScrolling = false;
-                }, 200);
-            };
-
-            document.querySelectorAll('.nav a[href^="#"]').forEach((link) => {
-                link.addEventListener("click", keepNavDuringAnchorScroll);
-            });
-
-            const updateNav = () => {
-                const currentY = window.scrollY;
-
-                if (anchorScrolling) {
-                    // Ignore direction while the anchor scroll settles; each scroll
-                    // event extends the window until the animation goes idle.
-                    keepNavDuringAnchorScroll();
-                    lastScrollY = currentY;
-                    ticking = false;
-                    return;
-                }
-
-                const delta = currentY - lastScrollY;
-
-                // Always show near the very top of the page.
-                if (currentY <= 8) {
-                    nav.classList.remove("nav-hidden");
-                } else if (delta < -4) {
-                    // Scrolling up -> hide.
-                    nav.classList.add("nav-hidden");
-                } else if (delta > 4) {
-                    // Scrolling down -> show.
-                    nav.classList.remove("nav-hidden");
-                }
-
-                lastScrollY = currentY;
-                ticking = false;
-            };
-
-            window.addEventListener(
-                "scroll",
-                () => {
-                    if (!ticking) {
-                        window.requestAnimationFrame(updateNav);
-                        ticking = true;
-                    }
-                },
-                { passive: true },
-            );
         </script>
     </body>
 </html>
