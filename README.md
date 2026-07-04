@@ -8,8 +8,11 @@
 
 <p align="center">
   A native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive,
-  OneDrive, local folders, and NAS-backed drives. Every location holds a full copy, so losing
-  access to one never means losing your files.
+  OneDrive, local folders, and NAS-backed drives.
+</p>
+
+<p align="center">
+  Every location holds a full copy, so losing access to one never means losing your files.
 </p>
 
 <p align="center">
