@@ -8,7 +8,7 @@
 
 <p align="center">
   A native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive,
-  OneDrive, local folders, and NAS-backed drives — every location holds a full copy, so losing
+  OneDrive, local folders, and NAS-backed drives. Every location holds a full copy, so losing
   access to one never means losing your files.
 </p>
 
@@ -26,24 +26,24 @@
 
 ## Why Aetherloom
 
-Files that live in only one place are one failure away from being out of reach: a locked account, an expired subscription, a dead disk, a provider outage — or just a service you decide to leave. If you already use more than one cloud, plus a Mac and maybe a NAS, you have everything you need to be resilient against all of that. Keeping the copies aligned by hand is the tedious, error-prone part.
+Files that live in only one place are one failure away from being out of reach: a locked account, an expired subscription, a dead disk, a provider outage, or just a service you decide to leave. If you already use more than one cloud, plus a Mac and maybe a NAS, you have everything you need to be resilient against all of that. Keeping the copies aligned by hand is the tedious, error-prone part.
 
-Aetherloom weaves your storage locations together so the same folders exist — complete and current — in every place you choose:
+Aetherloom weaves your storage locations together so the same folders exist, complete and current, in every place you choose:
 
 - **Lose access to one, keep everything.** Every location holds a full copy, so no single provider, account, or disk ever holds the only one.
-- **Own your copies.** A synced folder on your Mac or NAS is plain files on hardware you control — readable with or without Aetherloom, no export required.
+- **Own your copies.** A synced folder on your Mac or NAS is plain files on hardware you control. They stay readable with or without Aetherloom, no export required.
 - **Sync across clouds.** Keep a folder identical in iCloud Drive, Google Drive, and OneDrive at the same time.
 - **Bring the NAS in.** Folders on SMB/AFP/NFS mounts are first-class sync targets, not an afterthought.
 - **See before it happens.** Every sync is planned first, and you can preview exactly what will change.
 
 ## Safety first
 
-Redundancy only protects you if sync itself never destroys data — a sync engine that propagates a mistake to every copy makes things worse, not safer. Cloud sync tools have a long history of eating files; Aetherloom is built around the opposite bias: **when in doubt, pause and preserve.**
+Redundancy only protects you if sync itself never destroys data. A sync engine that propagates a mistake to every copy makes things worse, not safer. Cloud sync tools have a long history of eating files; Aetherloom is built around the opposite bias: **when in doubt, pause and preserve.**
 
-- Files are **never permanently deleted** during normal sync — deletes go to each provider's trash or recycle bin.
+- Files are **never permanently deleted** during normal sync. Deletes go to each provider's trash or recycle bin.
 - A provider outage, expired login, network failure, or incomplete scan is **never** treated as "the user deleted everything."
 - An unmounted or sleeping NAS volume, a disconnected external disk, or an iCloud placeholder file is treated as *unavailable*, never as *deleted*.
-- Files edited independently in two places are **never silently overwritten** — both versions are preserved as conflict copies.
+- Files edited independently in two places are **never silently overwritten**. Both versions are preserved as conflict copies.
 - Suspicious mass deletions or mass edits **pause sync** until you review them.
 - If a destination changed after a sync was planned, execution stops rather than acting on stale information.
 
@@ -60,8 +60,8 @@ The app speaks the same language:
 - New and edited files
 - New folders
 - Renames and moves
-- Deletes — via provider trash / recycle bin
-- Conflicts — by keeping both versions
+- Deletes (via provider trash / recycle bin)
+- Conflicts (both versions kept)
 
 Supported location types (planned): iCloud Drive (through its local folder on macOS), Google Drive, OneDrive, local folders, and NAS-backed folders mounted through macOS network filesystems.
 
@@ -87,7 +87,7 @@ Real cloud integrations are deliberately last: the provider-independent engine i
 
 ```text
 Aetherloom/
-  AetherloomApp/        SwiftUI macOS app (UI only — no sync rules in views)
+  AetherloomApp/        SwiftUI macOS app (UI only, no sync rules in views)
   AetherloomCore/       Swift package with all sync logic
     Sources/AetherloomCore/
       Models/           Core value types
@@ -134,13 +134,13 @@ Any future tests against real providers are opt-in only and never run against a 
 
 ## Not a backup replacement
 
-Aetherloom keeps redundant, synchronized copies of your files across locations, which is great resilience against a single provider or disk failing. It is not a versioned backup system, though — deletions and edits propagate. Keep an independent backup (e.g. Time Machine or an offline archive) of anything you can't lose.
+Aetherloom keeps redundant, synchronized copies of your files across locations, which is great resilience against a single provider or disk failing. It is not a versioned backup system, though: deletions and edits propagate. Keep an independent backup (e.g. Time Machine or an offline archive) of anything you can't lose.
 
 ## Contributing
 
 The project is young and the ground rules are simple:
 
-- Data safety beats speed, convenience, and feature breadth — always.
+- Data safety beats speed, convenience, and feature breadth, always.
 - Sync logic goes in `AetherloomCore` with tests, never in SwiftUI views.
 - New sync behavior needs planner/safety tests against the fake providers.
 - Run `swift test --package-path AetherloomCore` before submitting changes.
