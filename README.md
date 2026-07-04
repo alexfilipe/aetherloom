@@ -82,6 +82,7 @@ Aetherloom is in **early development**. The project website is live at [aetherlo
 | SQLite metadata store | 🔜 Planned |
 | iCloud Drive (local folder) support | 🔜 Planned |
 | OneDrive / Google Drive integrations | 🔜 After the core engine is proven |
+| Dropbox integration | 🔜 After the core engine is proven |
 | Background sync | 🔜 Later |
 
 Real cloud integrations are deliberately last: the provider-independent engine is developed and hardened against fake providers first, so the safety rules are proven before any real files are touched.

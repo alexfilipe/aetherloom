@@ -54,7 +54,8 @@ When starting new implementation work, prefer this order:
 11. iCloud Drive local-folder support
 12. OneDrive integration
 13. Google Drive integration
-14. Background sync
+14. Dropbox integration
+15. Background sync
 
 Do not start with OAuth, background sync, menu bar agents, App Store sandboxing, or cloud-provider integrations unless explicitly asked.
 

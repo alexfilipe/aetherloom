@@ -451,10 +451,10 @@
             .tag-row {
                 margin-top: 44px;
                 display: flex;
+                flex-wrap: wrap;
                 align-items: center;
                 justify-content: center;
-                flex-wrap: wrap;
-                gap: 10px;
+                gap: 14px 24px;
                 color: rgba(242, 244, 248, 0.5);
                 font-family: var(--font-sans);
                 font-size: 13px;
@@ -462,25 +462,23 @@
                 letter-spacing: 0;
             }
 
-            .nas-label {
+            .tag-group {
                 display: inline-flex;
-                align-items: baseline;
-                gap: 0.35em;
+                align-items: center;
+                flex-wrap: nowrap;
+                gap: 24px;
             }
 
-            .tag-row > span {
+            .tag-group > span {
                 display: inline-flex;
                 align-items: center;
                 gap: 7px;
-                padding: 6px 13px 6px 11px;
-                border: 1px solid rgba(255, 255, 255, 0.09);
-                border-radius: 999px;
-                background: rgba(255, 255, 255, 0.03);
+                white-space: nowrap;
             }
 
             .tag-icon {
-                width: 14px;
-                height: 14px;
+                width: 15px;
+                height: 15px;
                 flex-shrink: 0;
                 fill: currentColor;
                 opacity: 0.85;
@@ -1099,6 +1097,15 @@
                 .tour-caption {
                     min-height: 4.8em;
                 }
+
+                .tag-row {
+                    margin-top: 36px;
+                    gap: 12px 18px;
+                }
+
+                .tag-group {
+                    gap: 18px;
+                }
             }
 
             @media (prefers-reduced-motion: reduce) {
@@ -1191,42 +1198,49 @@
                             </a>
                         </div>
                         <div class="tag-row" aria-label="Supported and planned sync locations">
-                            <span
-                                ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path
-                                        d="M17.05 12.54c-.03-3.03 2.47-4.48 2.58-4.55-1.41-2.06-3.6-2.34-4.38-2.37-1.86-.19-3.64 1.1-4.58 1.1-.95 0-2.4-1.08-3.95-1.05-2.03.03-3.9 1.18-4.95 3-2.11 3.66-.54 9.08 1.51 12.05 1 1.45 2.19 3.08 3.76 3.02 1.51-.06 2.08-.98 3.9-.98 1.82 0 2.34.98 3.94.95 1.63-.03 2.66-1.48 3.66-2.94 1.15-1.68 1.62-3.31 1.65-3.4-.04-.02-3.16-1.22-3.19-4.83zM14.16 3.78c.84-1.02 1.4-2.42 1.25-3.82-1.2.05-2.67.8-3.53 1.81-.77.9-1.45 2.34-1.27 3.71 1.34.11 2.71-.68 3.55-1.7z"
-                                    /></svg
-                                >iCloud Drive</span
+                            <span class="tag-group"
+                                ><span
+                                    ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path
+                                            d="M17.05 12.54c-.03-3.03 2.47-4.48 2.58-4.55-1.41-2.06-3.6-2.34-4.38-2.37-1.86-.19-3.64 1.1-4.58 1.1-.95 0-2.4-1.08-3.95-1.05-2.03.03-3.9 1.18-4.95 3-2.11 3.66-.54 9.08 1.51 12.05 1 1.45 2.19 3.08 3.76 3.02 1.51-.06 2.08-.98 3.9-.98 1.82 0 2.34.98 3.94.95 1.63-.03 2.66-1.48 3.66-2.94 1.15-1.68 1.62-3.31 1.65-3.4-.04-.02-3.16-1.22-3.19-4.83zM14.16 3.78c.84-1.02 1.4-2.42 1.25-3.82-1.2.05-2.67.8-3.53 1.81-.77.9-1.45 2.34-1.27 3.71 1.34.11 2.71-.68 3.55-1.7z"
+                                        /></svg
+                                    >iCloud Drive</span
+                                ><span
+                                    ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path
+                                            d="M7.71 3.5 1.15 15l3.43 6 6.55-11.5zM9.73 15 6.3 21h12.9l3.43-6zm12.43-1L15.62 2.5H8.5L15.04 14z"
+                                        /></svg
+                                    >Google Drive</span
+                                ></span
                             >
-                            <span
-                                ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path
-                                        d="M7.71 3.5 1.15 15l3.43 6 6.55-11.5zM9.73 15 6.3 21h12.9l3.43-6zm12.43-1L15.62 2.5H8.5L15.04 14z"
-                                    /></svg
-                                >Google Drive</span
+                            <span class="tag-group"
+                                ><span
+                                    ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path
+                                            d="M13.9 9.02c-.62-2.13-2.6-3.69-4.94-3.69-2.53 0-4.64 1.83-5.06 4.24C1.66 9.9 0 11.72 0 13.93 0 16.35 1.96 18.3 4.38 18.3h13.8c1.99 0 3.6-1.61 3.6-3.6 0-1.9-1.47-3.45-3.34-3.59-.34-1.94-2.03-3.42-4.07-3.42-.16 0-.31.01-.47.03z"
+                                        /></svg
+                                    >OneDrive</span
+                                ><span
+                                    ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path
+                                            d="M6 1.807 0 5.629l6 3.822 6.001-3.822L6 1.807zM18 1.807l-6 3.822 6 3.822 6-3.822-6-3.822zM0 13.274l6 3.822 6.001-3.822L6 9.452l-6 3.822zM18 9.452l-6 3.822 6 3.822 6-3.822-6-3.822zM6.001 18.371l6.001 3.822 6-3.822-6-3.822-6.001 3.822z"
+                                        /></svg
+                                    >Dropbox</span
+                                ></span
                             >
-                            <span
-                                ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path
-                                        d="M13.9 9.02c-.62-2.13-2.6-3.69-4.94-3.69-2.53 0-4.64 1.83-5.06 4.24C1.66 9.9 0 11.72 0 13.93 0 16.35 1.96 18.3 4.38 18.3h13.8c1.99 0 3.6-1.61 3.6-3.6 0-1.9-1.47-3.45-3.34-3.59-.34-1.94-2.03-3.42-4.07-3.42-.16 0-.31.01-.47.03z"
-                                    /></svg
-                                >OneDrive</span
-                            >
-                            <span
-                                ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path
-                                        d="M2 6.2C2 5.26 2.76 4.5 3.7 4.5h5.06c.53 0 1.03.25 1.36.67l1.02 1.33c.09.11.22.18.36.18h7.4c.94 0 1.7.76 1.7 1.7v9.25c0 .94-.76 1.7-1.7 1.7H3.7c-.94 0-1.7-.76-1.7-1.7z"
-                                    /></svg
-                                >Local folders</span
-                            >
-                            <span
-                                ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path
-                                        d="M4.5 3.5h15c1.1 0 2 .9 2 2v4c0 1.1-.9 2-2 2h-15c-1.1 0-2-.9-2-2v-4c0-1.1.9-2 2-2zm2 3.25a1.25 1.25 0 100 2.5 1.25 1.25 0 000-2.5zm-2 6h15c1.1 0 2 .9 2 2v3c0 1.1-.9 2-2 2h-15c-1.1 0-2-.9-2-2v-3c0-1.1.9-2 2-2zm2 2.5a1.25 1.25 0 100 2.5 1.25 1.25 0 000-2.5z"
-                                    /></svg
-                                ><span class="nas-label"
-                                    >NAS <span aria-hidden="true">·</span>
-                                    SMB/AFP/NFS</span
+                            <span class="tag-group"
+                                ><span
+                                    ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path
+                                            d="M2 6.2C2 5.26 2.76 4.5 3.7 4.5h5.06c.53 0 1.03.25 1.36.67l1.02 1.33c.09.11.22.18.36.18h7.4c.94 0 1.7.76 1.7 1.7v9.25c0 .94-.76 1.7-1.7 1.7H3.7c-.94 0-1.7-.76-1.7-1.7z"
+                                        /></svg
+                                    >Local folders</span
+                                ><span
+                                    ><svg class="tag-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path
+                                            d="M4.5 3.5h15c1.1 0 2 .9 2 2v4c0 1.1-.9 2-2 2h-15c-1.1 0-2-.9-2-2v-4c0-1.1.9-2 2-2zm2 3.25a1.25 1.25 0 100 2.5 1.25 1.25 0 000-2.5zm-2 6h15c1.1 0 2 .9 2 2v3c0 1.1-.9 2-2 2h-15c-1.1 0-2-.9-2-2v-3c0-1.1.9-2 2-2zm2 2.5a1.25 1.25 0 100 2.5 1.25 1.25 0 000-2.5z"
+                                        /></svg
+                                    >NAS (SMB/AFP/NFS)</span
                                 ></span
                             >
                         </div>
@@ -1552,6 +1566,7 @@
                                 <li>iCloud Drive folder support</li>
                                 <li>Google Drive support</li>
                                 <li>OneDrive support</li>
+                                <li>Dropbox support</li>
                             </ul>
                             <p class="roadmap-key">
                                 <span class="key-now">In progress</span>
