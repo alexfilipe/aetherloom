@@ -141,6 +141,10 @@ The project is young and the ground rules are simple:
 - New sync behavior needs planner/safety tests against the fake providers.
 - Run `swift test --package-path AetherloomCore` before submitting changes.
 
+## Contact
+
+For questions, feedback, or anything that should not be a GitHub issue, email [hello@aetherloom.app](mailto:hello@aetherloom.app).
+
 ## License
 
 A license has not been chosen yet.

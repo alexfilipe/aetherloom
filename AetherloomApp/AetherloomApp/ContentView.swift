@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @Environment(DemoStore.self) private var store
@@ -13,6 +14,7 @@ struct ContentView: View {
                 .frame(minWidth: 760, minHeight: 560)
         }
         .toolbar { toolbarContent }
+        .background(WindowTitleVisibilityConfigurator())
         .sheet(isPresented: $store.showingPreviewChanges) {
             PreviewChangesSheet()
         }
@@ -153,4 +155,25 @@ struct ContentView: View {
     ContentView()
         .environment(DemoStore())
         .tint(Theme.accent)
+}
+
+private struct WindowTitleVisibilityConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        WindowTitleHidingView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? WindowTitleHidingView)?.hideWindowTitle()
+    }
+}
+
+private final class WindowTitleHidingView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        hideWindowTitle()
+    }
+
+    func hideWindowTitle() {
+        window?.titleVisibility = .hidden
+    }
 }
