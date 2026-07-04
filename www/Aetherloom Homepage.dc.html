@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <title>Aetherloom — Keep your clouds interwoven</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #0B0D12; }
+    body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+    ::selection { background: rgba(110,92,246,0.35); }
+    @keyframes heroFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+  </style>
+</helmet>
+
+<div style="min-height:100vh; background:#0B0D12; color:#F2F4F8; font-family:-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Helvetica, sans-serif; font-size:16px; line-height:1.6; overflow-x:hidden">
+
+  <!-- ======================= NAV ======================= -->
+  <header style="position:sticky; top:0; z-index:50; backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); background:rgba(11,13,18,0.72); border-bottom:1px solid rgba(255,255,255,0.06)">
+    <div style="max-width:1080px; margin:0 auto; padding:0 32px; height:60px; display:flex; align-items:center; justify-content:space-between">
+      <a href="#top" style="display:flex; align-items:center; gap:10px; text-decoration:none; color:#F2F4F8">
+        <img src="assets/mark-white.png" alt="Aetherloom mark" style="width:22px; height:22px; display:block" />
+        <span style="font-size:16px; font-weight:600; letter-spacing:-0.01em">Aetherloom</span>
+      </a>
+      <nav style="display:flex; align-items:center; gap:28px">
+        <a href="#what" style="color:rgba(242,244,248,0.65); text-decoration:none; font-size:14px" style-hover="color:#F2F4F8">What it does</a>
+        <a href="#safety" style="color:rgba(242,244,248,0.65); text-decoration:none; font-size:14px" style-hover="color:#F2F4F8">Safety</a>
+        <a href="#status" style="color:rgba(242,244,248,0.65); text-decoration:none; font-size:14px" style-hover="color:#F2F4F8">Status</a>
+        <a href="https://github.com/alexfilipe/aetherloom" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:8px; padding:7px 14px; border:1px solid rgba(255,255,255,0.14); border-radius:8px; color:#F2F4F8; text-decoration:none; font-size:13.5px; font-weight:500; background:rgba(255,255,255,0.04)" style-hover="background:rgba(255,255,255,0.09); border-color:rgba(255,255,255,0.22)">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"></path></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ======================= HERO ======================= -->
+  <section id="top" style="position:relative; text-align:center; padding:96px 32px 0">
+    <div style="position:absolute; inset:0; pointer-events:none; background:radial-gradient(720px 420px at 50% -10%, rgba(59,140,240,0.16), transparent 65%), radial-gradient(560px 380px at 62% 8%, rgba(217,160,60,0.07), transparent 60%)"></div>
+    <div style="position:relative; max-width:760px; margin:0 auto; display:flex; flex-direction:column; align-items:center">
+      <img src="assets/mark-gradient.png" alt="Aetherloom icon" style="width:112px; height:112px; display:block; animation:heroFloat 7s ease-in-out infinite; filter:drop-shadow(0 24px 48px rgba(59,140,240,0.28))" />
+      <div style="margin-top:36px; display:inline-flex; align-items:center; gap:8px; padding:5px 12px; border-radius:99px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.04); font-size:12.5px; font-weight:500; color:rgba(242,244,248,0.7)">
+        <span style="width:7px; height:7px; border-radius:50%; background:#E0A93E; display:inline-block"></span>
+        Open source · Early development
+      </div>
+      <h1 style="margin:20px 0 0; font-family:-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif; font-size:64px; font-weight:700; letter-spacing:-0.03em; line-height:1.05; text-wrap:balance">Keep your clouds interwoven.</h1>
+      <p style="margin:22px auto 0; max-width:600px; font-size:19px; line-height:1.55; color:rgba(242,244,248,0.62); text-wrap:pretty">Aetherloom is a native macOS app that keeps selected folders synchronized across iCloud Drive, Google Drive, OneDrive, local folders, and your NAS.</p>
+      <div style="margin-top:34px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; justify-content:center">
+        <a href="https://github.com/alexfilipe/aetherloom" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:9px; padding:12px 22px; border-radius:10px; background:{{ accent }}; color:{{ accentFg }}; text-decoration:none; font-size:15px; font-weight:600; box-shadow:{{ ctaShadow }}" style-hover="filter:brightness(1.1)">
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"></path></svg>
+          View on GitHub
+        </a>
+        <a href="https://github.com/alexfilipe/aetherloom#readme" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; padding:12px 22px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.04); color:#F2F4F8; text-decoration:none; font-size:15px; font-weight:500" style-hover="background:rgba(255,255,255,0.09)">Read the docs</a>
+      </div>
+      <div style="margin-top:44px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:center; font-size:13px; color:rgba(242,244,248,0.5)">
+        <span style="padding:6px 13px; border-radius:99px; border:1px solid rgba(255,255,255,0.09); background:rgba(255,255,255,0.03)">iCloud Drive</span>
+        <span style="padding:6px 13px; border-radius:99px; border:1px solid rgba(255,255,255,0.09); background:rgba(255,255,255,0.03)">Google Drive</span>
+        <span style="padding:6px 13px; border-radius:99px; border:1px solid rgba(255,255,255,0.09); background:rgba(255,255,255,0.03)">OneDrive</span>
+        <span style="padding:6px 13px; border-radius:99px; border:1px solid rgba(255,255,255,0.09); background:rgba(255,255,255,0.03)">Local folders</span>
+        <span style="padding:6px 13px; border-radius:99px; border:1px solid rgba(255,255,255,0.09); background:rgba(255,255,255,0.03)">NAS · SMB / AFP / NFS</span>
+      </div>
+    </div>
+
+    <!-- Hero screenshot -->
+    <div style="position:relative; max-width:1080px; margin:72px auto 0; padding-bottom:8px">
+      <div style="position:absolute; left:10%; right:10%; top:6%; bottom:20%; background:radial-gradient(closest-side, rgba(110,92,246,0.18), transparent); filter:blur(48px); pointer-events:none"></div>
+      <img src="assets/ui-overview.png" alt="Aetherloom app — Overview screen" style="position:relative; width:100%; display:block; border-radius:14px" />
+    </div>
+  </section>
+
+  <!-- ======================= WHAT IT DOES ======================= -->
+  <section id="what" style="max-width:1080px; margin:0 auto; padding:104px 32px 0">
+    <p style="margin:0; font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:{{ accent }}">What it does</p>
+    <h2 style="margin:12px 0 0; font-size:38px; font-weight:700; letter-spacing:-0.02em; line-height:1.15; max-width:640px; text-wrap:balance">Choose folders. Aetherloom keeps them aligned, everywhere.</h2>
+    <p style="margin:18px 0 0; max-width:620px; font-size:17px; color:rgba(242,244,248,0.62); text-wrap:pretty">Pick folders — or eventually whole drives — and keep them synchronized across cloud services, local filesystem locations, and NAS-mounted folders. Built for people whose files live in more than one place.</p>
+    <div style="margin-top:44px; display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px">
+      <div style="padding:28px; border-radius:16px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03)">
+        <h3 style="margin:0; font-size:17px; font-weight:600; letter-spacing:-0.01em">Sync locations</h3>
+        <ul style="margin:14px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px; font-size:15px; color:rgba(242,244,248,0.68)">
+          <li style="display:flex; gap:10px"><span style="color:#3B8CF0">●</span>Cloud folders and drives — iCloud Drive, Google Drive, and OneDrive first</li>
+          <li style="display:flex; gap:10px"><span style="color:#3B8CF0">●</span>Local folders on the Mac</li>
+          <li style="display:flex; gap:10px"><span style="color:#3B8CF0">●</span>NAS-backed folders mounted through SMB, AFP, NFS, or other macOS-supported network filesystems</li>
+        </ul>
+      </div>
+      <div style="padding:28px; border-radius:16px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03)">
+        <h3 style="margin:0; font-size:17px; font-weight:600; letter-spacing:-0.01em">What gets synced</h3>
+        <ul style="margin:14px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px; font-size:15px; color:rgba(242,244,248,0.68)">
+          <li style="display:flex; gap:10px"><span style="color:#E0A93E">●</span>New and edited files, and new folders</li>
+          <li style="display:flex; gap:10px"><span style="color:#E0A93E">●</span>Renames and moves</li>
+          <li style="display:flex; gap:10px"><span style="color:#E0A93E">●</span>Deletes — using each provider's trash or recycle bin</li>
+          <li style="display:flex; gap:10px"><span style="color:#E0A93E">●</span>Conflicts — by preserving both versions</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= SAFETY ======================= -->
+  <section id="safety" style="max-width:1080px; margin:0 auto; padding:104px 32px 0">
+    <p style="margin:0; font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:{{ accent }}">Safety first</p>
+    <h2 style="margin:12px 0 0; font-size:38px; font-weight:700; letter-spacing:-0.02em; line-height:1.15; max-width:640px; text-wrap:balance">Nothing happens without you.</h2>
+    <p style="margin:18px 0 0; max-width:620px; font-size:17px; color:rgba(242,244,248,0.62); text-wrap:pretty">Cloud sync can be risky, so Aetherloom is designed to be cautious. It shows you what will happen before risky changes are applied — and pauses when a change set looks suspicious.</p>
+    <div style="margin-top:44px; display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px">
+      <sc-for list="{{ safetyPoints }}" as="pt" hint-placeholder-count="6">
+        <div style="padding:24px; border-radius:16px; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); display:flex; flex-direction:column; gap:8px">
+          <span style="width:30px; height:30px; border-radius:8px; background:rgba(110,92,246,0.14); color:{{ accent }}; display:flex; align-items:center; justify-content:center; font-size:15px">{{ pt.glyph }}</span>
+          <h3 style="margin:6px 0 0; font-size:16px; font-weight:600; letter-spacing:-0.01em">{{ pt.title }}</h3>
+          <p style="margin:0; font-size:14.5px; color:rgba(242,244,248,0.6); text-wrap:pretty">{{ pt.body }}</p>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <!-- ======================= SCREENSHOT TOUR ======================= -->
+  <section style="max-width:1080px; margin:0 auto; padding:104px 32px 0">
+    <p style="margin:0; font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:{{ accent }}">A look inside</p>
+    <h2 style="margin:12px 0 0; font-size:38px; font-weight:700; letter-spacing:-0.02em; line-height:1.15; text-wrap:balance">Native on macOS, through and through.</h2>
+    <div style="margin-top:32px; display:flex; gap:8px; flex-wrap:wrap">
+      <sc-for list="{{ screens }}" as="scr" hint-placeholder-count="5">
+        <button onClick="{{ scr.select }}" style="padding:8px 16px; border-radius:9px; font-size:14px; font-weight:500; font-family:inherit; cursor:pointer; transition:all 0.15s ease; background:{{ scr.bg }}; color:{{ scr.fg }}; border:1px solid {{ scr.bd }}">{{ scr.label }}</button>
+      </sc-for>
+    </div>
+    <div style="margin-top:24px; border-radius:16px; overflow:hidden; border:1px solid rgba(255,255,255,0.08); background:#101319; aspect-ratio:2016/1848">
+      <sc-if value="{{ tourReady }}" hint-placeholder-val="{{ false }}">
+        <img src="{{ activeScreenSrc }}" alt="Aetherloom app screenshot" style="width:100%; display:block" />
+      </sc-if>
+    </div>
+    <p style="margin:16px 0 0; text-align:center; font-size:13.5px; color:rgba(242,244,248,0.45)">{{ activeScreenCaption }}</p>
+  </section>
+
+  <!-- ======================= LOCAL & NAS ======================= -->
+  <section style="max-width:1080px; margin:0 auto; padding:104px 32px 0">
+    <div style="padding:44px; border-radius:20px; border:1px solid rgba(255,255,255,0.08); background:linear-gradient(160deg, rgba(59,140,240,0.07), rgba(255,255,255,0.02) 55%)">
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:40px">
+        <div>
+          <p style="margin:0; font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:{{ accent }}">Local &amp; NAS</p>
+          <h2 style="margin:12px 0 0; font-size:30px; font-weight:700; letter-spacing:-0.02em; line-height:1.2; text-wrap:balance">First-class sync locations, not an afterthought.</h2>
+          <p style="margin:16px 0 0; font-size:15.5px; color:rgba(242,244,248,0.62); text-wrap:pretty">For local folders, Aetherloom uses native macOS folder selection, security-scoped access where needed, filesystem metadata, and safe local writes.</p>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:14px; justify-content:center">
+          <p style="margin:0; font-size:15.5px; color:rgba(242,244,248,0.62); text-wrap:pretty">A mounted network share can disappear because the Mac slept, the network changed, credentials expired, or the NAS is temporarily unavailable. Aetherloom treats those states as <strong style="color:#F2F4F8; font-weight:600">provider unavailability — never as file deletion</strong>.</p>
+          <p style="margin:0; font-size:15.5px; color:rgba(242,244,248,0.62); text-wrap:pretty">Deletes still follow the same philosophy: prefer trash, preserve conflicts, verify destination state before overwriting, and pause when the volume state is uncertain.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= STATUS / ROADMAP ======================= -->
+  <section id="status" style="max-width:1080px; margin:0 auto; padding:104px 32px 0">
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:48px">
+      <div>
+        <p style="margin:0; font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:{{ accent }}">Current status</p>
+        <h2 style="margin:12px 0 0; font-size:38px; font-weight:700; letter-spacing:-0.02em; line-height:1.15; text-wrap:balance">Early development, built in the open.</h2>
+        <p style="margin:18px 0 0; font-size:17px; color:rgba(242,244,248,0.62); text-wrap:pretty">Aetherloom is young. The priorities below come first — follow along, open issues, or contribute on GitHub.</p>
+        <a href="https://github.com/alexfilipe/aetherloom" target="_blank" rel="noopener" style="margin-top:24px; display:inline-flex; align-items:center; gap:8px; color:{{ accent }}; text-decoration:none; font-size:15px; font-weight:600" style-hover="text-decoration:underline">Follow the project →</a>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px">
+        <sc-for list="{{ roadmap }}" as="item" hint-placeholder-count="12">
+          <div style="display:flex; align-items:center; gap:10px; padding:9px 0; font-size:14.5px; color:rgba(242,244,248,0.72); border-bottom:1px solid rgba(255,255,255,0.05)">
+            <span style="width:18px; height:18px; border-radius:50%; border:1.5px solid rgba(255,255,255,0.22); flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:10px; color:#E0A93E">◦</span>
+            {{ item }}
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= FINE PRINT ======================= -->
+  <section style="max-width:1080px; margin:0 auto; padding:96px 32px 0">
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px">
+      <div style="padding:26px; border-radius:16px; border:1px solid rgba(255,255,255,0.07); background:rgba(255,255,255,0.02)">
+        <h3 style="margin:0; font-size:15.5px; font-weight:600">A note on iCloud Drive</h3>
+        <p style="margin:10px 0 0; font-size:14px; color:rgba(242,244,248,0.55); text-wrap:pretty">iCloud Drive doesn't offer a general-purpose cloud file API like Google Drive or OneDrive. Aetherloom's iCloud support works through the local iCloud Drive folder on macOS.</p>
+      </div>
+      <div style="padding:26px; border-radius:16px; border:1px solid rgba(255,255,255,0.07); background:rgba(255,255,255,0.02)">
+        <h3 style="margin:0; font-size:15.5px; font-weight:600">Not a backup replacement</h3>
+        <p style="margin:10px 0 0; font-size:14px; color:rgba(242,244,248,0.55); text-wrap:pretty">Aetherloom is a synchronization app, not a full backup system. You should still keep an independent backup of important files.</p>
+      </div>
+      <div style="padding:26px; border-radius:16px; border:1px solid rgba(255,255,255,0.07); background:rgba(255,255,255,0.02)">
+        <h3 style="margin:0; font-size:15.5px; font-weight:600">License</h3>
+        <p style="margin:10px 0 0; font-size:14px; color:rgba(242,244,248,0.55); text-wrap:pretty">A license hasn't been chosen yet. The source is available to read on <a href="https://github.com/alexfilipe/aetherloom" target="_blank" rel="noopener" style="color:{{ accent }}; text-decoration:none">GitHub</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= FOOTER ======================= -->
+  <footer style="margin-top:104px; border-top:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.015)">
+    <div style="max-width:1080px; margin:0 auto; padding:56px 32px; display:flex; flex-direction:column; gap:28px">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:24px; flex-wrap:wrap">
+        <div style="display:flex; align-items:center; gap:12px">
+          <img src="assets/app-icon.png" alt="Aetherloom app icon" style="width:40px; height:40px; border-radius:9px; display:block" />
+          <div>
+            <div style="font-size:15px; font-weight:600; letter-spacing:-0.01em">Aetherloom</div>
+            <div style="font-size:13px; color:rgba(242,244,248,0.5)">Every drive, one weave.</div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:24px; font-size:14px">
+          <a href="https://github.com/alexfilipe/aetherloom" target="_blank" rel="noopener" style="color:rgba(242,244,248,0.65); text-decoration:none" style-hover="color:#F2F4F8">GitHub</a>
+          <a href="https://github.com/alexfilipe/aetherloom/issues" target="_blank" rel="noopener" style="color:rgba(242,244,248,0.65); text-decoration:none" style-hover="color:#F2F4F8">Issues</a>
+          <a href="https://github.com/alexfilipe/aetherloom#readme" target="_blank" rel="noopener" style="color:rgba(242,244,248,0.65); text-decoration:none" style-hover="color:#F2F4F8">Readme</a>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; padding-top:24px; border-top:1px solid rgba(255,255,255,0.05); font-size:13.5px; color:rgba(242,244,248,0.45)">
+        <span>Created by <a href="https://alexfili.pe" target="_blank" rel="noopener" style="color:rgba(242,244,248,0.75); text-decoration:none; font-weight:500" style-hover="color:#F2F4F8; text-decoration:underline">Álex Filipe Santos</a> in San Francisco</span>
+        <span>Open source · License TBD</span>
+      </div>
+    </div>
+  </footer>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;accentColor&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#D99A3C&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;#6E5CF6&quot;,&quot;#3B8CF0&quot;,&quot;#D99A3C&quot;,&quot;#2AA37A&quot;],&quot;section&quot;:&quot;Theme&quot;}}">
+class Component extends DCLogic {
+  state = { activeScreen: 0 };
+
+  renderVals() {
+    const accent = this.props.accentColor ?? '#6E5CF6';
+    // Readable foreground on the accent, from perceived luminance
+    const hx = accent.replace('#', '');
+    const r = parseInt(hx.slice(0, 2), 16), g = parseInt(hx.slice(2, 4), 16), b = parseInt(hx.slice(4, 6), 16);
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const accentFg = lum > 0.6 ? '#1A1205' : '#FFFFFF';
+    const ctaShadow = `0 8px 24px rgba(${r},${g},${b},0.35)`;
+
+    const screenDefs = [
+      { label: 'Overview', src: 'assets/ui-overview.png', caption: 'Overview — every location, every pending change, at a glance.' },
+      { label: 'Sync Sets', src: 'assets/ui-sync-sets.png', caption: 'Sync Sets — folders and drives you chose to keep in sync, grouped by mirror.' },
+      { label: 'Conflicts', src: 'assets/ui-conflicts.png', caption: 'Conflicts — when a file changes in more than one place, both versions are kept until you decide.' },
+      { label: 'Activity', src: 'assets/ui-activity.png', caption: 'Activity — everything Aetherloom did, and every time it paused to keep your files safe.' },
+      { label: 'Settings', src: 'assets/ui-settings.png', caption: 'Settings — Aetherloom always chooses the safest option by default.' },
+    ];
+
+    const active = this.state.activeScreen;
+    const screens = screenDefs.map((s, i) => ({
+      label: s.label,
+      select: () => this.setState({ activeScreen: i }),
+      bg: i === active ? accent : 'rgba(255,255,255,0.04)',
+      fg: i === active ? accentFg : 'rgba(242,244,248,0.65)',
+      bd: i === active ? 'transparent' : 'rgba(255,255,255,0.1)',
+    }));
+
+    const safetyPoints = [
+      { glyph: '⌫', title: 'Never permanently deletes', body: 'During normal sync, deleted files move to each provider\u2019s trash or recycle bin where possible \u2014 never gone for good.' },
+      { glyph: '☁', title: 'Outages aren\u2019t deletions', body: 'A provider outage, an unmounted NAS, a sleeping volume, or a disconnected disk is treated as unavailability \u2014 not as deleted files.' },
+      { glyph: '⎘', title: 'Conflicts keep both versions', body: 'When a file was edited independently in two places, nothing is overwritten. Both versions are preserved until you decide.' },
+      { glyph: '⏸', title: 'Pauses when things look off', body: 'A suspicious change set \u2014 like a mass deletion \u2014 pauses sync until you\u2019ve reviewed exactly what would happen.' },
+      { glyph: '☰', title: 'Preview before it happens', body: 'Every risky change is shown as a sync plan first. You see what will happen before anything is applied.' },
+      { glyph: '✓', title: 'Verified writes', body: 'Destination state is verified before overwriting, so independently edited files are never clobbered.' },
+    ];
+
+    const roadmap = [
+      'Native macOS app',
+      'Provider-independent sync engine',
+      'Folder selection',
+      'Sync plan preview',
+      'Activity log',
+      'Conflict detection',
+      'Safe delete behavior',
+      'Local folder support',
+      'NAS-backed folder support',
+      'iCloud Drive folder support',
+      'Google Drive support',
+      'OneDrive support',
+    ];
+
+    return {
+      accent,
+      accentFg,
+      ctaShadow,
+      screens,
+      tourReady: true,
+      activeScreenSrc: screenDefs[active].src,
+      activeScreenCaption: screenDefs[active].caption,
+      safetyPoints,
+      roadmap,
+    };
+  }
+}
+</script>
+</body>
+</html>
