@@ -692,10 +692,6 @@
                 grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
             }
 
-            .faq-grid {
-                margin-top: 36px;
-            }
-
             .info-card,
             .safety-card,
             .fine-card {
@@ -1271,7 +1267,6 @@
                         <a class="nav-link" href="#safety">Safety</a>
                         <a class="nav-link" href="#inside">A look inside</a>
                         <a class="nav-link" href="#status">Status</a>
-                        <a class="nav-link" href="#faq">FAQ</a>
                         <a
                             class="github-button"
                             href="https://github.com/alexfilipe/aetherloom"
@@ -1719,73 +1714,6 @@
                                 <span>Planned</span>
                             </p>
                         </div>
-                    </div>
-                </section>
-
-                <section id="faq" class="section">
-                    <p class="eyebrow">FAQ</p>
-                    <h2 class="section-title">Questions, answered plainly.</h2>
-                    <div class="fine-grid faq-grid">
-                        <article class="fine-card">
-                            <h3>What is Aetherloom?</h3>
-                            <p>
-                                Aetherloom is a native macOS app that keeps the same folders
-                                synchronized across iCloud Drive, Google Drive, OneDrive, local
-                                folders on your Mac, and NAS-backed folders. Every location holds a
-                                full copy of your files, so losing access to one location never
-                                means losing the files themselves.
-                            </p>
-                        </article>
-                        <article class="fine-card">
-                            <h3>Can it sync folders between two clouds, like Google Drive and OneDrive?</h3>
-                            <p>
-                                That is the core idea. You choose folders, and Aetherloom keeps them
-                                aligned across every location in the sync set &mdash; cloud, Mac, or
-                                NAS. Cloud provider integrations are still in development; the
-                                provider-independent sync engine comes first.
-                            </p>
-                        </article>
-                        <article class="fine-card">
-                            <h3>Can it sync a NAS with cloud storage?</h3>
-                            <p>
-                                Yes. NAS-backed folders mounted over SMB, AFP, or NFS are
-                                first-class sync locations. If a share disappears &mdash; the Mac
-                                slept, the network changed, credentials expired &mdash; Aetherloom
-                                treats it as unavailable, never as deleted files.
-                            </p>
-                        </article>
-                        <article class="fine-card">
-                            <h3>Will Aetherloom ever delete my files?</h3>
-                            <p>
-                                Not permanently, during normal sync. Deletes use each provider's
-                                trash or recycle bin where possible, conflicting edits are preserved
-                                as both versions, and a suspicious mass deletion pauses sync until
-                                you review it.
-                            </p>
-                        </article>
-                        <article class="fine-card">
-                            <h3>Is Aetherloom a backup tool?</h3>
-                            <p>
-                                No. Synchronized copies keep your files available if you lose access
-                                to a location, but sync is not versioned backup. Keep an independent
-                                backup of files you can't afford to lose.
-                            </p>
-                        </article>
-                        <article class="fine-card">
-                            <h3>Is Aetherloom free and open source?</h3>
-                            <p>
-                                Aetherloom is developed in the open and the source is available on
-                                GitHub. A license hasn't been chosen yet.
-                            </p>
-                        </article>
-                        <article class="fine-card">
-                            <h3>When can I use it?</h3>
-                            <p>
-                                Aetherloom is in early development and not yet available to
-                                download. Follow the project on GitHub to watch progress, open
-                                issues, or contribute.
-                            </p>
-                        </article>
                     </div>
                 </section>
 
