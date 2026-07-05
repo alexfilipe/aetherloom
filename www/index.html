@@ -5,10 +5,10 @@
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="theme-color" content="#0b0d12" />
         <meta name="color-scheme" content="dark" />
-        <title>Aetherloom — Sync folders across clouds, Mac, and NAS</title>
+        <title>Aetherloom — Sync folders across iCloud, Google Drive, OneDrive, Mac &amp; NAS</title>
         <meta
             name="description"
-            content="A native macOS app that syncs the same folders across iCloud Drive, Google Drive, OneDrive, your Mac, and your NAS — lose access to one, and your files are still everywhere else."
+            content="Aetherloom is a native macOS app that keeps the same folders in sync across iCloud Drive, Google Drive, OneDrive, your Mac, and your NAS. Open source, safety-first."
         />
         <meta name="application-name" content="Aetherloom" />
         <meta name="apple-mobile-web-app-title" content="Aetherloom" />
@@ -28,7 +28,28 @@
             type="font/woff2"
             crossorigin
         />
+        <link
+            rel="preload"
+            href="./assets/fonts/Geist-SemiBold.woff2"
+            as="font"
+            type="font/woff2"
+            crossorigin
+        />
+        <link
+            rel="preload"
+            href="./assets/fonts/Geist-Bold.woff2"
+            as="font"
+            type="font/woff2"
+            crossorigin
+        />
+        <link
+            rel="preload"
+            as="image"
+            href="/assets/ui-overview-scanning.webp"
+            fetchpriority="high"
+        />
         <meta property="og:type" content="website" />
+        <meta property="og:locale" content="en_US" />
         <meta property="og:site_name" content="Aetherloom" />
         <meta property="og:title" content="Aetherloom: Keep your clouds interwoven" />
         <meta
@@ -62,28 +83,114 @@
         <script type="application/ld+json">
             {
                 "@context": "https://schema.org",
-                "@type": "WebSite",
-                "name": "Aetherloom",
-                "alternateName": ["Aetherloom app"],
-                "url": "https://aetherloom.app/"
+                "@graph": [
+                    {
+                        "@type": "WebSite",
+                        "@id": "https://aetherloom.app/#website",
+                        "url": "https://aetherloom.app/",
+                        "name": "Aetherloom",
+                        "alternateName": ["Aetherloom app", "Aetherloom for Mac"],
+                        "publisher": { "@id": "https://aetherloom.app/#author" },
+                        "inLanguage": "en"
+                    },
+                    {
+                        "@type": "SoftwareApplication",
+                        "@id": "https://aetherloom.app/#app",
+                        "name": "Aetherloom",
+                        "url": "https://aetherloom.app/",
+                        "image": "https://aetherloom.app/assets/social-preview.png",
+                        "screenshot": [
+                            "https://aetherloom.app/assets/ui-overview.png",
+                            "https://aetherloom.app/assets/ui-sync-sets.png",
+                            "https://aetherloom.app/assets/ui-activity.png",
+                            "https://aetherloom.app/assets/ui-conflicts.png"
+                        ],
+                        "description": "A native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive, OneDrive, local folders, and NAS-backed folders. Every location holds a full copy, so losing access to one never means losing your files.",
+                        "operatingSystem": "macOS",
+                        "applicationCategory": "UtilitiesApplication",
+                        "featureList": [
+                            "Sync the same folders across iCloud Drive, Google Drive, OneDrive, local folders, and NAS",
+                            "Every sync location holds a full copy of your files",
+                            "Deletes go to each provider's trash, never permanent deletion",
+                            "Independent edits are preserved as conflict copies",
+                            "Sync pauses for review on suspicious mass changes",
+                            "Provider outages and unmounted volumes are never treated as deletions"
+                        ],
+                        "author": { "@id": "https://aetherloom.app/#author" },
+                        "sameAs": ["https://github.com/alexfilipe/aetherloom"]
+                    },
+                    {
+                        "@type": "Person",
+                        "@id": "https://aetherloom.app/#author",
+                        "name": "\u00c1lex Filipe Santos",
+                        "url": "https://alexfili.pe",
+                        "sameAs": ["https://github.com/alexfilipe"]
+                    }
+                ]
             }
         </script>
         <script type="application/ld+json">
             {
                 "@context": "https://schema.org",
-                "@type": "SoftwareApplication",
-                "name": "Aetherloom",
-                "url": "https://aetherloom.app/",
-                "image": "https://aetherloom.app/assets/social-preview.png",
-                "description": "A native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive, OneDrive, local folders, and NAS-backed folders. Every location holds a full copy, so losing access to one never means losing your files.",
-                "operatingSystem": "macOS",
-                "applicationCategory": "UtilitiesApplication",
-                "author": {
-                    "@type": "Person",
-                    "name": "Álex Filipe Santos",
-                    "url": "https://alexfili.pe"
-                },
-                "sameAs": ["https://github.com/alexfilipe/aetherloom"]
+                "@type": "FAQPage",
+                "mainEntity": [
+                    {
+                        "@type": "Question",
+                        "name": "What is Aetherloom?",
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": "Aetherloom is a native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive, OneDrive, local folders on your Mac, and NAS-backed folders. Every location holds a full copy of your files, so losing access to one location never means losing the files themselves."
+                        }
+                    },
+                    {
+                        "@type": "Question",
+                        "name": "Can it sync folders between two clouds, like Google Drive and OneDrive?",
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": "That is the core idea. You choose folders, and Aetherloom keeps them aligned across every location in the sync set \u2014 cloud, Mac, or NAS. Cloud provider integrations are still in development; the provider-independent sync engine comes first."
+                        }
+                    },
+                    {
+                        "@type": "Question",
+                        "name": "Can it sync a NAS with cloud storage?",
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": "Yes. NAS-backed folders mounted over SMB, AFP, or NFS are first-class sync locations. If a share disappears \u2014 the Mac slept, the network changed, credentials expired \u2014 Aetherloom treats it as unavailable, never as deleted files."
+                        }
+                    },
+                    {
+                        "@type": "Question",
+                        "name": "Will Aetherloom ever delete my files?",
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": "Not permanently, during normal sync. Deletes use each provider's trash or recycle bin where possible, conflicting edits are preserved as both versions, and a suspicious mass deletion pauses sync until you review it."
+                        }
+                    },
+                    {
+                        "@type": "Question",
+                        "name": "Is Aetherloom a backup tool?",
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": "No. Synchronized copies keep your files available if you lose access to a location, but sync is not versioned backup. Keep an independent backup of files you can't afford to lose."
+                        }
+                    },
+                    {
+                        "@type": "Question",
+                        "name": "Is Aetherloom free and open source?",
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": "Aetherloom is developed in the open and the source is available on GitHub. A license hasn't been chosen yet."
+                        }
+                    },
+                    {
+                        "@type": "Question",
+                        "name": "When can I use it?",
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": "Aetherloom is in early development and not yet available to download. Follow the project on GitHub to watch progress, open issues, or contribute."
+                        }
+                    }
+                ]
             }
         </script>
         <style>
@@ -583,6 +690,10 @@
 
             .fine-grid {
                 grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+            }
+
+            .faq-grid {
+                margin-top: 36px;
             }
 
             .info-card,
@@ -1152,7 +1263,7 @@
             <header class="nav">
                 <div class="nav-inner">
                     <a class="brand" href="#top" aria-label="Aetherloom home">
-                        <img src="/assets/mark-white.png" alt="" />
+                        <img src="/assets/mark-white.png" alt="" width="809" height="805" />
                         <span>Aetherloom</span>
                     </a>
                     <nav class="nav-links" aria-label="Main navigation">
@@ -1160,6 +1271,7 @@
                         <a class="nav-link" href="#safety">Safety</a>
                         <a class="nav-link" href="#inside">A look inside</a>
                         <a class="nav-link" href="#status">Status</a>
+                        <a class="nav-link" href="#faq">FAQ</a>
                         <a
                             class="github-button"
                             href="https://github.com/alexfilipe/aetherloom"
@@ -1189,15 +1301,18 @@
                         <div class="hero-mark-wrap">
                             <img
                                 class="hero-mark"
-                                src="/assets/mark-gradient.png"
+                                src="/assets/mark-gradient.webp"
                                 alt="Aetherloom app mark"
+                                width="809"
+                                height="805"
                             />
                         </div>
                         <div class="eyebrow-pill">Open source<span class="pill-sep">·</span>Early development</div>
                         <h1>Keep your clouds interwoven.</h1>
                         <p class="hero-subtitle">
                             Aetherloom is a native macOS app that keeps the same folders
-                            synchronized across your clouds, your Mac, and your NAS.
+                            synchronized across iCloud Drive, Google Drive, OneDrive, your Mac, and
+                            your NAS.
                             <span class="hero-kicker"
                                 >Every location holds a full copy &mdash; lose access to one, and
                                 your files are still everywhere else.</span
@@ -1275,8 +1390,10 @@
                     <div class="hero-shot-wrap">
                         <img
                             class="hero-shot"
-                            src="/assets/ui-overview-scanning.png"
+                            src="/assets/ui-overview-scanning.webp"
                             alt="Aetherloom Overview screen scanning your clouds, showing connected locations and safety review status"
+                            width="1800"
+                            height="1252"
                             fetchpriority="high"
                         />
                     </div>
@@ -1451,7 +1568,7 @@
                             aria-selected="false"
                             aria-controls="tour-panel"
                             tabindex="-1"
-                            data-src="/assets/ui-overview.png"
+                            data-src="/assets/ui-overview.webp"
                             data-alt="Aetherloom Overview screen"
                             data-caption="Overview &mdash; Every location, every pending change, at a glance."
                         >
@@ -1463,7 +1580,7 @@
                             role="tab"
                             aria-selected="true"
                             aria-controls="tour-panel"
-                            data-src="/assets/ui-sync-sets.png"
+                            data-src="/assets/ui-sync-sets.webp"
                             data-alt="Aetherloom Sync Sets screen"
                             data-caption="Sync Sets &mdash; Folders and drives you chose to keep in sync, grouped by mirror."
                         >
@@ -1476,7 +1593,7 @@
                             aria-selected="false"
                             aria-controls="tour-panel"
                             tabindex="-1"
-                            data-src="/assets/ui-activity.png"
+                            data-src="/assets/ui-activity.webp"
                             data-alt="Aetherloom Activity screen"
                             data-caption="Activity &mdash; Everything Aetherloom did, and every time it paused to keep your files safe."
                         >
@@ -1489,7 +1606,7 @@
                             aria-selected="false"
                             aria-controls="tour-panel"
                             tabindex="-1"
-                            data-src="/assets/ui-conflicts.png"
+                            data-src="/assets/ui-conflicts.webp"
                             data-alt="Aetherloom Conflicts screen"
                             data-caption="Conflicts &mdash; When a file changes in more than one place, both versions are kept until you decide."
                         >
@@ -1502,7 +1619,7 @@
                             aria-selected="false"
                             aria-controls="tour-panel"
                             tabindex="-1"
-                            data-src="/assets/ui-settings.png"
+                            data-src="/assets/ui-settings.webp"
                             data-alt="Aetherloom Settings screen"
                             data-caption="Settings &mdash; Aetherloom always chooses the safest option by default."
                         >
@@ -1517,8 +1634,10 @@
                     >
                         <img
                             class="tour-layer is-active is-current"
-                            src="/assets/ui-sync-sets.png"
+                            src="/assets/ui-sync-sets.webp"
                             alt="Aetherloom Sync Sets screen"
+                            width="1800"
+                            height="1252"
                             loading="lazy"
                             decoding="async"
                         />
@@ -1603,6 +1722,73 @@
                     </div>
                 </section>
 
+                <section id="faq" class="section">
+                    <p class="eyebrow">FAQ</p>
+                    <h2 class="section-title">Questions, answered plainly.</h2>
+                    <div class="fine-grid faq-grid">
+                        <article class="fine-card">
+                            <h3>What is Aetherloom?</h3>
+                            <p>
+                                Aetherloom is a native macOS app that keeps the same folders
+                                synchronized across iCloud Drive, Google Drive, OneDrive, local
+                                folders on your Mac, and NAS-backed folders. Every location holds a
+                                full copy of your files, so losing access to one location never
+                                means losing the files themselves.
+                            </p>
+                        </article>
+                        <article class="fine-card">
+                            <h3>Can it sync folders between two clouds, like Google Drive and OneDrive?</h3>
+                            <p>
+                                That is the core idea. You choose folders, and Aetherloom keeps them
+                                aligned across every location in the sync set &mdash; cloud, Mac, or
+                                NAS. Cloud provider integrations are still in development; the
+                                provider-independent sync engine comes first.
+                            </p>
+                        </article>
+                        <article class="fine-card">
+                            <h3>Can it sync a NAS with cloud storage?</h3>
+                            <p>
+                                Yes. NAS-backed folders mounted over SMB, AFP, or NFS are
+                                first-class sync locations. If a share disappears &mdash; the Mac
+                                slept, the network changed, credentials expired &mdash; Aetherloom
+                                treats it as unavailable, never as deleted files.
+                            </p>
+                        </article>
+                        <article class="fine-card">
+                            <h3>Will Aetherloom ever delete my files?</h3>
+                            <p>
+                                Not permanently, during normal sync. Deletes use each provider's
+                                trash or recycle bin where possible, conflicting edits are preserved
+                                as both versions, and a suspicious mass deletion pauses sync until
+                                you review it.
+                            </p>
+                        </article>
+                        <article class="fine-card">
+                            <h3>Is Aetherloom a backup tool?</h3>
+                            <p>
+                                No. Synchronized copies keep your files available if you lose access
+                                to a location, but sync is not versioned backup. Keep an independent
+                                backup of files you can't afford to lose.
+                            </p>
+                        </article>
+                        <article class="fine-card">
+                            <h3>Is Aetherloom free and open source?</h3>
+                            <p>
+                                Aetherloom is developed in the open and the source is available on
+                                GitHub. A license hasn't been chosen yet.
+                            </p>
+                        </article>
+                        <article class="fine-card">
+                            <h3>When can I use it?</h3>
+                            <p>
+                                Aetherloom is in early development and not yet available to
+                                download. Follow the project on GitHub to watch progress, open
+                                issues, or contribute.
+                            </p>
+                        </article>
+                    </div>
+                </section>
+
                 <section class="section">
                     <div class="fine-grid">
                         <article class="fine-card">
@@ -1641,7 +1827,14 @@
                 <div class="footer-inner">
                     <div class="footer-main">
                         <div class="footer-brand">
-                            <img src="/assets/mark-gradient.png" alt="" />
+                            <img
+                                src="/assets/mark-gradient.webp"
+                                alt=""
+                                width="809"
+                                height="805"
+                                loading="lazy"
+                                decoding="async"
+                            />
                             <div>
                                 <div class="footer-name">Aetherloom</div>
                                 <div class="footer-tagline">Every drive, one weave.</div>
@@ -1798,6 +1991,8 @@
                 incoming.className = "tour-layer";
                 incoming.src = src;
                 incoming.alt = alt;
+                incoming.width = 1800;
+                incoming.height = 1252;
                 incoming.loading = "eager";
                 incoming.decoding = "async";
                 frame.appendChild(incoming);

@@ -22,5 +22,5 @@ function redirectHome(request) {
   home.search = "";
   home.hash = "";
 
-  return Response.redirect(home.toString(), 302);
+  return Response.redirect(home.toString(), 301);
 }
