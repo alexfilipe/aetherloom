@@ -61,6 +61,9 @@ private final class AboutWindowController: NSWindowController {
 
 private struct AboutAetherloomView: View {
     private let width: CGFloat = 520
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.1"
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 32) {
@@ -76,7 +79,7 @@ private struct AboutAetherloomView: View {
                 Text("Aetherloom")
                     .font(.system(size: 17, weight: .semibold))
 
-                Text("Version 0.1")
+                Text("Version \(appVersion)")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
