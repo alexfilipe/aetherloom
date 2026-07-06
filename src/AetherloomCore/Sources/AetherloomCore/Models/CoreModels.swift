@@ -406,57 +406,6 @@ public enum SyncEvent: Codable, Hashable, Sendable {
     case unavailable(location: LocationID, reason: String)
 }
 
-public enum SyncAction: Codable, Hashable, Sendable {
-    case upload(source: LocationID, destination: LocationID, sourceItem: ItemObservation, destinationPath: SyncPath)
-    case overwrite(source: LocationID, destination: LocationID, sourceItem: ItemObservation, destinationItem: ItemObservation)
-    case createFolder(destination: LocationID, path: SyncPath)
-    case move(destination: LocationID, item: ItemObservation, newPath: SyncPath)
-    case rename(destination: LocationID, item: ItemObservation, newName: String)
-    case trash(destination: LocationID, item: ItemObservation)
-    case createConflictCopy(source: LocationID, destination: LocationID, sourceItem: ItemObservation, conflictPath: SyncPath)
-
-    public var destinationLocation: LocationID? {
-        switch self {
-        case let .upload(_, destination, _, _),
-             let .overwrite(_, destination, _, _),
-             let .createFolder(destination, _),
-             let .move(destination, _, _),
-             let .rename(destination, _, _),
-             let .trash(destination, _),
-             let .createConflictCopy(_, destination, _, _):
-            destination
-        }
-    }
-}
-
-public enum SyncWarningSeverity: String, Codable, Hashable, Sendable {
-    case info
-    case needsReview
-    case heldForSafety
-}
-
-public struct SyncWarning: Codable, Hashable, Sendable {
-    public var id: UUID
-    public var severity: SyncWarningSeverity
-    public var message: String
-    public var location: LocationID?
-    public var path: SyncPath?
-
-    public init(
-        id: UUID = UUID(),
-        severity: SyncWarningSeverity,
-        message: String,
-        location: LocationID? = nil,
-        path: SyncPath? = nil
-    ) {
-        self.id = id
-        self.severity = severity
-        self.message = message
-        self.location = location
-        self.path = path
-    }
-}
-
 public struct ChangeCursor: Codable, Hashable, Sendable {
     public var rawValue: String
 

@@ -208,7 +208,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
 
-    #expect(plan.legacyActions.isEmpty)
+    #expect(plan.schedule.operations.isEmpty)
     #expect(plan.conflicts.isEmpty)
 }
 
@@ -514,14 +514,12 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
     await oneDrive.putFile(path: "/Draft.txt", contents: data("surprise edit"))
-    let executor = SyncPlanExecutor(providers: [.googleDrive: google, .oneDrive: oneDrive])
+    let executor = try makeExecutor(providers: [google, oneDrive], name: "drift-stops")
 
-    do {
-        _ = try await executor.execute(plan)
-        #expect(Bool(false))
-    } catch let error as SyncExecutionError {
-        #expect(error == .destinationChangedRequiresReplan(provider: .oneDrive, path: "/Draft.txt"))
-    }
+    let summary = try await executor.execute(plan, runID: testUUID("000000000201"))
+
+    #expect(summary.outcome == .stoppedForReplan(location: .oneDrive, path: "/Draft.txt"))
+    #expect(summary.appliedOperations.isEmpty)
 }
 
 @Test func rerunningSameSyncPlanIsIdempotent() async throws {
@@ -530,14 +528,14 @@ import Testing
     let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     await google.putFile(path: "/New.txt", contents: data("hello"))
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
-    let executor = SyncPlanExecutor(providers: [.googleDrive: google, .oneDrive: oneDrive])
+    let executor = try makeExecutor(providers: [google, oneDrive], name: "rerun-idempotent")
 
-    let firstReport = try await executor.execute(plan)
-    let secondReport = try await executor.execute(plan)
+    let firstReport = try await executor.execute(plan, runID: testUUID("000000000202"))
+    let secondReport = try await executor.execute(plan, runID: testUUID("000000000203"))
 
-    #expect(firstReport.appliedActions.count == 1)
-    #expect(secondReport.appliedActions.isEmpty)
-    #expect(secondReport.skippedActions.count == 1)
+    #expect(firstReport.appliedOperations.count == 1)
+    #expect(secondReport.appliedOperations.isEmpty)
+    #expect(secondReport.skippedOperations.count == 1)
     #expect(await oneDrive.item(at: "/New.txt") != nil)
 }
 
@@ -610,7 +608,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive], settings: settings)
 
-    #expect(plan.legacyActions.isEmpty)
+    #expect(plan.schedule.operations.isEmpty)
 }
 
 @Test func builtInAetherloomFolderExclusionAppliesWithEmptyUserExclusions() async throws {
@@ -621,7 +619,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive], settings: SyncSettings())
 
-    #expect(plan.legacyActions.isEmpty)
+    #expect(plan.schedule.operations.isEmpty)
 }
 
 @Test func symlinkExclusionAppliesWithEmptyUserExclusions() async throws {
@@ -632,7 +630,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive], settings: SyncSettings())
 
-    #expect(plan.legacyActions.isEmpty)
+    #expect(plan.schedule.operations.isEmpty)
 }
 
 @Test func scanCompleteEmptyOnlyWhenAvailableAndUnscripted() async throws {
@@ -971,112 +969,160 @@ private func temporaryTestURL(name: String) throws -> URL {
     return url
 }
 
+private func temporaryTestDirectory(name: String) throws -> URL {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("AetherloomCoreTests", isDirectory: true)
+        .appendingPathComponent(name, isDirectory: true)
+    try? FileManager.default.removeItem(at: directory)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory
+}
+
+private func makeExecutor(
+    providers: [FakeStorageProvider],
+    stores: EngineStores = .inMemory(),
+    name: String,
+    maxParallelism: Int = 3
+) throws -> ScheduleExecutor {
+    var providerMap: [LocationID: any StorageProvider] = [:]
+    for provider in providers {
+        providerMap[provider.locationID] = provider
+    }
+    let stage = ContentStage(rootDirectory: try temporaryTestDirectory(name: "stage-\(name)"), byteLimit: 10_000_000)
+    return ScheduleExecutor(
+        providers: providerMap,
+        stores: stores,
+        stage: stage,
+        environment: ExecutionEnvironment(
+            now: { fixedDate },
+            makeID: { testUUID("000000000999") },
+            maxConcurrentLocationOperations: maxParallelism
+        )
+    )
+}
+
 private let fixedDate = Date(timeIntervalSince1970: 1_770_000_000)
 
 private func uploadCount(_ plan: SyncPlan) -> Int {
     count(plan) {
-        if case .upload = $0 { return true }
+        if case let .transfer(content, path, overwrite) = $0.kind {
+            return path == content.path && overwrite == .neverOverwrite
+        }
         return false
     }
 }
 
 private func overwriteCount(_ plan: SyncPlan) -> Int {
     count(plan) {
-        if case .overwrite = $0 { return true }
+        if case let .transfer(_, _, overwrite) = $0.kind {
+            if case .ifVersionMatches = overwrite { return true }
+        }
         return false
     }
 }
 
 private func createFolderCount(_ plan: SyncPlan) -> Int {
     count(plan) {
-        if case .createFolder = $0 { return true }
+        if case .makeFolder = $0.kind { return true }
         return false
     }
 }
 
 private func conflictCopyCount(_ plan: SyncPlan) -> Int {
     count(plan) {
-        if case .createConflictCopy = $0 { return true }
+        if case let .transfer(content, path, overwrite) = $0.kind {
+            return path != content.path && overwrite == .neverOverwrite
+        }
         return false
     }
 }
 
 private func renameCount(_ plan: SyncPlan) -> Int {
     count(plan) {
-        if case .rename = $0 { return true }
+        if case let .relocate(itemRef, newPath) = $0.kind {
+            return itemRef.path.parent == newPath.parent
+        }
         return false
     }
 }
 
 private func moveCount(_ plan: SyncPlan) -> Int {
     count(plan) {
-        if case .move = $0 { return true }
+        if case let .relocate(itemRef, newPath) = $0.kind {
+            return itemRef.path.parent != newPath.parent
+        }
         return false
     }
 }
 
 private func trashCount(_ plan: SyncPlan) -> Int {
     count(plan) {
-        if case .trash = $0 { return true }
+        if case .trash = $0.kind { return true }
         return false
     }
 }
 
-private func count(_ plan: SyncPlan, where predicate: (SyncAction) -> Bool) -> Int {
-    plan.legacyActions.reduce(0) { total, action in
-        total + (predicate(action) ? 1 : 0)
+private func count(_ plan: SyncPlan, where predicate: (AetherloomCore.Operation) -> Bool) -> Int {
+    plan.schedule.operations.reduce(0) { total, operation in
+        total + (predicate(operation) ? 1 : 0)
     }
 }
 
 private func containsUpload(_ plan: SyncPlan, source: LocationID, destination: LocationID, path: SyncPath) -> Bool {
-    plan.legacyActions.contains {
-        if case let .upload(actionSource, actionDestination, _, destinationPath) = $0 {
-            return actionSource == source && actionDestination == destination && destinationPath == path
+    plan.schedule.operations.contains {
+        if case let .transfer(content, destinationPath, overwrite) = $0.kind {
+            return content.sourceLocation == source
+                && $0.location == destination
+                && destinationPath == path
+                && destinationPath == content.path
+                && overwrite == .neverOverwrite
         }
         return false
     }
 }
 
 private func containsOverwrite(_ plan: SyncPlan, source: LocationID, destination: LocationID, path: SyncPath) -> Bool {
-    plan.legacyActions.contains {
-        if case let .overwrite(actionSource, actionDestination, _, destinationItem) = $0 {
-            return actionSource == source && actionDestination == destination && destinationItem.path == path
+    plan.schedule.operations.contains {
+        if case let .transfer(content, destinationPath, overwrite) = $0.kind {
+            if case .ifVersionMatches = overwrite {
+                return content.sourceLocation == source && $0.location == destination && destinationPath == path
+            }
         }
         return false
     }
 }
 
 private func containsCreateFolder(_ plan: SyncPlan, destination: LocationID, path: SyncPath) -> Bool {
-    plan.legacyActions.contains {
-        if case let .createFolder(actionDestination, actionPath) = $0 {
-            return actionDestination == destination && actionPath == path
+    plan.schedule.operations.contains {
+        if case let .makeFolder(actionPath) = $0.kind {
+            return $0.location == destination && actionPath == path
         }
         return false
     }
 }
 
 private func containsRename(_ plan: SyncPlan, destination: LocationID, newName: String) -> Bool {
-    plan.legacyActions.contains {
-        if case let .rename(actionDestination, _, actionNewName) = $0 {
-            return actionDestination == destination && actionNewName == newName
+    plan.schedule.operations.contains {
+        if case let .relocate(itemRef, newPath) = $0.kind {
+            return $0.location == destination && itemRef.path.parent == newPath.parent && newPath.name == newName
         }
         return false
     }
 }
 
 private func containsMove(_ plan: SyncPlan, destination: LocationID, newPath: SyncPath) -> Bool {
-    plan.legacyActions.contains {
-        if case let .move(actionDestination, _, actionNewPath) = $0 {
-            return actionDestination == destination && actionNewPath == newPath
+    plan.schedule.operations.contains {
+        if case let .relocate(_, actionNewPath) = $0.kind {
+            return $0.location == destination && actionNewPath == newPath
         }
         return false
     }
 }
 
 private func containsTrash(_ plan: SyncPlan, destination: LocationID, path: SyncPath) -> Bool {
-    plan.legacyActions.contains {
-        if case let .trash(actionDestination, item) = $0 {
-            return actionDestination == destination && item.path == path
+    plan.schedule.operations.contains {
+        if case let .trash(itemRef) = $0.kind {
+            return $0.location == destination && itemRef.path == path
         }
         return false
     }

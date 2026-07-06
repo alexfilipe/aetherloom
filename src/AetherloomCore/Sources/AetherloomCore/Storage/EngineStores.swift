@@ -211,12 +211,13 @@ public enum JournalRunOutcome: String, Codable, Hashable, Sendable {
     case succeeded
     case failed
     case stoppedForReplan
+    case cancelled
 }
 
 public enum JournalEvent: Codable, Hashable, Sendable {
     case intent(Operation)
     case result(operationID: OperationID, outcome: JournalOperationResultOutcome, occurredAt: Date, detail: String?)
-    case itemConverged(BaseRecord)
+    case itemConverged(decisionID: UUID, record: BaseRecord)
     case runFinished(outcome: JournalRunOutcome, occurredAt: Date, detail: String?)
 
     public var intentOperationID: OperationID? {
@@ -346,7 +347,7 @@ public actor InMemoryRunJournalStore: RunJournalStore {
 
     public func unfinishedRun(for syncSetID: UUID) async throws -> JournalReplay? {
         runs
-            .filter { !$0.value.isReconciled && $0.value.syncSetID == syncSetID }
+            .filter { !$0.value.isReconciled && $0.value.syncSetID == syncSetID && !$0.value.events.contains(where: \.isRunFinished) }
             .map { runID, run in
                 JournalReplay(runID: runID, syncSetID: run.syncSetID, fingerprint: run.fingerprint, events: run.events)
             }
@@ -567,7 +568,7 @@ public actor FileRunJournalStore: RunJournalStore {
             .compactMap { fileURL -> JournalReplay? in
                 let runID = try runIDFromJournalURL(fileURL)
                 let state = try replayFile(runID: runID)
-                guard !state.isReconciled, state.syncSetID == syncSetID else { return nil }
+                guard !state.isReconciled, state.syncSetID == syncSetID, !state.events.contains(where: \.isRunFinished) else { return nil }
                 return JournalReplay(
                     runID: runID,
                     syncSetID: state.syncSetID,

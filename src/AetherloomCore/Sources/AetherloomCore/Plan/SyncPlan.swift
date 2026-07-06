@@ -10,9 +10,6 @@ public struct SyncPlan: Codable, Hashable, Sendable {
     public private(set) var gate: ExecutionGate
     public var fingerprint: PlanFingerprint
 
-    public var legacyActions: [SyncAction]
-    public var legacyWarnings: [SyncWarning]
-
     public init(
         syncSetID: UUID,
         generatedAt: Date,
@@ -21,9 +18,7 @@ public struct SyncPlan: Codable, Hashable, Sendable {
         conflicts: [ConflictDecision] = [],
         waiting: [WaitingItem] = [],
         gate: ExecutionGate,
-        fingerprint: PlanFingerprint,
-        legacyActions: [SyncAction] = [],
-        legacyWarnings: [SyncWarning] = []
+        fingerprint: PlanFingerprint
     ) {
         self.syncSetID = syncSetID
         self.generatedAt = generatedAt
@@ -33,8 +28,6 @@ public struct SyncPlan: Codable, Hashable, Sendable {
         self.waiting = waiting
         self.gate = gate
         self.fingerprint = fingerprint
-        self.legacyActions = legacyActions
-        self.legacyWarnings = legacyWarnings
 
         assert((try? schedule.validate(decisions: decisions)) != nil)
     }

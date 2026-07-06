@@ -7,13 +7,13 @@ import Testing
     let source = observation(.googleDrive, path: "/Budget.xlsx", hash: "source")
     let destination = observation(.oneDrive, path: "/Budget.xlsx", hash: "old")
 
-    #expect(catalog.message(for: .upload(source: .googleDrive, destination: .oneDrive, sourceItem: source, destinationPath: "/Budget.xlsx")) == "Created \"/Budget.xlsx\" in OneDrive from Google Drive.")
-    #expect(catalog.message(for: .overwrite(source: .googleDrive, destination: .oneDrive, sourceItem: source, destinationItem: destination)) == "Updated \"/Budget.xlsx\" in OneDrive from Google Drive.")
-    #expect(catalog.message(for: .createFolder(destination: .oneDrive, path: "/Projects")) == "Created folder \"/Projects\" in OneDrive.")
-    #expect(catalog.message(for: .move(destination: .oneDrive, item: destination, newPath: "/Archive/Budget.xlsx")) == "Moved \"/Archive/Budget.xlsx\" in OneDrive.")
-    #expect(catalog.message(for: .rename(destination: .oneDrive, item: destination, newName: "Budget Final.xlsx")) == "Renamed \"/Budget.xlsx\" to \"/Budget Final.xlsx\" in OneDrive.")
-    #expect(catalog.message(for: .trash(destination: .oneDrive, item: destination)) == "Moved \"/Budget.xlsx\" to OneDrive trash.")
-    #expect(catalog.message(for: .createConflictCopy(source: .googleDrive, destination: .oneDrive, sourceItem: source, conflictPath: "/Budget (conflict).xlsx")) == "Created conflict copy \"/Budget (conflict).xlsx\" in OneDrive from Google Drive.")
+    #expect(catalog.message(for: operation(.oneDrive, .transfer(content: ContentRef(source), to: "/Budget.xlsx", overwrite: .neverOverwrite), precondition: .pathAbsent)) == "Created \"/Budget.xlsx\" in OneDrive from Google Drive.")
+    #expect(catalog.message(for: operation(.oneDrive, .transfer(content: ContentRef(source), to: "/Budget.xlsx", overwrite: .ifVersionMatches(destination.version)), precondition: .versionMatches(destination.version))) == "Updated \"/Budget.xlsx\" in OneDrive from Google Drive.")
+    #expect(catalog.message(for: operation(.oneDrive, .makeFolder(at: "/Projects"), precondition: .pathAbsent)) == "Created folder \"/Projects\" in OneDrive.")
+    #expect(catalog.message(for: operation(.oneDrive, .relocate(itemRef: ItemRef(destination), to: "/Archive/Budget.xlsx"), precondition: .versionMatches(destination.version))) == "Moved \"/Archive/Budget.xlsx\" in OneDrive.")
+    #expect(catalog.message(for: operation(.oneDrive, .relocate(itemRef: ItemRef(destination), to: "/Budget Final.xlsx"), precondition: .versionMatches(destination.version))) == "Renamed \"/Budget.xlsx\" to \"/Budget Final.xlsx\" in OneDrive.")
+    #expect(catalog.message(for: operation(.oneDrive, .trash(itemRef: ItemRef(destination)), precondition: .versionMatches(destination.version))) == "Moved \"/Budget.xlsx\" to OneDrive trash.")
+    #expect(catalog.message(for: operation(.oneDrive, .transfer(content: ContentRef(source), to: "/Budget (conflict).xlsx", overwrite: .neverOverwrite), precondition: .pathAbsent)) == "Created conflict copy \"/Budget (conflict).xlsx\" in OneDrive from Google Drive.")
 }
 
 @Test func activityCatalogLocksSafetyApprovalAndAdvisorySentences() {
@@ -139,7 +139,7 @@ import Testing
         if case .baseStateUnreadable = reason { return true }
         return false
     })
-    #expect(outcome.planValue?.legacyActions.isEmpty != false)
+    #expect(outcome.planValue?.schedule.operations.isEmpty != false)
 }
 
 @Test func inMemoryRunJournalReplaysUnfinishedRunAndMarkReconciledClearsIt() async throws {
@@ -411,6 +411,19 @@ private func transferOperation(id suffix: String) -> AetherloomCore.Operation {
         location: .oneDrive,
         kind: .transfer(content: ContentRef(source), to: source.path, overwrite: .neverOverwrite),
         precondition: .pathAbsent
+    )
+}
+
+private func operation(
+    _ location: LocationID,
+    _ kind: OperationKind,
+    precondition: Precondition
+) -> AetherloomCore.Operation {
+    AetherloomCore.Operation(
+        id: OperationID(uuid("000000009901")),
+        location: location,
+        kind: kind,
+        precondition: precondition
     )
 }
 

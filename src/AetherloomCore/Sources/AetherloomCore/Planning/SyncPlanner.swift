@@ -81,7 +81,6 @@ public struct SyncPlanner: Sendable {
             settings: input.settings,
             mode: syncSet.mode
         )
-        let warnings = lowered.legacyWarnings + gateWarnings(gate)
         let fingerprint = PlanFingerprint.compute(
             syncSetID: syncSet.id,
             decisions: lowered.decisions,
@@ -99,9 +98,7 @@ public struct SyncPlanner: Sendable {
                 conflicts: lowered.conflicts,
                 waiting: lowered.waiting,
                 gate: gate,
-                fingerprint: fingerprint,
-                legacyActions: lowered.legacyActions,
-                legacyWarnings: warnings
+                fingerprint: fingerprint
             )
         )
     }
@@ -151,26 +148,6 @@ public struct SyncPlanner: Sendable {
 
         return reasons
     }
-
-    private func gateWarnings(_ gate: ExecutionGate) -> [SyncWarning] {
-        gate.holdReasons.map { reason in
-            SyncWarning(
-                severity: reason.isReviewOnly ? .needsReview : .heldForSafety,
-                message: reason.message
-            )
-        }
-    }
-}
-
-private extension HoldReason {
-    var isReviewOnly: Bool {
-        switch self {
-        case .conflicts, .deletionsNeedReview:
-            return true
-        case .massDeletion, .massEdit:
-            return false
-        }
-    }
 }
 
 private struct LoweredPlan {
@@ -178,8 +155,6 @@ private struct LoweredPlan {
     var schedule: OperationSchedule
     var conflicts: [ConflictDecision]
     var waiting: [WaitingItem]
-    var legacyActions: [SyncAction]
-    var legacyWarnings: [SyncWarning]
 }
 
 private struct PlanLowerer {
@@ -237,9 +212,7 @@ private struct PlanLowerer {
             decisions: state.decisions,
             schedule: schedule,
             conflicts: state.conflicts,
-            waiting: state.waiting,
-            legacyActions: legacyActions(from: schedule),
-            legacyWarnings: state.legacyWarnings
+            waiting: state.waiting
         )
     }
 
@@ -326,13 +299,6 @@ private struct PlanLowerer {
 
         case let .conflict(conflict):
             state.conflicts.append(conflict)
-            state.legacyWarnings.append(
-                SyncWarning(
-                    severity: .needsReview,
-                    message: conflict.message,
-                    path: conflict.path
-                )
-            )
             lowerConflictCopies(conflict: conflict, decisionID: decisionID, state: &state)
 
         case let .waiting(reason, locations):
@@ -342,14 +308,6 @@ private struct PlanLowerer {
                     path: item.primaryPath,
                     reason: reason,
                     locations: locations.sorted()
-                )
-            )
-            state.legacyWarnings.append(
-                SyncWarning(
-                    severity: .needsReview,
-                    message: "Provider unavailable",
-                    location: locations.sorted().first,
-                    path: item.primaryPath
                 )
             )
 
@@ -379,26 +337,9 @@ private struct PlanLowerer {
                     state: &state
                 )
             }
-            if syncSet.mode == .askBeforeDeleting {
-                state.legacyWarnings.append(
-                    SyncWarning(
-                        severity: .needsReview,
-                        message: "Aetherloom found deletions for \(item.primaryPath.rawValue). Review before moving matching files to trash.",
-                        location: initiatedBy,
-                        path: item.primaryPath
-                    )
-                )
-            }
 
         case .noDeletePropagation:
-            state.legacyWarnings.append(
-                SyncWarning(
-                    severity: .info,
-                    message: "Delete propagation is disabled for \(item.primaryPath.rawValue). No files will be moved to trash.",
-                    location: initiatedBy,
-                    path: item.primaryPath
-                )
-            )
+            break
         }
     }
 
@@ -445,56 +386,6 @@ private struct PlanLowerer {
         )
         state.operationDecisionIDs[operation.id] = decisionID
         state.operations.append(operation)
-    }
-
-    private func legacyActions(from schedule: OperationSchedule) -> [SyncAction] {
-        schedule.operations.compactMap { operation in
-            switch operation.kind {
-            case let .makeFolder(path):
-                return .createFolder(destination: operation.location, path: path)
-
-            case let .transfer(content, path, overwrite):
-                let sourceItem = content.observation
-                switch overwrite {
-                case .neverOverwrite:
-                    if path != content.path {
-                        return .createConflictCopy(
-                            source: content.sourceLocation,
-                            destination: operation.location,
-                            sourceItem: sourceItem,
-                            conflictPath: path
-                        )
-                    }
-                    return .upload(
-                        source: content.sourceLocation,
-                        destination: operation.location,
-                        sourceItem: sourceItem,
-                        destinationPath: path
-                    )
-                case let .ifVersionMatches(version):
-                    return .overwrite(
-                        source: content.sourceLocation,
-                        destination: operation.location,
-                        sourceItem: sourceItem,
-                        destinationItem: ItemObservation(
-                            location: operation.location,
-                            path: path,
-                            kind: content.kind,
-                            version: version
-                        )
-                    )
-                }
-
-            case let .relocate(itemRef, path):
-                if itemRef.path.parent == path.parent {
-                    return .rename(destination: operation.location, item: itemRef.observation, newName: path.name)
-                }
-                return .move(destination: operation.location, item: itemRef.observation, newPath: path)
-
-            case let .trash(itemRef):
-                return .trash(destination: operation.location, item: itemRef.observation)
-            }
-        }
     }
 
     private func decisionID(for reconciledItem: ReconciledItem, index: Int) -> UUID {
@@ -583,7 +474,6 @@ private struct LoweringState {
     var operationDecisionIDs: [OperationID: UUID] = [:]
     var conflicts: [ConflictDecision] = []
     var waiting: [WaitingItem] = []
-    var legacyWarnings: [SyncWarning] = []
     var existingPathsByLocation: [LocationID: Set<SyncPath>]
 }
 

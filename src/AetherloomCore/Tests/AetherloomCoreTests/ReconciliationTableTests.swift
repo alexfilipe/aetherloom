@@ -114,12 +114,14 @@ import Testing
     let plan = await testPlan(syncSet: syncSet, records: [record], providers: [local, nas, google])
 
     #expect(plan.conflicts.map(\.kind) == [.editDelete])
-    #expect(plan.legacyActions.allSatisfy { action in
-        if case .trash = action { return false }
+    #expect(plan.schedule.operations.allSatisfy { operation in
+        if case .trash = operation.kind { return false }
         return true
     })
-    #expect(plan.legacyActions.contains { action in
-        if case .createConflictCopy = action { return true }
+    #expect(plan.schedule.operations.contains { operation in
+        if case let .transfer(content, path, overwrite) = operation.kind {
+            return path != content.path && overwrite == .neverOverwrite
+        }
         return false
     })
 }
@@ -214,15 +216,15 @@ import Testing
     let plan = await testPlan(syncSet: syncSet, providers: [local, nas, google])
 
     #expect(plan.conflicts.map(\.kind) == [.typeClash])
-    #expect(plan.legacyActions.contains { action in
-        if case let .createConflictCopy(source, _, _, _) = action {
-            return source == .localFolder
+    #expect(plan.schedule.operations.contains { operation in
+        if case let .transfer(content, path, overwrite) = operation.kind {
+            return content.sourceLocation == .localFolder && path != content.path && overwrite == .neverOverwrite
         }
         return false
     })
-    #expect(plan.legacyActions.allSatisfy { action in
-        if case .createFolder = action { return false }
-        if case .trash = action { return false }
+    #expect(plan.schedule.operations.allSatisfy { operation in
+        if case .makeFolder = operation.kind { return false }
+        if case .trash = operation.kind { return false }
         return true
     })
 }

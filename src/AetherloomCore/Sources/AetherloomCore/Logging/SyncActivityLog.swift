@@ -154,34 +154,35 @@ public struct ActivityMessageCatalog: Sendable {
         return "Prepared \(additions) additions, \(updates) updates, \(moves) moves, \(trash) trash moves, \(conflicts) conflicts, and \(waiting) waiting items; gate is \(gateText)."
     }
 
-    public func message(for action: SyncAction) -> String {
-        switch action {
-        case let .upload(source, destination, _, destinationPath):
-            return Self.created(path: destinationPath, destination: destination, source: source)
+    public func message(for operation: Operation) -> String {
+        switch operation.kind {
+        case let .makeFolder(path):
+            return Self.createdFolder(path: path, destination: operation.location)
 
-        case let .overwrite(source, destination, _, destinationItem):
-            return Self.updated(path: destinationItem.path, destination: destination, source: source)
+        case let .transfer(content, path, overwrite):
+            switch overwrite {
+            case .neverOverwrite:
+                if path != content.path {
+                    return Self.createdConflictCopy(path: path, destination: operation.location, source: content.sourceLocation)
+                }
+                return Self.created(path: path, destination: operation.location, source: content.sourceLocation)
+            case .ifVersionMatches:
+                return Self.updated(path: path, destination: operation.location, source: content.sourceLocation)
+            }
 
-        case let .createFolder(destination, path):
-            return Self.createdFolder(path: path, destination: destination)
+        case let .relocate(itemRef, newPath):
+            if itemRef.path.parent == newPath.parent {
+                return Self.renamed(from: itemRef.path, to: newPath, destination: operation.location)
+            }
+            return Self.moved(path: newPath, destination: operation.location)
 
-        case let .move(destination, _, newPath):
-            return Self.moved(path: newPath, destination: destination)
-
-        case let .rename(destination, item, newName):
-            let newPath = item.path.replacingLastComponent(with: newName)
-            return Self.renamed(from: item.path, to: newPath, destination: destination)
-
-        case let .trash(destination, item):
-            return Self.movedToTrash(path: item.path, destination: destination)
-
-        case let .createConflictCopy(source, destination, _, conflictPath):
-            return Self.createdConflictCopy(path: conflictPath, destination: destination, source: source)
+        case let .trash(itemRef):
+            return Self.movedToTrash(path: itemRef.path, destination: operation.location)
         }
     }
 
     public func entry(
-        for action: SyncAction,
+        for operation: Operation,
         syncSetID: UUID? = nil,
         runID: UUID? = nil,
         occurredAt: Date = Date()
@@ -191,9 +192,9 @@ public struct ActivityMessageCatalog: Sendable {
             syncSetID: syncSetID,
             runID: runID,
             category: .sync,
-            locationID: action.destinationLocation,
-            path: action.activityPath,
-            message: message(for: action)
+            locationID: operation.location,
+            path: operation.activityPath,
+            message: message(for: operation)
         )
     }
 
@@ -226,23 +227,17 @@ public struct ActivityMessageCatalog: Sendable {
     }
 }
 
-private extension SyncAction {
+private extension Operation {
     var activityPath: SyncPath? {
-        switch self {
-        case let .upload(_, _, _, destinationPath):
-            return destinationPath
-        case let .overwrite(_, _, _, destinationItem):
-            return destinationItem.path
-        case let .createFolder(_, path):
+        switch kind {
+        case let .makeFolder(path):
             return path
-        case let .move(_, _, newPath):
-            return newPath
-        case let .rename(_, item, newName):
-            return item.path.replacingLastComponent(with: newName)
-        case let .trash(_, item):
-            return item.path
-        case let .createConflictCopy(_, _, _, conflictPath):
-            return conflictPath
+        case let .transfer(_, path, _):
+            return path
+        case let .relocate(_, path):
+            return path
+        case let .trash(itemRef):
+            return itemRef.path
         }
     }
 }
