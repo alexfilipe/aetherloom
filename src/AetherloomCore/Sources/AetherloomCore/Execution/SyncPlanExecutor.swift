@@ -18,10 +18,10 @@ public struct SyncExecutionReport: Codable, Hashable, Sendable {
 }
 
 public actor SyncPlanExecutor {
-    private let providers: [LocationID: any CloudProvider]
+    private let providers: [LocationID: any StorageProvider]
     private let fileManager: FileManager
 
-    public init(providers: [LocationID: any CloudProvider], fileManager: FileManager = .default) {
+    public init(providers: [LocationID: any StorageProvider], fileManager: FileManager = .default) {
         self.providers = providers
         self.fileManager = fileManager
     }
@@ -55,12 +55,12 @@ public actor SyncPlanExecutor {
                 sourceItem: sourceItem,
                 destinationPath: destinationPath,
                 allowOverwrite: false,
-                expectedDestinationRevisionID: nil
+                expectedDestinationVersion: nil
             )
 
         case let .overwrite(source, destination, sourceItem, destinationItem):
             let destinationProvider = try provider(destination)
-            let currentDestination = try await destinationProvider.metadata(for: destinationItem)
+            let currentDestination = try await destinationProvider.currentState(of: destinationItem)
             if matchingContent(currentDestination, sourceItem) {
                 return false
             }
@@ -73,14 +73,14 @@ public actor SyncPlanExecutor {
                 sourceItem: sourceItem,
                 destinationPath: destinationItem.path,
                 allowOverwrite: true,
-                expectedDestinationRevisionID: destinationRevisionToken(destinationItem)
+                expectedDestinationVersion: destinationItem.version
             )
 
         case let .createFolder(destination, path):
             let destinationProvider = try provider(destination)
             do {
-                let existing = try await destinationProvider.metadata(
-                    for: ItemObservation(location: destination, path: path, kind: .folder)
+                let existing = try await destinationProvider.currentState(
+                    of: ItemObservation(location: destination, path: path, kind: .folder)
                 )
                 if existing.isFolder && !existing.isTrashed {
                     return false
@@ -88,24 +88,24 @@ public actor SyncPlanExecutor {
             } catch ProviderError.notFound {
                 // Missing is the normal create-folder path.
             }
-            _ = try await destinationProvider.createFolder(path: path)
+            _ = try await destinationProvider.makeFolder(at: path)
             return true
 
         case let .move(destination, item, newPath):
             let destinationProvider = try provider(destination)
-            let current = try await destinationProvider.metadata(for: item)
+            let current = try await destinationProvider.currentState(of: item)
             if current.path == newPath {
                 return false
             }
             guard matchingObservationVersion(current, item) else {
                 throw SyncExecutionError.destinationChangedRequiresReplan(provider: destination, path: item.path)
             }
-            _ = try await destinationProvider.move(item: current, to: newPath)
+            _ = try await destinationProvider.relocate(current, to: newPath)
             return true
 
         case let .rename(destination, item, newName):
             let destinationProvider = try provider(destination)
-            let current = try await destinationProvider.metadata(for: item)
+            let current = try await destinationProvider.currentState(of: item)
             let newPath = current.path.replacingLastComponent(with: newName)
             if current.path == newPath {
                 return false
@@ -113,19 +113,19 @@ public actor SyncPlanExecutor {
             guard matchingObservationVersion(current, item) else {
                 throw SyncExecutionError.destinationChangedRequiresReplan(provider: destination, path: item.path)
             }
-            _ = try await destinationProvider.rename(item: current, to: newName)
+            _ = try await destinationProvider.relocate(current, to: newPath)
             return true
 
         case let .trash(destination, item):
             let destinationProvider = try provider(destination)
-            let current = try await destinationProvider.metadata(for: item)
+            let current = try await destinationProvider.currentState(of: item)
             if current.isTrashed {
                 return false
             }
             guard matchingObservationVersion(current, item) else {
                 throw SyncExecutionError.destinationChangedRequiresReplan(provider: destination, path: item.path)
             }
-            try await destinationProvider.trash(item: current)
+            try await destinationProvider.trash(current)
             return true
 
         case let .createConflictCopy(source, destination, sourceItem, conflictPath):
@@ -135,7 +135,7 @@ public actor SyncPlanExecutor {
                 sourceItem: sourceItem,
                 destinationPath: conflictPath,
                 allowOverwrite: false,
-                expectedDestinationRevisionID: nil
+                expectedDestinationVersion: nil
             )
 
         case .pause:
@@ -149,14 +149,14 @@ public actor SyncPlanExecutor {
         sourceItem: ItemObservation,
         destinationPath: SyncPath,
         allowOverwrite: Bool,
-        expectedDestinationRevisionID: String?
+        expectedDestinationVersion: ItemVersion?
     ) async throws -> Bool {
         let sourceProvider = try provider(source)
         let destinationProvider = try provider(destination)
 
         do {
-            let existing = try await destinationProvider.metadata(
-                for: ItemObservation(location: destination, path: destinationPath, kind: .file)
+            let existing = try await destinationProvider.currentState(
+                of: ItemObservation(location: destination, path: destinationPath, kind: .file)
             )
             if matchingContent(existing, sourceItem) {
                 return false
@@ -171,20 +171,20 @@ public actor SyncPlanExecutor {
         let tempURL = temporaryURL(for: sourceItem)
         defer { try? fileManager.removeItem(at: tempURL) }
 
-        try await sourceProvider.download(sourceItem, to: tempURL)
+        try await sourceProvider.fetch(sourceItem, to: tempURL)
         do {
-            _ = try await destinationProvider.upload(
-                localURL: tempURL,
-                to: destinationPath,
-                options: UploadOptions(
+            _ = try await destinationProvider.store(
+                from: tempURL,
+                at: destinationPath,
+                options: storeOptions(
                     allowOverwrite: allowOverwrite,
-                    expectedDestinationRevisionID: expectedDestinationRevisionID
+                    expectedDestinationVersion: expectedDestinationVersion
                 )
             )
             return true
         } catch ProviderError.itemAlreadyExists {
-            let existing = try await destinationProvider.metadata(
-                for: ItemObservation(location: destination, path: destinationPath, kind: .file)
+            let existing = try await destinationProvider.currentState(
+                of: ItemObservation(location: destination, path: destinationPath, kind: .file)
             )
             if matchingContent(existing, sourceItem) {
                 return false
@@ -193,7 +193,7 @@ public actor SyncPlanExecutor {
         }
     }
 
-    private func provider(_ id: LocationID) throws -> any CloudProvider {
+    private func provider(_ id: LocationID) throws -> any StorageProvider {
         guard let provider = providers[id] else {
             throw SyncExecutionError.missingProvider(id)
         }
@@ -223,8 +223,14 @@ public actor SyncPlanExecutor {
         return lhs.version.isSameVersion(as: rhs.version)
     }
 
-    private func destinationRevisionToken(_ item: ItemObservation) -> String? {
-        item.version.revisionToken
+    private func storeOptions(
+        allowOverwrite: Bool,
+        expectedDestinationVersion: ItemVersion?
+    ) -> StoreOptions {
+        guard allowOverwrite else {
+            return StoreOptions(overwrite: .neverOverwrite)
+        }
+        return StoreOptions(overwrite: .ifVersionMatches(expectedDestinationVersion ?? ItemVersion()))
     }
 }
 

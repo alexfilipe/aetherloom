@@ -4,9 +4,9 @@ import Testing
 
 @Test func fileCreatedInOneProviderPropagatesToOthers() async throws {
     let syncSet = makeSyncSet()
-    let iCloud = FakeCloudProvider(id: .iCloudDrive)
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let iCloud = FakeStorageProvider(locationID: .iCloudDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let source = await google.putFile(path: "/Documents/Resume.docx", contents: data("resume"))
 
     let plan = await makePlan(syncSet: syncSet, providers: [iCloud, google, oneDrive])
@@ -19,9 +19,9 @@ import Testing
 
 @Test func folderCreatedInOneProviderPropagatesToOthers() async throws {
     let syncSet = makeSyncSet()
-    let iCloud = FakeCloudProvider(id: .iCloudDrive)
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let iCloud = FakeStorageProvider(locationID: .iCloudDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     await google.putFolder(path: "/Projects/Website")
 
     let plan = await makePlan(syncSet: syncSet, providers: [iCloud, google, oneDrive])
@@ -33,9 +33,9 @@ import Testing
 
 @Test func editedFileOverwritesUnchangedCopies() async throws {
     let syncSet = makeSyncSet()
-    let iCloud = FakeCloudProvider(id: .iCloudDrive)
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let iCloud = FakeStorageProvider(locationID: .iCloudDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let oldItems = await seedFile(path: "/Budget.xlsx", contents: "old", providers: [iCloud, google, oneDrive])
     let record = makeRecord(syncSetID: syncSet.id, path: "/Budget.xlsx", items: oldItems)
     let source = await google.putFile(path: "/Budget.xlsx", contents: data("new"))
@@ -50,9 +50,9 @@ import Testing
 
 @Test func independentEditsCreateConflictCopies() async throws {
     let syncSet = makeSyncSet()
-    let iCloud = FakeCloudProvider(id: .iCloudDrive)
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let iCloud = FakeStorageProvider(locationID: .iCloudDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let oldItems = await seedFile(path: "/Budget.xlsx", contents: "old", providers: [iCloud, google, oneDrive])
     let record = makeRecord(syncSetID: syncSet.id, path: "/Budget.xlsx", items: oldItems)
     await google.putFile(path: "/Budget.xlsx", contents: data("google edit"))
@@ -69,12 +69,12 @@ import Testing
 
 @Test func renamedFilePropagatesRename() async throws {
     let syncSet = makeSyncSet()
-    let iCloud = FakeCloudProvider(id: .iCloudDrive)
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let iCloud = FakeStorageProvider(locationID: .iCloudDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let oldItems = await seedFile(path: "/Old Name.txt", contents: "note", providers: [iCloud, google, oneDrive])
     let record = makeRecord(syncSetID: syncSet.id, path: "/Old Name.txt", items: oldItems)
-    _ = try await google.rename(item: oldItems[.googleDrive]!, to: "New Name.txt")
+    _ = try await google.relocate(oldItems[.googleDrive]!, to: "/New Name.txt")
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google, oneDrive])
 
@@ -85,12 +85,12 @@ import Testing
 
 @Test func movedFilePropagatesMove() async throws {
     let syncSet = makeSyncSet()
-    let iCloud = FakeCloudProvider(id: .iCloudDrive)
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let iCloud = FakeStorageProvider(locationID: .iCloudDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let oldItems = await seedFile(path: "/Report.txt", contents: "report", providers: [iCloud, google, oneDrive])
     let record = makeRecord(syncSetID: syncSet.id, path: "/Report.txt", items: oldItems)
-    _ = try await google.move(item: oldItems[.googleDrive]!, to: "/Archive/Report.txt")
+    _ = try await google.relocate(oldItems[.googleDrive]!, to: "/Archive/Report.txt")
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google, oneDrive])
 
@@ -101,9 +101,9 @@ import Testing
 
 @Test func deletedFileMovesMatchingFilesToTrash() async throws {
     let syncSet = makeSyncSet()
-    let iCloud = FakeCloudProvider(id: .iCloudDrive)
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let iCloud = FakeStorageProvider(locationID: .iCloudDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let oldItems = await seedFile(path: "/Old Notes.txt", contents: "old", providers: [iCloud, google, oneDrive])
     let record = makeRecord(syncSetID: syncSet.id, path: "/Old Notes.txt", items: oldItems)
     await google.remove(path: "/Old Notes.txt")
@@ -117,11 +117,11 @@ import Testing
 
 @Test func providerUnavailableDoesNotProduceDeleteActions() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let item = await oneDrive.putFile(path: "/Keep.txt", contents: data("keep"))
     let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.oneDrive: item])
-    await google.setUnavailable(reason: "Network unavailable")
+    await google.setAvailability(.unavailable(.networkUnreachable(detail: "Network unavailable")))
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
 
@@ -130,10 +130,40 @@ import Testing
     #expect(trashCount(plan) == 0)
 }
 
+@Test func disconnectedLocalVolumePausesWithCanonicalUnavailableSentenceAndNoTrashActions() async throws {
+    let syncSet = makeSyncSet([.localFolder, .nasFolder])
+    let local = FakeStorageProvider(locationID: .localFolder)
+    let nas = FakeStorageProvider(locationID: .nasFolder)
+    let item = await nas.putFile(path: "/Keep.txt", contents: data("keep"))
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.nasFolder: item])
+    await local.setAvailability(.unavailable(.volumeNotMounted(detail: "External disk is not mounted.")))
+
+    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
+
+    #expect(plan.riskLevel == .paused)
+    #expect(plan.actions.first?.pauseReason == "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.")
+    #expect(trashCount(plan) == 0)
+}
+
+@Test func unreachableNASPausesWithCanonicalUnavailableSentenceAndNoTrashActions() async throws {
+    let syncSet = makeSyncSet([.localFolder, .nasFolder])
+    let local = FakeStorageProvider(locationID: .localFolder)
+    let nas = FakeStorageProvider(locationID: .nasFolder)
+    let item = await local.putFile(path: "/Keep.txt", contents: data("keep"))
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.localFolder: item])
+    await nas.setAvailability(.unavailable(.volumeUnreachable(detail: "Sleeping NAS did not respond.")))
+
+    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
+
+    #expect(plan.riskLevel == .paused)
+    #expect(plan.actions.first?.pauseReason == "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.")
+    #expect(trashCount(plan) == 0)
+}
+
 @Test func incompleteScanDoesNotProduceDeleteActions() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let item = await oneDrive.putFile(path: "/Keep.txt", contents: data("keep"))
     let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.oneDrive: item])
     await google.setIncompleteScan(reason: "Pagination stopped early")
@@ -145,10 +175,46 @@ import Testing
     #expect(trashCount(plan) == 0)
 }
 
+@Test func degradedHashIndependentEditsUseSizeAndMtimeToPreserveConflicts() async throws {
+    var capabilities = ProviderCapabilities.fullFidelity
+    capabilities.hasContentHashes = false
+    let syncSet = makeSyncSet([.localFolder, .nasFolder])
+    let local = FakeStorageProvider(locationID: .localFolder, capabilities: capabilities)
+    let nas = FakeStorageProvider(locationID: .nasFolder, capabilities: capabilities)
+    let oldItems = await seedFile(path: "/Design.sketch", contents: "base", providers: [local, nas])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Design.sketch", items: oldItems)
+    await local.putFile(path: "/Design.sketch", contents: data("aaaa"), modifiedAt: fixedDate.addingTimeInterval(10))
+    await nas.putFile(path: "/Design.sketch", contents: data("bbbb"), modifiedAt: fixedDate.addingTimeInterval(20))
+
+    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
+
+    #expect(plan.riskLevel == .needsReview)
+    #expect(plan.conflicts.count == 1)
+    #expect(conflictCopyCount(plan) == 2)
+    #expect(overwriteCount(plan) == 0)
+}
+
+@Test func degradedHashEqualSizeAndMtimeProducesNoAction() async throws {
+    var capabilities = ProviderCapabilities.fullFidelity
+    capabilities.hasContentHashes = false
+    let syncSet = makeSyncSet([.localFolder, .nasFolder])
+    let local = FakeStorageProvider(locationID: .localFolder, capabilities: capabilities)
+    let nas = FakeStorageProvider(locationID: .nasFolder, capabilities: capabilities)
+    let oldItems = await seedFile(path: "/Same.dat", contents: "base", providers: [local, nas])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Same.dat", items: oldItems)
+    await local.putFile(path: "/Same.dat", contents: data("aaaa"), modifiedAt: fixedDate)
+    await nas.putFile(path: "/Same.dat", contents: data("bbbb"), modifiedAt: fixedDate)
+
+    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
+
+    #expect(plan.actions.isEmpty)
+    #expect(plan.conflicts.isEmpty)
+}
+
 @Test func iCloudPlaceholderDoesNotProduceDeleteActions() async throws {
     let syncSet = makeSyncSet([.iCloudDrive, .googleDrive])
-    let iCloud = FakeCloudProvider(id: .iCloudDrive)
-    let google = FakeCloudProvider(id: .googleDrive)
+    let iCloud = FakeStorageProvider(locationID: .iCloudDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
     let icloudObservation = await iCloud.putFile(path: "/Photo.jpg", contents: data("placeholder"), isPlaceholder: true)
     let googleItem = await google.putFile(path: "/Photo.jpg", contents: data("placeholder"))
     let record = makeRecord(syncSetID: syncSet.id, path: "/Photo.jpg", items: [.iCloudDrive: icloudObservation, .googleDrive: googleItem])
@@ -162,8 +228,8 @@ import Testing
 
 @Test func massDeletePausesPlan() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     var records: [BaseRecord] = []
     for index in 0..<6 {
         let path = SyncPath("/Deleted-\(index).txt")
@@ -183,8 +249,8 @@ import Testing
 
 @Test func massEditPausesPlan() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     var records: [BaseRecord] = []
     for index in 0..<6 {
         let path = SyncPath("/Edited-\(index).txt")
@@ -204,8 +270,8 @@ import Testing
 
 @Test func destinationChangedAfterPlanningStopsExecutionForReplan() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     let googleOld = await google.putFile(path: "/Draft.txt", contents: data("old"))
     let oneDriveOld = await oneDrive.putFile(path: "/Draft.txt", contents: data("old"))
     let record = makeRecord(syncSetID: syncSet.id, path: "/Draft.txt", items: [.googleDrive: googleOld, .oneDrive: oneDriveOld])
@@ -225,8 +291,8 @@ import Testing
 
 @Test func rerunningSameSyncPlanIsIdempotent() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     await google.putFile(path: "/New.txt", contents: data("hello"))
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
     let executor = SyncPlanExecutor(providers: [.googleDrive: google, .oneDrive: oneDrive])
@@ -252,8 +318,8 @@ import Testing
 
 @Test func caseInsensitiveFilenameCollisionsAreHandledSafely() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     await google.putFile(path: "/Readme.txt", contents: data("google"))
     await oneDrive.putFile(path: "/README.txt", contents: data("onedrive"))
 
@@ -267,8 +333,8 @@ import Testing
 
 @Test func unicodeFilenamesAreHandledSafely() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     await google.putFile(path: "/Résumé.txt", contents: data("unicode"))
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
@@ -278,8 +344,8 @@ import Testing
 
 @Test func emptyFoldersAreSynchronized() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     await google.putFolder(path: "/Empty")
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
@@ -289,8 +355,8 @@ import Testing
 
 @Test func zeroByteFilesAreSynchronized() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     await google.putFile(path: "/zero.dat", contents: Data())
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
@@ -300,8 +366,8 @@ import Testing
 
 @Test func excludedFilesAreIgnored() async throws {
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
-    let google = FakeCloudProvider(id: .googleDrive)
-    let oneDrive = FakeCloudProvider(id: .oneDrive)
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
     await google.putFile(path: "/.DS_Store", contents: data("metadata"))
     let settings = SyncSettings(exclusions: [
         SyncExclusion(pattern: ".DS_Store", matchStyle: .filename)
@@ -312,12 +378,78 @@ import Testing
     #expect(plan.actions.isEmpty)
 }
 
+@Test func builtInAetherloomFolderExclusionAppliesWithEmptyUserExclusions() async throws {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    await google.putFile(path: "/.aetherloom/trash/run/Keep.txt", contents: data("internal"))
+
+    let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive], settings: SyncSettings())
+
+    #expect(plan.actions.isEmpty)
+}
+
+@Test func symlinkExclusionAppliesWithEmptyUserExclusions() async throws {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    await google.putSymlink(path: "/Linked", target: "/Volumes/Other")
+
+    let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive], settings: SyncSettings())
+
+    #expect(plan.actions.isEmpty)
+}
+
+@Test func scanCompleteEmptyOnlyWhenAvailableAndUnscripted() async throws {
+    let provider = FakeStorageProvider(locationID: .localFolder)
+
+    let empty = await provider.scan(.entireDrive)
+    #expect(empty.status == .complete)
+    #expect(empty.observations.all.isEmpty)
+
+    await provider.setAvailability(.unavailable(.scopeMissing(detail: "Selected folder is gone.")))
+    let unavailable = await provider.scan(.entireDrive)
+    #expect(unavailable.status == .unavailable(reason: .scopeMissing(detail: "Selected folder is gone.")))
+
+    await provider.setAvailability(.available)
+    await provider.setIncompleteScan(reason: "Enumeration stopped.")
+    let incomplete = await provider.scan(.entireDrive)
+    #expect(incomplete.status == .incomplete(reason: "Enumeration stopped."))
+}
+
+@Test func planningRecordsOnlyScanCalls() async throws {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    await google.putFile(path: "/OnlyScan.txt", contents: data("scan"))
+    await google.clearCallLog()
+    await oneDrive.clearCallLog()
+
+    _ = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
+
+    #expect(await google.callLog().map(\.operation) == [.scan])
+    #expect(await oneDrive.callLog().map(\.operation) == [.scan])
+}
+
+@Test func fakeTrashKeepsContentRetrievable() async throws {
+    let provider = FakeStorageProvider(locationID: .googleDrive)
+    let item = await provider.putFile(path: "/TrashMe.txt", contents: data("preserve me"))
+    try await provider.trash(item)
+    let trashed = try #require(await provider.item(at: "/TrashMe.txt", includeTrashed: true))
+    let fetchURL = try temporaryTestURL(name: "fake-trash-retrievable.txt")
+    defer { try? FileManager.default.removeItem(at: fetchURL) }
+
+    try await provider.fetch(trashed, to: fetchURL)
+
+    #expect(try Data(contentsOf: fetchURL) == data("preserve me"))
+}
+
 @Test func twoSameKindLocationsPropagateCreates() async throws {
     let first = LocationID(rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!)
     let second = LocationID(rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000002")!)
     let syncSet = makeSyncSet([first, second])
-    let firstFolder = FakeCloudProvider(id: first, displayName: "Local A")
-    let secondFolder = FakeCloudProvider(id: second, displayName: "Local B")
+    let firstFolder = FakeStorageProvider(locationID: first, displayName: "Local A")
+    let secondFolder = FakeStorageProvider(locationID: second, displayName: "Local B")
     await firstFolder.putFile(path: "/Shared.txt", contents: data("same kind"))
 
     let plan = await makePlan(syncSet: syncSet, providers: [firstFolder, secondFolder])
@@ -328,8 +460,8 @@ import Testing
 
 @Test func localAndNASLocationsPropagateCreates() async throws {
     let syncSet = makeSyncSet([.localFolder, .nasFolder])
-    let local = FakeCloudProvider(id: .localFolder)
-    let nas = FakeCloudProvider(id: .nasFolder)
+    let local = FakeStorageProvider(locationID: .localFolder)
+    let nas = FakeStorageProvider(locationID: .nasFolder)
     await local.putFile(path: "/Media.mov", contents: data("movie"))
 
     let plan = await makePlan(syncSet: syncSet, providers: [local, nas])
@@ -340,8 +472,8 @@ import Testing
 
 @Test func localAndNASLocationsPreserveIndependentEditConflicts() async throws {
     let syncSet = makeSyncSet([.localFolder, .nasFolder])
-    let local = FakeCloudProvider(id: .localFolder)
-    let nas = FakeCloudProvider(id: .nasFolder)
+    let local = FakeStorageProvider(locationID: .localFolder)
+    let nas = FakeStorageProvider(locationID: .nasFolder)
     let oldItems = await seedFile(path: "/Sketch.psd", contents: "base", providers: [local, nas])
     let record = makeRecord(syncSetID: syncSet.id, path: "/Sketch.psd", items: oldItems)
     await local.putFile(path: "/Sketch.psd", contents: data("local"))
@@ -357,8 +489,8 @@ import Testing
 
 @Test func localAndNASLocationsPropagateDeletesToTrash() async throws {
     let syncSet = makeSyncSet([.localFolder, .nasFolder])
-    let local = FakeCloudProvider(id: .localFolder)
-    let nas = FakeCloudProvider(id: .nasFolder)
+    let local = FakeStorageProvider(locationID: .localFolder)
+    let nas = FakeStorageProvider(locationID: .nasFolder)
     let oldItems = await seedFile(path: "/Archive.zip", contents: "base", providers: [local, nas])
     let record = makeRecord(syncSetID: syncSet.id, path: "/Archive.zip", items: oldItems)
     await local.remove(path: "/Archive.zip")
@@ -419,22 +551,22 @@ private func makeSyncSet(_ locations: [LocationID] = [.iCloudDrive, .googleDrive
 private func makePlan(
     syncSet: SyncSet,
     records: [BaseRecord] = [],
-    providers: [FakeCloudProvider],
+    providers: [FakeStorageProvider],
     settings: SyncSettings? = nil
 ) async -> SyncPlan {
     let resolvedSettings = settings ?? syncSet.settings
     let locations = providers.map {
         SyncLocation(
-            id: $0.id,
-            kind: $0.id.defaultKind,
+            id: $0.locationID,
+            kind: $0.locationID.defaultKind,
             displayName: $0.displayName,
             scope: .entireDrive
         )
     }
     var snapshots: [LocationSnapshot] = []
     for provider in providers {
-        let scope = locations.first { $0.id == provider.id }?.scope ?? .entireDrive
-        snapshots.append(await provider.snapshot(scope: scope))
+        let scope = locations.first { $0.id == provider.locationID }?.scope ?? .entireDrive
+        snapshots.append(await provider.scan(scope))
     }
     return SyncPlanner().plan(
         SyncPlanningInput(
@@ -465,11 +597,11 @@ private func makeEnvironment(locations: [SyncLocation] = [
 private func seedFile(
     path: SyncPath,
     contents: String,
-    providers: [FakeCloudProvider]
+    providers: [FakeStorageProvider]
 ) async -> [LocationID: ItemObservation] {
     var items: [LocationID: ItemObservation] = [:]
     for provider in providers {
-        items[provider.id] = await provider.putFile(path: path, contents: data(contents), modifiedAt: fixedDate)
+        items[provider.locationID] = await provider.putFile(path: path, contents: data(contents), modifiedAt: fixedDate)
     }
     return items
 }
@@ -504,6 +636,15 @@ private func makeRecord(
 
 private func data(_ string: String) -> Data {
     Data(string.utf8)
+}
+
+private func temporaryTestURL(name: String) throws -> URL {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("AetherloomCoreTests", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent(name)
+    try? FileManager.default.removeItem(at: url)
+    return url
 }
 
 private let fixedDate = Date(timeIntervalSince1970: 1_770_000_000)

@@ -528,13 +528,6 @@ public struct SyncConflict: Codable, Hashable, Sendable {
     }
 }
 
-public enum ProviderScopeStatus: Codable, Hashable, Sendable {
-    case available
-    case unavailable(reason: String)
-    case incomplete(reason: String)
-    case warning(message: String)
-}
-
 public struct ChangeCursor: Codable, Hashable, Sendable {
     public var rawValue: String
 
@@ -543,31 +536,9 @@ public struct ChangeCursor: Codable, Hashable, Sendable {
     }
 }
 
-public struct ChangePage: Codable, Hashable, Sendable {
-    public var changes: [SyncEvent]
-    public var nextCursor: ChangeCursor?
-    public var isComplete: Bool
-
-    public init(changes: [SyncEvent], nextCursor: ChangeCursor? = nil, isComplete: Bool = true) {
-        self.changes = changes
-        self.nextCursor = nextCursor
-        self.isComplete = isComplete
-    }
-}
-
-public struct UploadOptions: Codable, Hashable, Sendable {
-    public var allowOverwrite: Bool
-    public var expectedDestinationRevisionID: String?
-
-    public init(allowOverwrite: Bool = false, expectedDestinationRevisionID: String? = nil) {
-        self.allowOverwrite = allowOverwrite
-        self.expectedDestinationRevisionID = expectedDestinationRevisionID
-    }
-}
-
 public enum ScanStatus: Codable, Hashable, Sendable {
     case complete
-    case unavailable(reason: String)
+    case unavailable(reason: LocationUnavailabilityReason)
     case incomplete(reason: String)
 }
 
@@ -684,7 +655,25 @@ public struct SyncSettings: Codable, Hashable, Sendable {
     }
 
     public func isExcluded(_ path: SyncPath) -> Bool {
-        exclusions.contains { $0.matches(path) }
+        isBuiltInExcludedPath(path) || exclusions.contains { $0.matches(path) }
+    }
+
+    public func isExcluded(_ observation: ItemObservation) -> Bool {
+        if case .symlink = observation.kind {
+            return true
+        }
+        return isExcluded(observation.path)
+    }
+
+    public func isExcluded(path: SyncPath, kind: ItemKind) -> Bool {
+        if case .symlink = kind {
+            return true
+        }
+        return isExcluded(path)
+    }
+
+    private func isBuiltInExcludedPath(_ path: SyncPath) -> Bool {
+        path.rawValue == "/.aetherloom" || path.rawValue.hasPrefix("/.aetherloom/")
     }
 }
 

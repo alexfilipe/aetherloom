@@ -53,9 +53,9 @@ public struct SyncPlanner: Sendable {
             case let .unavailable(reason):
                 return pausedPlan(
                     syncSetID: input.syncSet.id,
-                    reason: "Sync paused because \(locationName(location, locationsByID: locationsByID, environment: environment)) is unavailable. No files will be deleted while a provider is unreachable.",
+                    reason: "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.",
                     location: location,
-                    detail: reason
+                    detail: reason.detail
                 )
             case let .incomplete(reason):
                 return pausedPlan(
@@ -70,7 +70,7 @@ public struct SyncPlanner: Sendable {
         let placeholderItems = input.snapshots
             .flatMap(\.observations.all)
             .filter {
-                locationsByID[$0.location]?.kind == .iCloudDrive && $0.isPlaceholder && !input.settings.isExcluded($0.path)
+                locationsByID[$0.location]?.kind == .iCloudDrive && $0.isPlaceholder && !input.settings.isExcluded($0)
             }
         if let placeholder = placeholderItems.first {
             return pausedPlan(
@@ -164,16 +164,16 @@ private struct PlanningContext {
 
         for location in locationIDs {
             let items = snapshotsByLocation[location]?.observations.all.filter {
-                !$0.isTrashed && !input.settings.isExcluded($0.path)
+                !$0.isTrashed && !input.settings.isExcluded($0)
             } ?? []
             itemsByLocationAndPath[location] = snapshotsByLocation[location]?.observations.byPath.filter {
-                !input.settings.isExcluded($0.key) && !$0.value.isTrashed
+                !input.settings.isExcluded($0.value) && !$0.value.isTrashed
             } ?? Dictionary(uniqueKeysWithValues: items.map { ($0.path, $0) })
             itemsByLocationAndInsensitivePath[location] = snapshotsByLocation[location]?.observations.byCaseFoldedPath.filter {
-                !input.settings.isExcluded($0.value.path) && !$0.value.isTrashed
+                !input.settings.isExcluded($0.value) && !$0.value.isTrashed
             } ?? Dictionary(items.map { ($0.path.caseInsensitiveKey, $0) }) { first, _ in first }
             itemsByLocationAndID[location] = snapshotsByLocation[location]?.observations.byItemID.filter {
-                !input.settings.isExcluded($0.value.path) && !$0.value.isTrashed
+                !input.settings.isExcluded($0.value) && !$0.value.isTrashed
             } ?? Dictionary(
                 uniqueKeysWithValues: items.compactMap { item in
                     item.itemID.map { ($0, item) }
@@ -185,7 +185,7 @@ private struct PlanningContext {
     mutating func processExistingRecords() {
         let records = input.records
             .filter { $0.syncSetID == input.syncSet.id }
-            .filter { !input.settings.isExcluded($0.path) }
+            .filter { !input.settings.isExcluded(path: $0.path, kind: $0.kind) }
             .sorted { $0.path < $1.path }
 
         for record in records {
