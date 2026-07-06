@@ -29,6 +29,7 @@ public struct ConflictDecision: Codable, Hashable, Sendable, Identifiable {
     }
 
     public var id: UUID
+    public var syncSetID: UUID?
     public var kind: ConflictKind
     public var path: SyncPath
     public var versions: [ConflictVersion]
@@ -37,6 +38,7 @@ public struct ConflictDecision: Codable, Hashable, Sendable, Identifiable {
 
     public init(
         id: UUID = UUID(),
+        syncSetID: UUID? = nil,
         kind: ConflictKind = .editEdit,
         path: SyncPath,
         versions: [ConflictVersion] = [],
@@ -44,6 +46,7 @@ public struct ConflictDecision: Codable, Hashable, Sendable, Identifiable {
         message: String
     ) {
         self.id = id
+        self.syncSetID = syncSetID
         self.kind = kind
         self.path = path
         self.versions = versions

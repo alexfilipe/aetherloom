@@ -93,13 +93,13 @@ public enum HoldReason: Codable, Hashable, Sendable {
     public var message: String {
         switch self {
         case .conflicts:
-            return "This file changed in more than one place. Aetherloom preserved both versions."
+            return ActivityMessageCatalog.conflictPreserved
         case .massDeletion:
-            return "Aetherloom found many deletions. This may be intentional, but sync is paused until you review it."
+            return ActivityMessageCatalog.manyDeletions
         case .massEdit:
-            return "Aetherloom found many edits. This may be intentional, but sync is paused until you review it."
+            return ActivityMessageCatalog.manyEdits
         case .deletionsNeedReview:
-            return "Aetherloom found deletions. Review before moving matching files to trash."
+            return ActivityMessageCatalog.deletionsNeedReview
         }
     }
 }

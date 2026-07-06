@@ -4,9 +4,32 @@ import Foundation
 enum CanonicalCoding {
     static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(dateString(date))
+        }
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
+    }
+
+    static func decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let string = try container.decode(String.self)
+            guard let date = date(from: string) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Expected ISO-8601 date with fractional seconds."
+                )
+            }
+            return date
+        }
+        return decoder
+    }
+
+    static func dateString(_ date: Date) -> String {
+        fractionalDateFormatter().string(from: date)
     }
 
     static func sha256Hex(_ data: Data) -> String {
@@ -15,6 +38,24 @@ enum CanonicalCoding {
 
     static func sha256Hex(_ string: String) -> String {
         sha256Hex(Data(string.utf8))
+    }
+
+    private static func date(from string: String) -> Date? {
+        fractionalDateFormatter().date(from: string) ?? wholeSecondDateFormatter().date(from: string)
+    }
+
+    private static func fractionalDateFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }
+
+    private static func wholeSecondDateFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
     }
 }
 

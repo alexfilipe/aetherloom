@@ -63,7 +63,7 @@ private struct SnapshotFingerprintRollup: Codable, Hashable, Sendable, Comparabl
                 String(describing: observation.kind),
                 observation.version.contentHash ?? "",
                 observation.version.size.map(String.init) ?? "",
-                observation.version.modifiedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "",
+                observation.version.modifiedAt.map(CanonicalCoding.dateString) ?? "",
                 observation.version.revisionToken ?? "",
                 observation.isPlaceholder ? "placeholder" : "materialized",
                 observation.isTrashed ? "trashed" : "active"

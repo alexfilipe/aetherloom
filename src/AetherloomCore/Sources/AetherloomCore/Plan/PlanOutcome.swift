@@ -43,11 +43,11 @@ public enum RefusalReason: Codable, Hashable, Sendable {
     public var message: String {
         switch self {
         case .locationUnavailable:
-            return "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable."
+            return ActivityMessageCatalog.providerUnavailable
         case .scanIncomplete:
-            return "Sync paused because this provider returned an incomplete scan. No files will be deleted from an incomplete scan."
+            return ActivityMessageCatalog.scanIncomplete
         case .baseStateUnreadable:
-            return "Sync paused because the base state is unreadable. No files will be deleted while sync memory is unreadable."
+            return ActivityMessageCatalog.baseStateUnreadable
         }
     }
 }
