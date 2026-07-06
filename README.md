@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="design/mark/AetherloomAppIcon-macOS27-gradient-cropped-1024.png" width="140" alt="Aetherloom app icon" />
+  <img src="design/AetherloomAppIcon-macOS27-gradient-cropped-1024.png" width="140" alt="Aetherloom app icon" />
 </p>
 
 <h1 align="center">Aetherloom</h1>
