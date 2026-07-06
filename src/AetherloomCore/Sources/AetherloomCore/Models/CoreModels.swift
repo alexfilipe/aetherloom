@@ -506,28 +506,6 @@ public struct SyncWarning: Codable, Hashable, Sendable {
     }
 }
 
-public struct SyncConflict: Codable, Hashable, Sendable {
-    public var id: UUID
-    public var path: SyncPath
-    public var locations: [LocationID]
-    public var items: [ItemObservation]
-    public var message: String
-
-    public init(
-        id: UUID = UUID(),
-        path: SyncPath,
-        locations: [LocationID],
-        items: [ItemObservation],
-        message: String
-    ) {
-        self.id = id
-        self.path = path
-        self.locations = locations
-        self.items = items
-        self.message = message
-    }
-}
-
 public struct ChangeCursor: Codable, Hashable, Sendable {
     public var rawValue: String
 
