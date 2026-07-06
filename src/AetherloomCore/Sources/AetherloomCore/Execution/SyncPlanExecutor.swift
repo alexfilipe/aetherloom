@@ -2,7 +2,6 @@ import Foundation
 
 public enum SyncExecutionError: Error, Equatable, Sendable {
     case missingProvider(LocationID)
-    case planPaused(reason: String)
     case planNeedsReview
     case destinationChangedRequiresReplan(provider: LocationID, path: SyncPath)
 }
@@ -27,15 +26,12 @@ public actor SyncPlanExecutor {
     }
 
     public func execute(_ plan: SyncPlan) async throws -> SyncExecutionReport {
-        if let pauseReason = plan.actions.compactMap(\.pauseReason).first {
-            throw SyncExecutionError.planPaused(reason: pauseReason)
-        }
-        guard plan.riskLevel == .safe, plan.isAutoExecutable else {
+        guard plan.gate.isClear, plan.isAutoExecutable else {
             throw SyncExecutionError.planNeedsReview
         }
 
         var report = SyncExecutionReport()
-        for action in plan.actions {
+        for action in plan.legacyActions {
             let didApply = try await apply(action)
             if didApply {
                 report.appliedActions.append(action)
@@ -137,9 +133,6 @@ public actor SyncPlanExecutor {
                 allowOverwrite: false,
                 expectedDestinationVersion: nil
             )
-
-        case .pause:
-            return false
         }
     }
 
@@ -231,14 +224,5 @@ public actor SyncPlanExecutor {
             return StoreOptions(overwrite: .neverOverwrite)
         }
         return StoreOptions(overwrite: .ifVersionMatches(expectedDestinationVersion ?? ItemVersion()))
-    }
-}
-
-extension SyncAction {
-    public var pauseReason: String? {
-        if case let .pause(reason) = self {
-            return reason
-        }
-        return nil
     }
 }

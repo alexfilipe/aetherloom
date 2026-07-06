@@ -62,7 +62,7 @@ public struct ConflictDecision: Codable, Hashable, Sendable, Identifiable {
 
 public typealias SyncConflict = ConflictDecision
 
-public enum ItemVerdict: Hashable, Sendable {
+public enum ItemVerdict: Codable, Hashable, Sendable {
     case inSync
     case propagateContent(from: LocationID, to: Set<LocationID>)
     case propagateCreation(from: LocationID, to: Set<LocationID>)

@@ -83,12 +83,6 @@ public struct SyncActivityLogFormatter: Sendable {
                 path: conflictPath,
                 message: "Created conflict copy \"\(conflictPath.rawValue)\" in \(destination.displayName) from \(source.displayName)."
             )
-
-        case let .pause(reason):
-            return SyncActivityLogEntry(
-                occurredAt: occurredAt,
-                message: reason
-            )
         }
     }
 }

@@ -6,91 +6,56 @@ public struct SyncPlanningInput: Sendable {
     public var records: [BaseRecord]
     public var snapshots: [LocationSnapshot]
     public var settings: SyncSettings
+    public var baseStateUnreadableDetail: String?
 
     public init(
         syncSet: SyncSet,
         locations: [SyncLocation] = [],
         records: [BaseRecord] = [],
         snapshots: [LocationSnapshot],
-        settings: SyncSettings? = nil
+        settings: SyncSettings? = nil,
+        baseStateUnreadableDetail: String? = nil
     ) {
         self.syncSet = syncSet
         self.locations = locations
         self.records = records
         self.snapshots = snapshots
         self.settings = settings ?? syncSet.settings
+        self.baseStateUnreadableDetail = baseStateUnreadableDetail
     }
 }
 
 public struct SyncPlanner: Sendable {
-    private let safetyAnalyzer: SafetyAnalyzer
-
-    public init(safetyAnalyzer: SafetyAnalyzer = SafetyAnalyzer()) {
-        self.safetyAnalyzer = safetyAnalyzer
-    }
+    public init() {}
 
     public func plan(
         _ input: SyncPlanningInput,
         environment: PlanningEnvironment
-    ) -> SyncPlan {
+    ) -> PlanOutcome {
         let locationIDs = input.syncSet.locations.sorted()
         let snapshotsByLocation = Dictionary(uniqueKeysWithValues: input.snapshots.map { ($0.location, $0) })
         let locationsByID = Dictionary(uniqueKeysWithValues: input.locations.map { ($0.id, $0) })
-        let missingSnapshots = locationIDs.filter { snapshotsByLocation[$0] == nil }
-        if let missingLocation = missingSnapshots.first {
-            return pausedPlan(
-                syncSetID: input.syncSet.id,
-                reason: "Sync paused because \(locationName(missingLocation, locationsByID: locationsByID, environment: environment)) has no scan snapshot. No files will be deleted while provider state is unknown.",
-                location: missingLocation
-            )
+        let reasons = refusalReasons(
+            input: input,
+            locationIDs: locationIDs,
+            snapshotsByLocation: snapshotsByLocation,
+            locationsByID: locationsByID
+        )
+        if !reasons.isEmpty {
+            return .refusal(SyncRefusal(syncSetID: input.syncSet.id, reasons: reasons, occurredAt: environment.now))
         }
 
-        for location in locationIDs {
-            guard let snapshot = snapshotsByLocation[location] else { continue }
-            switch snapshot.status {
-            case .complete:
-                break
-            case let .unavailable(reason):
-                return pausedPlan(
-                    syncSetID: input.syncSet.id,
-                    reason: "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.",
-                    location: location,
-                    detail: reason.detail
-                )
-            case let .incomplete(reason):
-                return pausedPlan(
-                    syncSetID: input.syncSet.id,
-                    reason: "Sync paused because \(locationName(location, locationsByID: locationsByID, environment: environment)) returned an incomplete scan. No files will be deleted from an incomplete scan.",
-                    location: location,
-                    detail: reason
-                )
-            }
-        }
-
-        let placeholderItems = input.snapshots
-            .flatMap(\.observations.all)
-            .filter {
-                locationsByID[$0.location]?.kind == .iCloudDrive && $0.isPlaceholder && !input.settings.isExcluded($0)
-            }
-        if let placeholder = placeholderItems.first {
-            return pausedPlan(
-                syncSetID: input.syncSet.id,
-                reason: "Sync paused because \(placeholder.path.rawValue) in iCloud Drive is a placeholder. No files will be deleted while iCloud files are unavailable.",
-                location: placeholder.location,
-                path: placeholder.path
-            )
-        }
-
+        let syncSet = SyncSet(
+            id: input.syncSet.id,
+            name: input.syncSet.name,
+            locations: input.syncSet.locations,
+            mode: input.syncSet.mode,
+            settings: input.settings,
+            createdAt: input.syncSet.createdAt,
+            updatedAt: input.syncSet.updatedAt
+        )
         let reconciliationInput = ReconciliationInput(
-            syncSet: SyncSet(
-                id: input.syncSet.id,
-                name: input.syncSet.name,
-                locations: input.syncSet.locations,
-                mode: input.syncSet.mode,
-                settings: input.settings,
-                createdAt: input.syncSet.createdAt,
-                updatedAt: input.syncSet.updatedAt
-            ),
+            syncSet: syncSet,
             base: input.records,
             snapshots: snapshotsByLocation,
             environment: environment
@@ -101,102 +66,188 @@ public struct SyncPlanner: Sendable {
                 ReconciledItem(item: item, verdict: reconciler.reconcile(item))
             }
         )
-        let renderer = LegacyPlanRenderer(
-            syncSet: input.syncSet,
+        let builder = PlanLowerer(
+            syncSet: syncSet,
             settings: input.settings,
             locationIDs: locationIDs,
+            locationsByID: locationsByID,
             environment: environment
         )
-        let rendered = renderer.render(reconciled)
-
-        var plan = SyncPlan(
-            syncSetID: input.syncSet.id,
-            actions: rendered.actions,
-            warnings: rendered.warnings,
-            conflicts: rendered.conflicts
+        let lowered = builder.lower(reconciled)
+        let trackedCount = max(input.records.filter { !input.settings.isExcluded(path: $0.path, kind: $0.kind) }.count, 1)
+        let gate = ExecutionGate.evaluate(
+            decisions: lowered.decisions,
+            trackedCount: trackedCount,
+            settings: input.settings,
+            mode: syncSet.mode
         )
-        plan.riskLevel = SafetyAnalyzer.riskLevel(for: plan)
-        plan.isAutoExecutable = SafetyAnalyzer.isAutoExecutable(plan)
-        return safetyAnalyzer.analyze(
-            plan: plan,
-            trackedItemCount: max(input.records.filter { !input.settings.isExcluded(path: $0.path, kind: $0.kind) }.count, 1),
-            settings: input.settings
+        let warnings = lowered.legacyWarnings + gateWarnings(gate)
+        let fingerprint = PlanFingerprint.compute(
+            syncSetID: syncSet.id,
+            decisions: lowered.decisions,
+            schedule: lowered.schedule,
+            gate: gate,
+            snapshots: input.snapshots
         )
-    }
 
-    private func pausedPlan(
-        syncSetID: UUID,
-        reason: String,
-        location: LocationID,
-        detail: String? = nil,
-        path: SyncPath? = nil
-    ) -> SyncPlan {
-        let message = detail.map { "\(reason) \($0)" } ?? reason
-        return SyncPlan(
-            syncSetID: syncSetID,
-            actions: [.pause(reason: reason)],
-            warnings: [
-                SyncWarning(severity: .pause, message: message, location: location, path: path)
-            ],
-            riskLevel: .paused,
-            isAutoExecutable: false
+        return .plan(
+            SyncPlan(
+                syncSetID: syncSet.id,
+                generatedAt: environment.now,
+                decisions: lowered.decisions,
+                schedule: lowered.schedule,
+                conflicts: lowered.conflicts,
+                waiting: lowered.waiting,
+                gate: gate,
+                fingerprint: fingerprint,
+                legacyActions: lowered.legacyActions,
+                legacyWarnings: warnings
+            )
         )
     }
 
-    private func locationName(
-        _ id: LocationID,
-        locationsByID: [LocationID: SyncLocation],
-        environment: PlanningEnvironment
-    ) -> String {
-        environment.locationNames[id] ?? locationsByID[id]?.displayName ?? id.displayName
+    private func refusalReasons(
+        input: SyncPlanningInput,
+        locationIDs: [LocationID],
+        snapshotsByLocation: [LocationID: LocationSnapshot],
+        locationsByID: [LocationID: SyncLocation]
+    ) -> [RefusalReason] {
+        var reasons: [RefusalReason] = []
+
+        if let detail = input.baseStateUnreadableDetail {
+            reasons.append(.baseStateUnreadable(detail: detail))
+        }
+
+        for location in locationIDs {
+            guard let snapshot = snapshotsByLocation[location] else {
+                reasons.append(.locationUnavailable(location, .unknown(detail: "Missing scan snapshot.")))
+                continue
+            }
+            switch snapshot.status {
+            case .complete:
+                break
+            case let .unavailable(reason):
+                reasons.append(.locationUnavailable(location, reason))
+            case let .incomplete(reason):
+                reasons.append(.scanIncomplete(location, detail: reason))
+            }
+        }
+
+        let placeholderItems = input.snapshots
+            .flatMap(\.observations.all)
+            .filter {
+                locationsByID[$0.location]?.kind == .iCloudDrive
+                    && $0.isPlaceholder
+                    && !input.settings.isExcluded($0)
+            }
+        for placeholder in placeholderItems {
+            reasons.append(
+                .locationUnavailable(
+                    placeholder.location,
+                    .unknown(detail: "\(placeholder.path.rawValue) in iCloud Drive is a placeholder.")
+                )
+            )
+        }
+
+        return reasons
+    }
+
+    private func gateWarnings(_ gate: ExecutionGate) -> [SyncWarning] {
+        gate.holdReasons.map { reason in
+            SyncWarning(
+                severity: reason.isReviewOnly ? .needsReview : .heldForSafety,
+                message: reason.message
+            )
+        }
     }
 }
 
-private struct LegacyPlanRenderResult {
-    var actions: [SyncAction] = []
-    var warnings: [SyncWarning] = []
-    var conflicts: [SyncConflict] = []
+private extension HoldReason {
+    var isReviewOnly: Bool {
+        switch self {
+        case .conflicts, .deletionsNeedReview:
+            return true
+        case .massDeletion, .massEdit:
+            return false
+        }
+    }
 }
 
-private struct LegacyPlanRenderer {
+private struct LoweredPlan {
+    var decisions: [ItemDecision]
+    var schedule: OperationSchedule
+    var conflicts: [ConflictDecision]
+    var waiting: [WaitingItem]
+    var legacyActions: [SyncAction]
+    var legacyWarnings: [SyncWarning]
+}
+
+private struct PlanLowerer {
     let syncSet: SyncSet
     let settings: SyncSettings
     let locationIDs: [LocationID]
+    let locationsByID: [LocationID: SyncLocation]
+    let environment: PlanningEnvironment
     let resolver: ConflictResolver
 
     init(
         syncSet: SyncSet,
         settings: SyncSettings,
         locationIDs: [LocationID],
+        locationsByID: [LocationID: SyncLocation],
         environment: PlanningEnvironment
     ) {
         self.syncSet = syncSet
         self.settings = settings
         self.locationIDs = locationIDs
+        self.locationsByID = locationsByID
+        self.environment = environment
         self.resolver = ConflictResolver(environment: environment)
     }
 
-    func render(_ reconciled: [ReconciledItem]) -> LegacyPlanRenderResult {
-        var result = LegacyPlanRenderResult()
-        var existingPathsByLocation = existingPaths(from: reconciled)
+    func lower(_ reconciled: [ReconciledItem]) -> LoweredPlan {
+        var state = LoweringState(existingPathsByLocation: existingPaths(from: reconciled))
 
-        for reconciledItem in reconciled.sorted(by: reconciledSort) {
-            render(
+        for (index, reconciledItem) in reconciled.sorted(by: reconciledSort).enumerated() {
+            guard !reconciledItem.verdict.isInSync else { continue }
+            let decisionID = decisionID(for: reconciledItem, index: index)
+            let startOperationCount = state.operations.count
+            lower(
                 reconciledItem.verdict,
                 item: reconciledItem.item,
-                result: &result,
-                existingPathsByLocation: &existingPathsByLocation
+                decisionID: decisionID,
+                state: &state
+            )
+            let operationIDs = Array(state.operations[startOperationCount...].map(\.id))
+            state.decisions.append(
+                ItemDecision(
+                    id: decisionID,
+                    path: reconciledItem.item.primaryPath,
+                    verdict: reconciledItem.verdict,
+                    operations: operationIDs,
+                    explanation: explanation(for: reconciledItem.verdict, item: reconciledItem.item)
+                )
             )
         }
 
-        return result
+        let orderedOperations = state.operations.filter { !$0.kind.isTrash } + state.operations.filter { $0.kind.isTrash }
+        let schedule = OperationSchedule(operations: orderedOperations)
+        assert((try? schedule.validate(decisions: state.decisions)) != nil)
+        return LoweredPlan(
+            decisions: state.decisions,
+            schedule: schedule,
+            conflicts: state.conflicts,
+            waiting: state.waiting,
+            legacyActions: legacyActions(from: schedule),
+            legacyWarnings: state.legacyWarnings
+        )
     }
 
-    private func render(
+    private func lower(
         _ verdict: ItemVerdict,
         item: ReconciliationItem,
-        result: inout LegacyPlanRenderResult,
-        existingPathsByLocation: inout [LocationID: Set<SyncPath>]
+        decisionID: UUID,
+        state: inout LoweringState
     ) {
         switch verdict {
         case .inSync:
@@ -207,23 +258,25 @@ private struct LegacyPlanRenderer {
             for destination in destinations.sorted() {
                 if let destinationItem = item.observations[destination] {
                     if !matchingContent(sourceItem, destinationItem) {
-                        result.actions.append(
-                            .overwrite(
-                                source: source,
-                                destination: destination,
-                                sourceItem: sourceItem,
-                                destinationItem: destinationItem
-                            )
+                        appendOperation(
+                            location: destination,
+                            kind: .transfer(
+                                content: ContentRef(sourceItem),
+                                to: destinationItem.path,
+                                overwrite: .ifVersionMatches(destinationItem.version)
+                            ),
+                            precondition: .versionMatches(destinationItem.version),
+                            decisionID: decisionID,
+                            state: &state
                         )
                     }
                 } else {
-                    result.actions.append(
-                        .upload(
-                            source: source,
-                            destination: destination,
-                            sourceItem: sourceItem,
-                            destinationPath: sourceItem.path
-                        )
+                    appendOperation(
+                        location: destination,
+                        kind: .transfer(content: ContentRef(sourceItem), to: sourceItem.path, overwrite: .neverOverwrite),
+                        precondition: .pathAbsent,
+                        decisionID: decisionID,
+                        state: &state
                     )
                 }
             }
@@ -232,15 +285,20 @@ private struct LegacyPlanRenderer {
             guard let sourceItem = item.observations[source] else { return }
             for destination in destinations.sorted() {
                 if sourceItem.isFolder {
-                    result.actions.append(.createFolder(destination: destination, path: sourceItem.path))
+                    appendOperation(
+                        location: destination,
+                        kind: .makeFolder(at: sourceItem.path),
+                        precondition: .pathAbsent,
+                        decisionID: decisionID,
+                        state: &state
+                    )
                 } else {
-                    result.actions.append(
-                        .upload(
-                            source: source,
-                            destination: destination,
-                            sourceItem: sourceItem,
-                            destinationPath: sourceItem.path
-                        )
+                    appendOperation(
+                        location: destination,
+                        kind: .transfer(content: ContentRef(sourceItem), to: sourceItem.path, overwrite: .neverOverwrite),
+                        precondition: .pathAbsent,
+                        decisionID: decisionID,
+                        state: &state
                     )
                 }
             }
@@ -248,38 +306,45 @@ private struct LegacyPlanRenderer {
         case let .propagatePath(destinations, newPath):
             for destination in destinations.sorted() {
                 guard let destinationItem = item.observations[destination] else { continue }
-                if destinationItem.path.parent == newPath.parent {
-                    result.actions.append(.rename(destination: destination, item: destinationItem, newName: newPath.name))
-                } else {
-                    result.actions.append(.move(destination: destination, item: destinationItem, newPath: newPath))
-                }
+                appendOperation(
+                    location: destination,
+                    kind: .relocate(itemRef: ItemRef(destinationItem), to: newPath),
+                    precondition: .versionMatches(destinationItem.version),
+                    decisionID: decisionID,
+                    state: &state
+                )
             }
 
         case let .propagateDeletion(destinations, initiatedBy):
-            renderDeletion(
+            lowerDeletion(
                 destinations: destinations,
                 initiatedBy: initiatedBy,
                 item: item,
-                result: &result
+                decisionID: decisionID,
+                state: &state
             )
 
         case let .conflict(conflict):
-            result.conflicts.append(conflict)
-            result.warnings.append(
+            state.conflicts.append(conflict)
+            state.legacyWarnings.append(
                 SyncWarning(
                     severity: .needsReview,
                     message: conflict.message,
                     path: conflict.path
                 )
             )
-            renderConflictCopies(
-                conflict: conflict,
-                result: &result,
-                existingPathsByLocation: &existingPathsByLocation
-            )
+            lowerConflictCopies(conflict: conflict, decisionID: decisionID, state: &state)
 
-        case let .waiting(_, locations):
-            result.warnings.append(
+        case let .waiting(reason, locations):
+            state.waiting.append(
+                WaitingItem(
+                    id: DeterministicID.uuid("waiting", item.primaryPath.rawValue, locations.map { $0.rawValue.uuidString }.joined()),
+                    path: item.primaryPath,
+                    reason: reason,
+                    locations: locations.sorted()
+                )
+            )
+            state.legacyWarnings.append(
                 SyncWarning(
                     severity: .needsReview,
                     message: "Provider unavailable",
@@ -290,47 +355,45 @@ private struct LegacyPlanRenderer {
 
         case let .compound(verdicts):
             for child in verdicts {
-                render(
-                    child,
-                    item: item,
-                    result: &result,
-                    existingPathsByLocation: &existingPathsByLocation
-                )
+                lower(child, item: item, decisionID: decisionID, state: &state)
             }
         }
     }
 
-    private func renderDeletion(
+    private func lowerDeletion(
         destinations: Set<LocationID>,
         initiatedBy: LocationID,
         item: ReconciliationItem,
-        result: inout LegacyPlanRenderResult
+        decisionID: UUID,
+        state: inout LoweringState
     ) {
         switch syncSet.mode {
-        case .balancedMirror:
+        case .balancedMirror, .askBeforeDeleting:
             for destination in destinations.sorted() {
-                if let destinationItem = item.observations[destination] {
-                    result.actions.append(.trash(destination: destination, item: destinationItem))
-                }
-            }
-        case .askBeforeDeleting:
-            result.warnings.append(
-                SyncWarning(
-                    severity: .needsReview,
-                    message: "Aetherloom found deletions for \(item.primaryPath.rawValue). Review before moving matching files to trash.",
-                    location: initiatedBy,
-                    path: item.primaryPath
+                guard let destinationItem = item.observations[destination] else { continue }
+                appendOperation(
+                    location: destination,
+                    kind: .trash(itemRef: ItemRef(destinationItem)),
+                    precondition: .versionMatches(destinationItem.version),
+                    decisionID: decisionID,
+                    state: &state
                 )
-            )
-            for destination in destinations.sorted() {
-                if let destinationItem = item.observations[destination] {
-                    result.actions.append(.trash(destination: destination, item: destinationItem))
-                }
             }
+            if syncSet.mode == .askBeforeDeleting {
+                state.legacyWarnings.append(
+                    SyncWarning(
+                        severity: .needsReview,
+                        message: "Aetherloom found deletions for \(item.primaryPath.rawValue). Review before moving matching files to trash.",
+                        location: initiatedBy,
+                        path: item.primaryPath
+                    )
+                )
+            }
+
         case .noDeletePropagation:
-            result.warnings.append(
+            state.legacyWarnings.append(
                 SyncWarning(
-                    severity: .needsReview,
+                    severity: .info,
                     message: "Delete propagation is disabled for \(item.primaryPath.rawValue). No files will be moved to trash.",
                     location: initiatedBy,
                     path: item.primaryPath
@@ -339,35 +402,126 @@ private struct LegacyPlanRenderer {
         }
     }
 
-    private func renderConflictCopies(
+    private func lowerConflictCopies(
         conflict: ConflictDecision,
-        result: inout LegacyPlanRenderResult,
-        existingPathsByLocation: inout [LocationID: Set<SyncPath>]
+        decisionID: UUID,
+        state: inout LoweringState
     ) {
-        let sourceItems = conflict.versions.map(\.observation).filter { observation in
-            if conflict.kind == .typeClash {
-                return !observation.isFolder
-            }
-            return !observation.isFolder
-        }
+        let sourceItems = conflict.versions.map(\.observation).filter { !$0.isFolder }
 
         for sourceItem in sourceItems.sorted(by: itemSort) {
             for destination in locationIDs where destination != sourceItem.location {
                 let conflictPath = resolver.conflictPath(
                     for: sourceItem,
-                    existingPaths: existingPathsByLocation[destination] ?? []
+                    existingPaths: state.existingPathsByLocation[destination] ?? []
                 )
-                existingPathsByLocation[destination, default: []].insert(conflictPath)
-                result.actions.append(
-                    .createConflictCopy(
-                        source: sourceItem.location,
-                        destination: destination,
-                        sourceItem: sourceItem,
-                        conflictPath: conflictPath
-                    )
+                state.existingPathsByLocation[destination, default: []].insert(conflictPath)
+                appendOperation(
+                    location: destination,
+                    kind: .transfer(content: ContentRef(sourceItem), to: conflictPath, overwrite: .neverOverwrite),
+                    precondition: .pathAbsent,
+                    decisionID: decisionID,
+                    state: &state
                 )
             }
         }
+    }
+
+    private func appendOperation(
+        location: LocationID,
+        kind: OperationKind,
+        precondition: Precondition,
+        decisionID: UUID,
+        state: inout LoweringState
+    ) {
+        let existingForDecision = state.operations.filter { state.operationDecisionIDs[$0.id] == decisionID }
+        let dependencies = existingForDecision.last.map { [$0.id] } ?? []
+        let operation = Operation(
+            id: operationID(for: kind, location: location, decisionID: decisionID, sequence: existingForDecision.count),
+            location: location,
+            kind: kind,
+            precondition: precondition,
+            dependsOn: dependencies
+        )
+        state.operationDecisionIDs[operation.id] = decisionID
+        state.operations.append(operation)
+    }
+
+    private func legacyActions(from schedule: OperationSchedule) -> [SyncAction] {
+        schedule.operations.compactMap { operation in
+            switch operation.kind {
+            case let .makeFolder(path):
+                return .createFolder(destination: operation.location, path: path)
+
+            case let .transfer(content, path, overwrite):
+                let sourceItem = content.observation
+                switch overwrite {
+                case .neverOverwrite:
+                    if path != content.path {
+                        return .createConflictCopy(
+                            source: content.sourceLocation,
+                            destination: operation.location,
+                            sourceItem: sourceItem,
+                            conflictPath: path
+                        )
+                    }
+                    return .upload(
+                        source: content.sourceLocation,
+                        destination: operation.location,
+                        sourceItem: sourceItem,
+                        destinationPath: path
+                    )
+                case let .ifVersionMatches(version):
+                    return .overwrite(
+                        source: content.sourceLocation,
+                        destination: operation.location,
+                        sourceItem: sourceItem,
+                        destinationItem: ItemObservation(
+                            location: operation.location,
+                            path: path,
+                            kind: content.kind,
+                            version: version
+                        )
+                    )
+                }
+
+            case let .relocate(itemRef, path):
+                if itemRef.path.parent == path.parent {
+                    return .rename(destination: operation.location, item: itemRef.observation, newName: path.name)
+                }
+                return .move(destination: operation.location, item: itemRef.observation, newPath: path)
+
+            case let .trash(itemRef):
+                return .trash(destination: operation.location, item: itemRef.observation)
+            }
+        }
+    }
+
+    private func decisionID(for reconciledItem: ReconciledItem, index: Int) -> UUID {
+        DeterministicID.uuid(
+            "decision",
+            syncSet.id.uuidString,
+            String(index),
+            reconciledItem.item.primaryPath.rawValue,
+            String(describing: reconciledItem.verdict)
+        )
+    }
+
+    private func operationID(
+        for kind: OperationKind,
+        location: LocationID,
+        decisionID: UUID,
+        sequence: Int
+    ) -> OperationID {
+        OperationID(
+            DeterministicID.uuid(
+                "operation",
+                decisionID.uuidString,
+                location.rawValue.uuidString,
+                String(sequence),
+                String(describing: kind)
+            )
+        )
     }
 
     private func existingPaths(from reconciled: [ReconciledItem]) -> [LocationID: Set<SyncPath>] {
@@ -378,6 +532,31 @@ private struct LegacyPlanRenderer {
             }
         }
         return paths
+    }
+
+    private func explanation(for verdict: ItemVerdict, item: ReconciliationItem) -> String {
+        switch verdict {
+        case .inSync:
+            return "Already in sync."
+        case let .propagateContent(source, _):
+            return "Changed at \(locationName(source)) since last sync."
+        case let .propagateCreation(source, _):
+            return "Appeared at \(locationName(source)) since last sync."
+        case .propagatePath:
+            return "Moved since last sync."
+        case let .propagateDeletion(_, initiatedBy):
+            return "Deleted from \(locationName(initiatedBy)) since last sync."
+        case let .conflict(conflict):
+            return conflict.message
+        case .waiting:
+            return "Provider unavailable"
+        case let .compound(verdicts):
+            return verdicts.map { explanation(for: $0, item: item) }.joined(separator: " ")
+        }
+    }
+
+    private func locationName(_ id: LocationID) -> String {
+        environment.locationNames[id] ?? locationsByID[id]?.displayName ?? id.displayName
     }
 
     private func matchingContent(_ lhs: ItemObservation, _ rhs: ItemObservation) -> Bool {
@@ -395,5 +574,24 @@ private struct LegacyPlanRenderer {
             return lhs.path < rhs.path
         }
         return lhs.location < rhs.location
+    }
+}
+
+private struct LoweringState {
+    var decisions: [ItemDecision] = []
+    var operations: [Operation] = []
+    var operationDecisionIDs: [OperationID: UUID] = [:]
+    var conflicts: [ConflictDecision] = []
+    var waiting: [WaitingItem] = []
+    var legacyWarnings: [SyncWarning] = []
+    var existingPathsByLocation: [LocationID: Set<SyncPath>]
+}
+
+private extension ItemVerdict {
+    var isInSync: Bool {
+        if case .inSync = self {
+            return true
+        }
+        return false
     }
 }

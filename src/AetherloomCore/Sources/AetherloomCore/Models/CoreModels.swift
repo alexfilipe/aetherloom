@@ -414,7 +414,6 @@ public enum SyncAction: Codable, Hashable, Sendable {
     case rename(destination: LocationID, item: ItemObservation, newName: String)
     case trash(destination: LocationID, item: ItemObservation)
     case createConflictCopy(source: LocationID, destination: LocationID, sourceItem: ItemObservation, conflictPath: SyncPath)
-    case pause(reason: String)
 
     public var destinationLocation: LocationID? {
         switch self {
@@ -426,54 +425,6 @@ public enum SyncAction: Codable, Hashable, Sendable {
              let .trash(destination, _),
              let .createConflictCopy(_, destination, _, _):
             destination
-        case .pause:
-            nil
-        }
-    }
-}
-
-public struct SyncPlan: Codable, Hashable, Sendable {
-    public var syncSetID: UUID
-    public var actions: [SyncAction]
-    public var warnings: [SyncWarning]
-    public var conflicts: [SyncConflict]
-    public var riskLevel: SyncRiskLevel
-    public var isAutoExecutable: Bool
-
-    public init(
-        syncSetID: UUID,
-        actions: [SyncAction],
-        warnings: [SyncWarning] = [],
-        conflicts: [SyncConflict] = [],
-        riskLevel: SyncRiskLevel = .safe,
-        isAutoExecutable: Bool = true
-    ) {
-        self.syncSetID = syncSetID
-        self.actions = actions
-        self.warnings = warnings
-        self.conflicts = conflicts
-        self.riskLevel = riskLevel
-        self.isAutoExecutable = isAutoExecutable
-    }
-}
-
-public enum SyncRiskLevel: String, Codable, Hashable, Sendable, Comparable {
-    case safe
-    case needsReview
-    case paused
-
-    public static func < (lhs: SyncRiskLevel, rhs: SyncRiskLevel) -> Bool {
-        lhs.rank < rhs.rank
-    }
-
-    private var rank: Int {
-        switch self {
-        case .safe:
-            0
-        case .needsReview:
-            1
-        case .paused:
-            2
         }
     }
 }
@@ -481,7 +432,7 @@ public enum SyncRiskLevel: String, Codable, Hashable, Sendable, Comparable {
 public enum SyncWarningSeverity: String, Codable, Hashable, Sendable {
     case info
     case needsReview
-    case pause
+    case heldForSafety
 }
 
 public struct SyncWarning: Codable, Hashable, Sendable {

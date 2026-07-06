@@ -114,11 +114,11 @@ import Testing
     let plan = await testPlan(syncSet: syncSet, records: [record], providers: [local, nas, google])
 
     #expect(plan.conflicts.map(\.kind) == [.editDelete])
-    #expect(plan.actions.allSatisfy { action in
+    #expect(plan.legacyActions.allSatisfy { action in
         if case .trash = action { return false }
         return true
     })
-    #expect(plan.actions.contains { action in
+    #expect(plan.legacyActions.contains { action in
         if case .createConflictCopy = action { return true }
         return false
     })
@@ -214,13 +214,13 @@ import Testing
     let plan = await testPlan(syncSet: syncSet, providers: [local, nas, google])
 
     #expect(plan.conflicts.map(\.kind) == [.typeClash])
-    #expect(plan.actions.contains { action in
+    #expect(plan.legacyActions.contains { action in
         if case let .createConflictCopy(source, _, _, _) = action {
             return source == .localFolder
         }
         return false
     })
-    #expect(plan.actions.allSatisfy { action in
+    #expect(plan.legacyActions.allSatisfy { action in
         if case .createFolder = action { return false }
         if case .trash = action { return false }
         return true
@@ -474,10 +474,14 @@ private func testPlan(
     for provider in providers {
         snapshots.append(await provider.scan(.entireDrive))
     }
-    return SyncPlanner().plan(
+    let outcome = SyncPlanner().plan(
         SyncPlanningInput(syncSet: syncSet, records: records, snapshots: snapshots),
         environment: testEnvironment
     )
+    guard let plan = outcome.planValue else {
+        fatalError("Expected plan, got refusal \(String(describing: outcome.refusalValue))")
+    }
+    return plan
 }
 
 private func data(_ string: String) -> Data {

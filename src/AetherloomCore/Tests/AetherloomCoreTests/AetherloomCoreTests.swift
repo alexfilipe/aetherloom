@@ -11,7 +11,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [iCloud, google, oneDrive])
 
-    #expect(plan.riskLevel == .safe)
+    #expect(plan.gate == .clear)
     #expect(uploadCount(plan) == 2)
     #expect(containsUpload(plan, source: source.location, destination: .iCloudDrive, path: source.path))
     #expect(containsUpload(plan, source: source.location, destination: .oneDrive, path: source.path))
@@ -60,7 +60,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google, oneDrive])
 
-    #expect(plan.riskLevel == .needsReview)
+    #expect(!plan.gate.isClear)
     #expect(plan.isAutoExecutable == false)
     #expect(plan.conflicts.count == 1)
     #expect(conflictCopyCount(plan) == 4)
@@ -123,11 +123,12 @@ import Testing
     let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.oneDrive: item])
     await google.setAvailability(.unavailable(.networkUnreachable(detail: "Network unavailable")))
 
-    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
-
-    #expect(plan.riskLevel == .paused)
-    #expect(containsPause(plan))
-    #expect(trashCount(plan) == 0)
+    let outcome = await makePlanOutcome(syncSet: syncSet, records: [record], providers: [google, oneDrive])
+    let refusal = try #require(outcome.refusalValue)
+    #expect(refusal.reasons.contains { reason in
+        if case .locationUnavailable(.googleDrive, .networkUnreachable) = reason { return true }
+        return false
+    })
 }
 
 @Test func disconnectedLocalVolumePausesWithCanonicalUnavailableSentenceAndNoTrashActions() async throws {
@@ -138,11 +139,10 @@ import Testing
     let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.nasFolder: item])
     await local.setAvailability(.unavailable(.volumeNotMounted(detail: "External disk is not mounted.")))
 
-    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
+    let outcome = await makePlanOutcome(syncSet: syncSet, records: [record], providers: [local, nas])
+    let refusal = try #require(outcome.refusalValue)
 
-    #expect(plan.riskLevel == .paused)
-    #expect(plan.actions.first?.pauseReason == "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.")
-    #expect(trashCount(plan) == 0)
+    #expect(refusal.messages.first == "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.")
 }
 
 @Test func unreachableNASPausesWithCanonicalUnavailableSentenceAndNoTrashActions() async throws {
@@ -153,11 +153,10 @@ import Testing
     let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.localFolder: item])
     await nas.setAvailability(.unavailable(.volumeUnreachable(detail: "Sleeping NAS did not respond.")))
 
-    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
+    let outcome = await makePlanOutcome(syncSet: syncSet, records: [record], providers: [local, nas])
+    let refusal = try #require(outcome.refusalValue)
 
-    #expect(plan.riskLevel == .paused)
-    #expect(plan.actions.first?.pauseReason == "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.")
-    #expect(trashCount(plan) == 0)
+    #expect(refusal.messages.first == "Sync paused because this provider is unavailable. No files will be deleted while a provider is unreachable.")
 }
 
 @Test func incompleteScanDoesNotProduceDeleteActions() async throws {
@@ -168,11 +167,13 @@ import Testing
     let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.oneDrive: item])
     await google.setIncompleteScan(reason: "Pagination stopped early")
 
-    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
+    let outcome = await makePlanOutcome(syncSet: syncSet, records: [record], providers: [google, oneDrive])
+    let refusal = try #require(outcome.refusalValue)
 
-    #expect(plan.riskLevel == .paused)
-    #expect(containsPause(plan))
-    #expect(trashCount(plan) == 0)
+    #expect(refusal.reasons.contains { reason in
+        if case .scanIncomplete(.googleDrive, "Pagination stopped early") = reason { return true }
+        return false
+    })
 }
 
 @Test func degradedHashIndependentEditsUseSizeAndMtimeToPreserveConflicts() async throws {
@@ -188,7 +189,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
 
-    #expect(plan.riskLevel == .needsReview)
+    #expect(!plan.gate.isClear)
     #expect(plan.conflicts.count == 1)
     #expect(conflictCopyCount(plan) == 2)
     #expect(overwriteCount(plan) == 0)
@@ -207,7 +208,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
 
-    #expect(plan.actions.isEmpty)
+    #expect(plan.legacyActions.isEmpty)
     #expect(plan.conflicts.isEmpty)
 }
 
@@ -220,52 +221,286 @@ import Testing
     let record = makeRecord(syncSetID: syncSet.id, path: "/Photo.jpg", items: [.iCloudDrive: icloudObservation, .googleDrive: googleItem])
     await google.remove(path: "/Photo.jpg")
 
-    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google])
+    let outcome = await makePlanOutcome(syncSet: syncSet, records: [record], providers: [iCloud, google])
+    let refusal = try #require(outcome.refusalValue)
 
-    #expect(plan.riskLevel == .paused)
-    #expect(trashCount(plan) == 0)
+    #expect(refusal.reasons.contains { reason in
+        if case .locationUnavailable(.iCloudDrive, .unknown) = reason { return true }
+        return false
+    })
 }
 
 @Test func massDeletePausesPlan() async throws {
-    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive, .localFolder])
     let google = FakeStorageProvider(locationID: .googleDrive)
     let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    let local = FakeStorageProvider(locationID: .localFolder)
     var records: [BaseRecord] = []
     for index in 0..<6 {
         let path = SyncPath("/Deleted-\(index).txt")
         let googleItem = await google.putFile(path: path, contents: data("old \(index)"))
         let oneDriveItem = await oneDrive.putFile(path: path, contents: data("old \(index)"))
-        records.append(makeRecord(syncSetID: syncSet.id, path: path, items: [.googleDrive: googleItem, .oneDrive: oneDriveItem]))
+        let localItem = await local.putFile(path: path, contents: data("old \(index)"))
+        records.append(makeRecord(syncSetID: syncSet.id, path: path, items: [.googleDrive: googleItem, .oneDrive: oneDriveItem, .localFolder: localItem]))
         await google.remove(path: path)
     }
     let settings = SyncSettings(thresholds: SafetyThresholds(massDeleteAbsolute: 3, massDeleteRatio: 0.5, massEditAbsolute: 99, massEditRatio: 1))
 
-    let plan = await makePlan(syncSet: syncSet, records: records, providers: [google, oneDrive], settings: settings)
+    let plan = await makePlan(syncSet: syncSet, records: records, providers: [google, oneDrive, local], settings: settings)
 
-    #expect(plan.riskLevel == .paused)
-    #expect(containsPause(plan))
-    #expect(trashCount(plan) == 6)
+    #expect(plan.gate.holdReasons.contains { reason in
+        if case let .massDeletion(evidence) = reason {
+            return evidence.intentCount == 6
+        }
+        return false
+    })
+    #expect(trashCount(plan) == 12)
 }
 
 @Test func massEditPausesPlan() async throws {
-    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive, .localFolder])
     let google = FakeStorageProvider(locationID: .googleDrive)
     let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    let local = FakeStorageProvider(locationID: .localFolder)
     var records: [BaseRecord] = []
     for index in 0..<6 {
         let path = SyncPath("/Edited-\(index).txt")
         let googleItem = await google.putFile(path: path, contents: data("old \(index)"))
         let oneDriveItem = await oneDrive.putFile(path: path, contents: data("old \(index)"))
-        records.append(makeRecord(syncSetID: syncSet.id, path: path, items: [.googleDrive: googleItem, .oneDrive: oneDriveItem]))
+        let localItem = await local.putFile(path: path, contents: data("old \(index)"))
+        records.append(makeRecord(syncSetID: syncSet.id, path: path, items: [.googleDrive: googleItem, .oneDrive: oneDriveItem, .localFolder: localItem]))
         await google.putFile(path: path, contents: data("new \(index)"))
     }
     let settings = SyncSettings(thresholds: SafetyThresholds(massDeleteAbsolute: 99, massDeleteRatio: 1, massEditAbsolute: 3, massEditRatio: 0.5))
 
+    let plan = await makePlan(syncSet: syncSet, records: records, providers: [google, oneDrive, local], settings: settings)
+
+    #expect(plan.gate.holdReasons.contains { reason in
+        if case let .massEdit(evidence) = reason {
+            return evidence.intentCount == 6
+        }
+        return false
+    })
+    #expect(overwriteCount(plan) == 12)
+}
+
+@Test func refusalCollectsAllSnapshotFailures() async throws {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive, .localFolder])
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    await google.setAvailability(.unavailable(.networkUnreachable(detail: "Offline")))
+    await oneDrive.setIncompleteScan(reason: "Stopped early")
+
+    let outcome = await makePlanOutcome(syncSet: syncSet, providers: [google, oneDrive])
+    let refusal = try #require(outcome.refusalValue)
+
+    #expect(refusal.reasons.count == 3)
+    #expect(refusal.reasons.contains { reason in
+        if case .locationUnavailable(.googleDrive, .networkUnreachable) = reason { return true }
+        return false
+    })
+    #expect(refusal.reasons.contains { reason in
+        if case .scanIncomplete(.oneDrive, "Stopped early") = reason { return true }
+        return false
+    })
+    #expect(refusal.reasons.contains { reason in
+        if case .locationUnavailable(.localFolder, .unknown) = reason { return true }
+        return false
+    })
+}
+
+@Test func baseStateUnreadableProducesRefusal() async throws {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+
+    let outcome = await makePlanOutcome(
+        syncSet: syncSet,
+        providers: [google, oneDrive],
+        baseStateUnreadableDetail: "Corrupt base records"
+    )
+    let refusal = try #require(outcome.refusalValue)
+
+    #expect(refusal.reasons.contains { reason in
+        if case .baseStateUnreadable("Corrupt base records") = reason { return true }
+        return false
+    })
+}
+
+@Test func askBeforeDeletingHoldsButKeepsTrashSchedule() async throws {
+    var syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    syncSet.mode = .askBeforeDeleting
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    let googleItem = await google.putFile(path: "/Review.txt", contents: data("old"))
+    let oneDriveItem = await oneDrive.putFile(path: "/Review.txt", contents: data("old"))
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Review.txt", items: [.googleDrive: googleItem, .oneDrive: oneDriveItem])
+    await google.remove(path: "/Review.txt")
+
+    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
+
+    #expect(trashCount(plan) == 1)
+    #expect(plan.gate.holdReasons.contains { reason in
+        if case .deletionsNeedReview(count: 1) = reason { return true }
+        return false
+    })
+}
+
+@Test func noDeletePropagationCreatesInformationalDecisionWithNoTrash() async throws {
+    var syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    syncSet.mode = .noDeletePropagation
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    let googleItem = await google.putFile(path: "/KeepVisible.txt", contents: data("old"))
+    let oneDriveItem = await oneDrive.putFile(path: "/KeepVisible.txt", contents: data("old"))
+    let record = makeRecord(syncSetID: syncSet.id, path: "/KeepVisible.txt", items: [.googleDrive: googleItem, .oneDrive: oneDriveItem])
+    await google.remove(path: "/KeepVisible.txt")
+
+    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
+
+    #expect(plan.gate == .clear)
+    #expect(trashCount(plan) == 0)
+    #expect(plan.decisions.contains { $0.hasDeletionIntent })
+}
+
+@Test func intentCountingIsIndependentOfLocationFanout() async throws {
+    let settings = SyncSettings(thresholds: SafetyThresholds(massDeleteAbsolute: 50, massDeleteRatio: 1, massEditAbsolute: 99, massEditRatio: 1))
+    let twoLocationPlan = await massDeletionPlan(locations: [.googleDrive, .oneDrive], itemCount: 30, settings: settings)
+    let fourLocationPlan = await massDeletionPlan(locations: [.googleDrive, .oneDrive, .localFolder, .nasFolder], itemCount: 30, settings: settings)
+
+    #expect(twoLocationPlan.gate == .clear)
+    #expect(fourLocationPlan.gate == .clear)
+    #expect(trashCount(twoLocationPlan) == 30)
+    #expect(trashCount(fourLocationPlan) == 90)
+}
+
+@Test func massChangeEvidenceUsesNearestCommonAncestor() async throws {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    var records: [BaseRecord] = []
+    for name in ["One", "Two", "Three"] {
+        let path = SyncPath("/Photos/2019/\(name).jpg")
+        let googleItem = await google.putFile(path: path, contents: data(name))
+        let oneDriveItem = await oneDrive.putFile(path: path, contents: data(name))
+        records.append(makeRecord(syncSetID: syncSet.id, path: path, items: [.googleDrive: googleItem, .oneDrive: oneDriveItem]))
+        await google.remove(path: path)
+    }
+    let settings = SyncSettings(thresholds: SafetyThresholds(massDeleteAbsolute: 2, massDeleteRatio: 1, massEditAbsolute: 99, massEditRatio: 1))
+
     let plan = await makePlan(syncSet: syncSet, records: records, providers: [google, oneDrive], settings: settings)
 
-    #expect(plan.riskLevel == .paused)
-    #expect(containsPause(plan))
-    #expect(overwriteCount(plan) == 6)
+    let evidence = try #require(plan.gate.holdReasons.compactMap { reason -> MassChangeEvidence? in
+        if case let .massDeletion(evidence) = reason { return evidence }
+        return nil
+    }.first)
+    #expect(evidence.groups == [ChangeGroup(ancestor: "/Photos/2019", intentCount: 3)])
+}
+
+@Test func scheduleValidatorAcceptsConstructedPlanSchedule() async throws {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    await google.putFile(path: "/Nested/File.txt", contents: data("new"))
+
+    let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
+
+    try plan.schedule.validate(decisions: plan.decisions)
+}
+
+@Test func scheduleValidatorRejectsTransferAfterTrash() throws {
+    let trashID = testOperationID("000000000001")
+    let transferID = testOperationID("000000000002")
+    let schedule = OperationSchedule(operations: [
+        Operation(id: trashID, location: .oneDrive, kind: .trash(itemRef: testItemRef(path: "/Old.txt")), precondition: .versionMatches(testVersion())),
+        Operation(id: transferID, location: .oneDrive, kind: .transfer(content: testContentRef(path: "/New.txt"), to: "/New.txt", overwrite: .neverOverwrite), precondition: .pathAbsent)
+    ])
+
+    #expect(throws: OperationScheduleValidationError.transferAfterTrash(transferID)) {
+        try schedule.validate()
+    }
+}
+
+@Test func scheduleValidatorRejectsPerItemChainWithoutDependency() throws {
+    let firstID = testOperationID("000000000003")
+    let secondID = testOperationID("000000000004")
+    let schedule = OperationSchedule(operations: [
+        Operation(id: firstID, location: .oneDrive, kind: .transfer(content: testContentRef(path: "/One.txt"), to: "/One.txt", overwrite: .neverOverwrite), precondition: .pathAbsent),
+        Operation(id: secondID, location: .localFolder, kind: .transfer(content: testContentRef(path: "/Two.txt"), to: "/Two.txt", overwrite: .neverOverwrite), precondition: .pathAbsent)
+    ])
+    let decision = ItemDecision(id: testUUID("000000000101"), path: "/One.txt", verdict: .propagateContent(from: .googleDrive, to: [.oneDrive, .localFolder]), operations: [firstID, secondID], explanation: "Changed at Google Drive since last sync.")
+
+    #expect(throws: OperationScheduleValidationError.itemChainMissingDependency(decision: decision.id, operation: secondID)) {
+        try schedule.validate(decisions: [decision])
+    }
+}
+
+@Test func scheduleValidatorRejectsCaseFoldedTargetCollision() throws {
+    let firstID = testOperationID("000000000005")
+    let secondID = testOperationID("000000000006")
+    let schedule = OperationSchedule(operations: [
+        Operation(id: firstID, location: .oneDrive, kind: .transfer(content: testContentRef(path: "/Readme.txt"), to: "/Readme.txt", overwrite: .neverOverwrite), precondition: .pathAbsent),
+        Operation(id: secondID, location: .oneDrive, kind: .transfer(content: testContentRef(path: "/README.txt"), to: "/README.txt", overwrite: .neverOverwrite), precondition: .pathAbsent)
+    ])
+
+    do {
+        try schedule.validate()
+        #expect(Bool(false))
+    } catch let error as OperationScheduleValidationError {
+        if case let .caseFoldedTargetCollision(location, path, _, second) = error {
+            #expect(location == .oneDrive)
+            #expect(path == "/README.txt")
+            #expect(second == secondID)
+        } else {
+            #expect(Bool(false))
+        }
+    }
+}
+
+@Test func fingerprintIsStableForIdenticalInputs() {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let source = makeObservation(.googleDrive, path: "/Stable.txt", hash: "stable")
+    let snapshots = [
+        LocationSnapshot(location: .googleDrive, scope: .entireDrive, observations: [source], scannedAt: fixedDate),
+        LocationSnapshot(location: .oneDrive, scope: .entireDrive, observations: [], scannedAt: fixedDate)
+    ]
+
+    let first = planFromSnapshots(syncSet: syncSet, snapshots: snapshots)
+    let second = planFromSnapshots(syncSet: syncSet, snapshots: snapshots)
+
+    #expect(first.fingerprint == second.fingerprint)
+}
+
+@Test func fingerprintChangesWhenSnapshotVersionChanges() {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let firstSnapshots = [
+        LocationSnapshot(location: .googleDrive, scope: .entireDrive, observations: [makeObservation(.googleDrive, path: "/Stable.txt", hash: "one")], scannedAt: fixedDate),
+        LocationSnapshot(location: .oneDrive, scope: .entireDrive, observations: [], scannedAt: fixedDate)
+    ]
+    let secondSnapshots = [
+        LocationSnapshot(location: .googleDrive, scope: .entireDrive, observations: [makeObservation(.googleDrive, path: "/Stable.txt", hash: "two")], scannedAt: fixedDate),
+        LocationSnapshot(location: .oneDrive, scope: .entireDrive, observations: [], scannedAt: fixedDate)
+    ]
+
+    let first = planFromSnapshots(syncSet: syncSet, snapshots: firstSnapshots)
+    let second = planFromSnapshots(syncSet: syncSet, snapshots: secondSnapshots)
+
+    #expect(first.fingerprint != second.fingerprint)
+}
+
+@Test func gateAddingHoldsNeverClearsExistingHold() async throws {
+    let syncSet = makeSyncSet([.googleDrive, .oneDrive])
+    let google = FakeStorageProvider(locationID: .googleDrive)
+    let oneDrive = FakeStorageProvider(locationID: .oneDrive)
+    await google.putFile(path: "/Readme.txt", contents: data("google"))
+    await oneDrive.putFile(path: "/README.txt", contents: data("onedrive"))
+
+    let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
+    let updated = plan.addingHolds([])
+
+    #expect(!plan.gate.isClear)
+    #expect(!updated.gate.isClear)
+    #expect(updated.gate == plan.gate)
 }
 
 @Test func destinationChangedAfterPlanningStopsExecutionForReplan() async throws {
@@ -325,7 +560,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive])
 
-    #expect(plan.riskLevel == .needsReview)
+    #expect(!plan.gate.isClear)
     #expect(conflictCopyCount(plan) > 0)
     #expect(overwriteCount(plan) == 0)
     #expect(trashCount(plan) == 0)
@@ -375,7 +610,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive], settings: settings)
 
-    #expect(plan.actions.isEmpty)
+    #expect(plan.legacyActions.isEmpty)
 }
 
 @Test func builtInAetherloomFolderExclusionAppliesWithEmptyUserExclusions() async throws {
@@ -386,7 +621,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive], settings: SyncSettings())
 
-    #expect(plan.actions.isEmpty)
+    #expect(plan.legacyActions.isEmpty)
 }
 
 @Test func symlinkExclusionAppliesWithEmptyUserExclusions() async throws {
@@ -397,7 +632,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [google, oneDrive], settings: SyncSettings())
 
-    #expect(plan.actions.isEmpty)
+    #expect(plan.legacyActions.isEmpty)
 }
 
 @Test func scanCompleteEmptyOnlyWhenAvailableAndUnscripted() async throws {
@@ -454,7 +689,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [firstFolder, secondFolder])
 
-    #expect(plan.riskLevel == .safe)
+    #expect(plan.gate == .clear)
     #expect(containsUpload(plan, source: first, destination: second, path: "/Shared.txt"))
 }
 
@@ -466,7 +701,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, providers: [local, nas])
 
-    #expect(plan.riskLevel == .safe)
+    #expect(plan.gate == .clear)
     #expect(containsUpload(plan, source: .localFolder, destination: .nasFolder, path: "/Media.mov"))
 }
 
@@ -481,7 +716,7 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
 
-    #expect(plan.riskLevel == .needsReview)
+    #expect(!plan.gate.isClear)
     #expect(plan.conflicts.count == 1)
     #expect(conflictCopyCount(plan) == 2)
     #expect(overwriteCount(plan) == 0)
@@ -548,12 +783,64 @@ private func makeSyncSet(_ locations: [LocationID] = [.iCloudDrive, .googleDrive
     )
 }
 
+private func massDeletionPlan(
+    locations: [LocationID],
+    itemCount: Int,
+    settings: SyncSettings
+) async -> SyncPlan {
+    let syncSet = makeSyncSet(locations)
+    let providers = locations.map { FakeStorageProvider(locationID: $0) }
+    let source = providers[0]
+    var records: [BaseRecord] = []
+
+    for index in 0..<itemCount {
+        let path = SyncPath("/Deleted-\(index).txt")
+        var items: [LocationID: ItemObservation] = [:]
+        for provider in providers {
+            items[provider.locationID] = await provider.putFile(path: path, contents: data("old \(index)"))
+        }
+        records.append(makeRecord(syncSetID: syncSet.id, path: path, items: items))
+        await source.remove(path: path)
+    }
+
+    return await makePlan(syncSet: syncSet, records: records, providers: providers, settings: settings)
+}
+
+private func planFromSnapshots(
+    syncSet: SyncSet,
+    records: [BaseRecord] = [],
+    snapshots: [LocationSnapshot]
+) -> SyncPlan {
+    let outcome = SyncPlanner().plan(
+        SyncPlanningInput(syncSet: syncSet, records: records, snapshots: snapshots),
+        environment: makeEnvironment()
+    )
+    guard let plan = outcome.planValue else {
+        fatalError("Expected plan, got refusal \(String(describing: outcome.refusalValue))")
+    }
+    return plan
+}
+
 private func makePlan(
     syncSet: SyncSet,
     records: [BaseRecord] = [],
     providers: [FakeStorageProvider],
     settings: SyncSettings? = nil
 ) async -> SyncPlan {
+    let outcome = await makePlanOutcome(syncSet: syncSet, records: records, providers: providers, settings: settings)
+    guard let plan = outcome.planValue else {
+        fatalError("Expected plan, got refusal \(String(describing: outcome.refusalValue))")
+    }
+    return plan
+}
+
+private func makePlanOutcome(
+    syncSet: SyncSet,
+    records: [BaseRecord] = [],
+    providers: [FakeStorageProvider],
+    settings: SyncSettings? = nil,
+    baseStateUnreadableDetail: String? = nil
+) async -> PlanOutcome {
     let resolvedSettings = settings ?? syncSet.settings
     let locations = providers.map {
         SyncLocation(
@@ -574,7 +861,8 @@ private func makePlan(
             locations: locations,
             records: records,
             snapshots: snapshots,
-            settings: resolvedSettings
+            settings: resolvedSettings,
+            baseStateUnreadableDetail: baseStateUnreadableDetail
         ),
         environment: makeEnvironment(locations: locations)
     )
@@ -632,6 +920,42 @@ private func makeRecord(
         createdAt: fixedDate,
         updatedAt: fixedDate
     )
+}
+
+private func makeObservation(
+    _ location: LocationID,
+    path: SyncPath,
+    hash: String,
+    kind: ItemKind = .file,
+    itemID: String? = nil
+) -> ItemObservation {
+    ItemObservation(
+        location: location,
+        itemID: itemID ?? "\(location.rawValue.uuidString):\(path.rawValue)",
+        path: path,
+        kind: kind,
+        version: testVersion(hash: hash)
+    )
+}
+
+private func testVersion(hash: String = "hash") -> ItemVersion {
+    ItemVersion(contentHash: hash, size: Int64(hash.count), modifiedAt: fixedDate, revisionToken: hash)
+}
+
+private func testContentRef(path: SyncPath) -> ContentRef {
+    ContentRef(makeObservation(.googleDrive, path: path, hash: "source"))
+}
+
+private func testItemRef(path: SyncPath) -> ItemRef {
+    ItemRef(makeObservation(.oneDrive, path: path, hash: "destination"))
+}
+
+private func testOperationID(_ suffix: String) -> OperationID {
+    OperationID(testUUID(suffix))
+}
+
+private func testUUID(_ suffix: String) -> UUID {
+    UUID(uuidString: "40000000-0000-0000-0000-\(suffix)")!
 }
 
 private func data(_ string: String) -> Data {
@@ -698,21 +1022,14 @@ private func trashCount(_ plan: SyncPlan) -> Int {
     }
 }
 
-private func containsPause(_ plan: SyncPlan) -> Bool {
-    plan.actions.contains {
-        if case .pause = $0 { return true }
-        return false
-    }
-}
-
 private func count(_ plan: SyncPlan, where predicate: (SyncAction) -> Bool) -> Int {
-    plan.actions.reduce(0) { total, action in
+    plan.legacyActions.reduce(0) { total, action in
         total + (predicate(action) ? 1 : 0)
     }
 }
 
 private func containsUpload(_ plan: SyncPlan, source: LocationID, destination: LocationID, path: SyncPath) -> Bool {
-    plan.actions.contains {
+    plan.legacyActions.contains {
         if case let .upload(actionSource, actionDestination, _, destinationPath) = $0 {
             return actionSource == source && actionDestination == destination && destinationPath == path
         }
@@ -721,7 +1038,7 @@ private func containsUpload(_ plan: SyncPlan, source: LocationID, destination: L
 }
 
 private func containsOverwrite(_ plan: SyncPlan, source: LocationID, destination: LocationID, path: SyncPath) -> Bool {
-    plan.actions.contains {
+    plan.legacyActions.contains {
         if case let .overwrite(actionSource, actionDestination, _, destinationItem) = $0 {
             return actionSource == source && actionDestination == destination && destinationItem.path == path
         }
@@ -730,7 +1047,7 @@ private func containsOverwrite(_ plan: SyncPlan, source: LocationID, destination
 }
 
 private func containsCreateFolder(_ plan: SyncPlan, destination: LocationID, path: SyncPath) -> Bool {
-    plan.actions.contains {
+    plan.legacyActions.contains {
         if case let .createFolder(actionDestination, actionPath) = $0 {
             return actionDestination == destination && actionPath == path
         }
@@ -739,7 +1056,7 @@ private func containsCreateFolder(_ plan: SyncPlan, destination: LocationID, pat
 }
 
 private func containsRename(_ plan: SyncPlan, destination: LocationID, newName: String) -> Bool {
-    plan.actions.contains {
+    plan.legacyActions.contains {
         if case let .rename(actionDestination, _, actionNewName) = $0 {
             return actionDestination == destination && actionNewName == newName
         }
@@ -748,7 +1065,7 @@ private func containsRename(_ plan: SyncPlan, destination: LocationID, newName: 
 }
 
 private func containsMove(_ plan: SyncPlan, destination: LocationID, newPath: SyncPath) -> Bool {
-    plan.actions.contains {
+    plan.legacyActions.contains {
         if case let .move(actionDestination, _, actionNewPath) = $0 {
             return actionDestination == destination && actionNewPath == newPath
         }
@@ -757,7 +1074,7 @@ private func containsMove(_ plan: SyncPlan, destination: LocationID, newPath: Sy
 }
 
 private func containsTrash(_ plan: SyncPlan, destination: LocationID, path: SyncPath) -> Bool {
-    plan.actions.contains {
+    plan.legacyActions.contains {
         if case let .trash(actionDestination, item) = $0 {
             return actionDestination == destination && item.path == path
         }
