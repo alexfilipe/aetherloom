@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`, the safety-first sync engine of Aetherloom (macOS multi-location folder sync). You perform the foundational model refactor. No features beyond it.
 
 ## Read first
-`design/architecture/00-overview.md` (invariants), `01-domain-model.md` (your spec), `11-migration.md` (§1 rules, §2 map rows 1–6), then all of `AetherloomCore/Sources` and `Tests`. Run `swift test --package-path AetherloomCore` and record the baseline (expect 20 green).
+`architecture/00-overview.md` (invariants), `01-domain-model.md` (your spec), `11-migration.md` (§1 rules, §2 map rows 1–6), then all of `src/AetherloomCore/Sources` and `Tests`. Run `swift test --package-path src/AetherloomCore` and record the baseline (expect 20 green).
 
 ## Invariants (override this prompt)
 Never permanent-delete; failure-absence ≠ deletion; never silently overwrite; unknown comparisons route to preservation; when in doubt, preserve and pause.
@@ -22,7 +22,7 @@ Never permanent-delete; failure-absence ≠ deletion; never silently overwrite; 
 10. Port all tests (renamed constructors, identical assertions) + add: two same-kind locations propagate; `.localFolder`+`.nasFolder` set passes create/conflict/delete suites; `BaseRecord` JSON round-trip; `VersionComparison` full matrix incl. unknown-never-equals.
 
 ## Prohibitions
-No protocol changes beyond compilation needs (Task 02); no planner logic changes; no new deps; only `AetherloomCore/`.
+No protocol changes beyond compilation needs (Task 02); no planner logic changes; no new deps; only `src/AetherloomCore/`.
 
 ## Acceptance
-Suite green (all ported + ≥ 4 new); `grep -rn "ProviderID\|CloudPath\|CloudItem\b\|googleDriveItemID\|oneDriveETag" AetherloomCore/Sources AetherloomCore/Tests` → nothing; no `switch` over `ProviderKind` in `Planning/ Safety/ Execution/`; exactly one version-comparison implementation; zero new warnings. Report per `agents/README.md`.
+Suite green (all ported + ≥ 4 new); `grep -rn "ProviderID\|CloudPath\|CloudItem\b\|googleDriveItemID\|oneDriveETag" src/AetherloomCore/Sources src/AetherloomCore/Tests` → nothing; no `switch` over `ProviderKind` in `Planning/ Safety/ Execution/`; exactly one version-comparison implementation; zero new warnings. Report per `agents/README.md`.

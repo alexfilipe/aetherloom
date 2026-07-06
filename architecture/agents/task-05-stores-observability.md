@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You build the store protocols and their in-memory/file implementations, plus the activity system. **Requires Task 01; may run parallel to Task 04** (merge 04 first; the corrupt-store→refusal wiring is finished by whichever lands second).
 
 ## Read first
-`design/architecture/00-overview.md`, `09-persistence.md` and `08-observability.md` (your specs), `11-migration.md`; `Logging/SyncActivityLog.swift`, `Models/*`. Baseline green first.
+`architecture/00-overview.md`, `09-persistence.md` and `08-observability.md` (your specs), `11-migration.md`; `Logging/SyncActivityLog.swift`, `Models/*`. Baseline green first.
 
 ## Invariants (override this prompt)
 Corrupt/unreadable base state degrades to "no memory ⇒ nothing deletable", never toward trash. A journal intent that cannot be persisted must make the corresponding side effect impossible (the API shape enforces write-ahead). Store failures are loud. Never store credentials, tokens, file contents, or advisor prompts.
@@ -19,7 +19,7 @@ Corrupt/unreadable base state degrades to "no memory ⇒ nothing deletable", nev
 7. Tests: round-trips for every store; tombstone lifecycle via `apply(.tombstone)`; corrupt base file ⇒ quarantined + typed error (and, once Task 04 is merged, end-to-end `RefusalReason.baseStateUnreadable`); journal replay incl. torn final line and unfinished-run detection; write-ahead shape (result-before-intent is unrepresentable or traps in debug); activity query filters each; prune retention per category; registry refusal; 100-concurrent-appends actor sanity; all file tests in per-test temp dirs, cleaned up.
 
 ## Prohibitions
-No SQLite, no third-party deps; no orchestrator (Phase 7); no `Application Support`/`NSHomeDirectory` literals in core (grep-checked); only `AetherloomCore/`.
+No SQLite, no third-party deps; no orchestrator (Phase 7); no `Application Support`/`NSHomeDirectory` literals in core (grep-checked); only `src/AetherloomCore/`.
 
 ## Acceptance
-Suite green (+ ≥ 14 new); `grep -rn "ApplicationSupport\|NSHomeDirectory\|SyncActivityLogFormatter" AetherloomCore/Sources` → nothing; wording locks in place; zero new warnings. Report per `agents/README.md`.
+Suite green (+ ≥ 14 new); `grep -rn "ApplicationSupport\|NSHomeDirectory\|SyncActivityLogFormatter" src/AetherloomCore/Sources` → nothing; wording locks in place; zero new warnings. Report per `agents/README.md`.

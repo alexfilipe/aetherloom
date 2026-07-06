@@ -57,7 +57,7 @@ Opt-in only (env-flagged), temp directories and scripted fake mounts only, never
 ## 7. Suite layout
 
 ```text
-Tests/AetherloomCoreTests/
+src/AetherloomCore/Tests/AetherloomCoreTests/
     DomainTests.swift  ReconciliationTableTests.swift  ReconciliationSweepTests.swift
     PlanningGatingTests.swift  PreviewApprovalTests.swift  ExecutorTests.swift
     JournalRecoveryTests.swift  OrchestratorTests.swift  AdvisoryTests.swift

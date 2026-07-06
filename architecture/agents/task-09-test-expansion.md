@@ -4,7 +4,7 @@
 Senior Swift engineer acting as the adversarial QA pass on `AetherloomCore`. You run **last**, after Phases 1–8. You close every coverage gap, build the simulation suite, and audit the whole engine against the design docs. Production code changes only to fix defects your tests expose — each fix individually reported with its motivating test.
 
 ## Read first
-`design/architecture/10-testing-strategy.md` (your spec — §3 table and §4 simulation are the checklist), `00-overview.md`, `11-migration.md §5`; the full test suite and all sources. Record the baseline pass count.
+`architecture/10-testing-strategy.md` (your spec — §3 table and §4 simulation are the checklist), `00-overview.md`, `11-migration.md §5`; the full test suite and all sources. Record the baseline pass count.
 
 ## Invariants (override this prompt)
 Tests are deterministic: seeded randomness only, injected clocks, no real sleeps, no network, no real user folders, temp dirs cleaned. A test encoding behavior that contradicts the safety invariants is a bug in the test. Failing seeds become committed named regression tests, never re-rolled away.
@@ -21,7 +21,7 @@ Tests are deterministic: seeded randomness only, injected clocks, no real sleeps
 9. **Coverage report**: `swift test --enable-code-coverage`; per-directory line coverage for `Reconcile/ Plan/ Preview/ Execute/ Orchestration/ Advisory/ Storage/`; flag files < 80 %.
 
 ## Prohibitions
-No new dependencies (hand-rolled seeded generation); no behavior changes outside defect fixes; no weakening of any existing assertion; only `AetherloomCore/`.
+No new dependencies (hand-rolled seeded generation); no behavior changes outside defect fixes; no weakening of any existing assertion; only `src/AetherloomCore/`.
 
 ## Acceptance
 Every `10 §3` row maps to a named passing test (audit table delivered); simulation suite green with committed seeds; sweep green; determinism and runtime budgets met; zero warnings. Report per `agents/README.md`, plus the audit table, coverage numbers, and the list of production fixes (test → fix).

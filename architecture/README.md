@@ -1,6 +1,6 @@
 # Aetherloom Core Architecture
 
-This directory is the canonical design for Aetherloom's **provider-independent sync engine** — written as the architecture *should be*, not as the current scaffold happens to be. Where the existing code in `AetherloomCore/` differs, each document says so, and [11-migration.md](11-migration.md) gives the complete old → new mapping and phase plan.
+This directory is the canonical design for Aetherloom's **provider-independent sync engine** — written as the architecture *should be*, not as the current scaffold happens to be. Where the existing code in `src/AetherloomCore/` differs, each document says so, and [11-migration.md](11-migration.md) gives the complete old → new mapping and phase plan.
 
 Two audiences:
 

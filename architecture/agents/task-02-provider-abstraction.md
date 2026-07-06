@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You reshape the provider contract so availability, capabilities, and truthful scanning are first-class, and upgrade the fakes into the engine's full test rig. **Requires Task 01 merged.**
 
 ## Read first
-`design/architecture/00-overview.md`, `02-provider-abstraction.md` (your spec — implement exactly), `11-migration.md` (§2 rows 7–9); current `Providers/*`, `Execution/*`, tests. Baseline green first.
+`architecture/00-overview.md`, `02-provider-abstraction.md` (your spec — implement exactly), `11-migration.md` (§2 rows 7–9); current `Providers/*`, `Execution/*`, tests. Baseline green first.
 
 ## Invariants (override this prompt)
 Failure never masquerades as emptiness — every failure is `unavailable` or `incomplete`, never an empty `.complete` scan. No permanent-delete path may exist on the protocol or be wrapped by any implementation. `notFound` requires positively confirmed absence at a healthy backend.
@@ -19,7 +19,7 @@ Failure never masquerades as emptiness — every failure is `unavailable` or `in
 7. Tests: availability taxonomy ⇒ paused/refused planning with the canonical unavailable sentence, specifically `volumeNotMounted` (disconnected local disk) and `volumeUnreachable` (sleeping NAS) producing **zero trash actions**; degraded-hash independent edit (same size, different mtime) ⇒ conflict copies, never overwrite; equal size+mtime ⇒ no action; `.complete`+empty only when truly empty and unscripted; built-in exclusions; call log records scan-only during planning; fake-trash retrievability.
 
 ## Prohibitions
-No real filesystem/NAS probing (contract only — real providers are later roadmap steps); no planner restructuring (Phase 3); executor changes limited to compiling against `relocate`/`StoreOptions`; only `AetherloomCore/`.
+No real filesystem/NAS probing (contract only — real providers are later roadmap steps); no planner restructuring (Phase 3); executor changes limited to compiling against `relocate`/`StoreOptions`; only `src/AetherloomCore/`.
 
 ## Acceptance
-Suite green (ported + ≥ 7 new); `grep -rn "CloudProvider\|UploadOptions\|func move(\|func rename(" AetherloomCore/Sources` → nothing; no permanent-delete symbol anywhere; zero new warnings. Report per `agents/README.md`.
+Suite green (ported + ≥ 7 new); `grep -rn "CloudProvider\|UploadOptions\|func move(\|func rename(" src/AetherloomCore/Sources` → nothing; no permanent-delete symbol anywhere; zero new warnings. Report per `agents/README.md`.

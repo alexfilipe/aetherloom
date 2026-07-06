@@ -14,8 +14,8 @@ When a plan is held, the user's real question is *which version do I keep?* The 
 ## 2. Module layout
 
 ```text
-AetherloomCore/Advisory/          zero ML imports — protocol, types, validator, heuristics
-AetherloomIntelligence/           separate SPM target, depends on AetherloomCore;
+src/AetherloomCore/Sources/AetherloomCore/Advisory/   zero ML imports — protocol, types, validator, heuristics
+src/AetherloomCore/Sources/AetherloomIntelligence/     separate SPM target, depends on AetherloomCore;
                                   the ONLY place FoundationModels (or later MLX) is imported;
                                   compiles to an empty module where unavailable (#if canImport)
 ```
@@ -71,4 +71,4 @@ public struct ConflictAdvice: Codable, Hashable, Sendable {
 
 ## 7. Changing the current code
 
-Phase 8 of [11-migration.md](11-migration.md): all-new code; `Package.swift` gains the `AetherloomIntelligence` target. Two greps stay clean forever: `import FoundationModels|CoreML|MLX` in `AetherloomCore/Sources/AetherloomCore` → nothing; `URLSession` in both targets → nothing.
+Phase 8 of [11-migration.md](11-migration.md): all-new code; `Package.swift` gains the `AetherloomIntelligence` target. Two greps stay clean forever: `import FoundationModels|CoreML|MLX` in `src/AetherloomCore/Sources/AetherloomCore` → nothing; `URLSession` in both targets → nothing.

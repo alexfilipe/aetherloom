@@ -14,14 +14,14 @@ Strictly serial except 04∥05. Never run two agents on the same files concurren
 ## Global rules (authoritative here; abbreviated in each prompt)
 
 1. **Safety invariants** (`../00-overview.md § Safety invariants`) **override everything**, including these prompts. On any apparent conflict: stop, report, don't implement.
-2. Work only inside `AetherloomCore/` unless the task says otherwise (task-08 adds a package target). Never touch `AetherloomApp/`, `www/`, `README.md`, `CLAUDE.md`.
+2. Work only inside `src/AetherloomCore/` unless the task says otherwise (task-08 adds a package target). Never touch `src/AetherloomApp/`, `www/`, `README.md`, `CLAUDE.md`.
 3. Zero third-party dependencies; no ML/network/SQLite imports in the core target.
 4. Swift 6 strict concurrency: values `Codable + Hashable + Sendable`; mutable state in actors.
 5. Pure layers stay pure: no I/O, no `Date()`, no global UUID/RNG below the orchestrator — everything injected via environment values.
 6. Tests: Swift Testing, fakes only, deterministic, temp dirs cleaned up, no real sleeps.
 7. Engine-emitted user-facing strings use the canonical sentences from `../00-overview.md § Canonical language` verbatim.
 8. Migration rules from `../11-migration.md §1` apply: existing test assertions are the contract; the three sanctioned behavior changes (§4 there) are the only ones allowed; clean breaks, no deprecation shims; adapters die by the next phase.
-9. Exit bar, every task: `swift test --package-path AetherloomCore` green, zero new warnings. Report test counts before/after.
+9. Exit bar, every task: `swift test --package-path src/AetherloomCore` green, zero new warnings. Report test counts before/after.
 10. Style: match existing sources — small focused types, clear names, comments only for non-obvious constraints, no `print`. Commit nothing; leave changes in the working tree.
 
 ## Reporting format (end of every task)

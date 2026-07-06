@@ -7,11 +7,11 @@
 1. **The existing 20 tests are the behavioral contract.** They port (renamed constructors, same assertions) and must pass at the end of every phase. Deliberate behavior changes are enumerated in §4 — there are exactly three.
 2. Clean breaks, no shims: nothing outside the package consumes it, so deprecated aliases only add noise. Delete replaced types in the same phase that replaces them.
 3. Old and new may coexist *within* a phase via adapters (noted below); an adapter never survives its phase +1.
-4. `swift test --package-path AetherloomCore` green + zero new warnings is the exit bar for every phase.
+4. `swift test --package-path src/AetherloomCore` green + zero new warnings is the exit bar for every phase.
 
 ## 2. Old → new map
 
-| Today (`Sources/AetherloomCore/…`) | Becomes | Kind of change |
+| Today (`src/AetherloomCore/Sources/AetherloomCore/…`) | Becomes | Kind of change |
 | --- | --- | --- |
 | `CloudPath` | `SyncPath` | rename; logic kept (normalization, case-fold key ✅) |
 | `CloudItem` | `ItemObservation` + `ItemVersion` | split; comparison logic centralizes into `VersionComparison` |

@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You compose the whole pipeline into `SyncOrchestrator`, build the change preview and approval contract, and flip placeholder handling to item-level `waiting`. **Requires Tasks 01–06 merged.**
 
 ## Read first
-`design/architecture/00-overview.md` (pipeline), `05-execution-and-orchestration.md` §1+§5, `06-preview-and-approval.md` (your specs), `11-migration.md §4.3`; all `Sources/`. Baseline green first.
+`architecture/00-overview.md` (pipeline), `05-execution-and-orchestration.md` §1+§5, `06-preview-and-approval.md` (your specs), `11-migration.md §4.3`; all `Sources/`. Baseline green first.
 
 ## Invariants (override this prompt)
 `prepare` mutates nothing at any provider. Refusals are unexecutable by type; held plans run only with a valid approval; approval never bypasses per-operation preconditions. Every decision appears exactly once in the preview. Gates never downgrade.
@@ -18,7 +18,7 @@ Senior Swift engineer on `AetherloomCore`. You compose the whole pipeline into `
 6. Tests: prepare-is-read-only (fake call logs); unavailable short-circuits before scan; timeout ⇒ refusal; end-to-end safe run (prepare → execute → records converge → second prepare plans zero decisions); held plan refuses without approval, runs with valid approval, **approved-but-drifted still aborts**; approval matrix (wrong fingerprint / expired / wrong counts / stray-ignored); preview partition property + golden previews incl. a refusal preview and a mass-delete hold with attribution; waiting-item run (placeholder present: rest syncs, waiting reported, zero trash); tombstone re-appearance ⇒ new file; overlap guard; activity checklist end-to-end.
 
 ## Prohibitions
-No SwiftUI, no wiring the demo app; no advisory implementation (Phase 8) beyond the seam; the only behavior change allowed is the placeholder flip; only `AetherloomCore/`.
+No SwiftUI, no wiring the demo app; no advisory implementation (Phase 8) beyond the seam; the only behavior change allowed is the placeholder flip; only `src/AetherloomCore/`.
 
 ## Acceptance
-Suite green (+ ≥ 14 new); `grep -n "Date()" AetherloomCore/Sources/AetherloomCore/Orchestration AetherloomCore/Sources/AetherloomCore/Preview` → nothing; a held plan cannot reach `apply` without validated approval (single choke point, test-asserted); zero new warnings. Report per `agents/README.md`, stating how the advisor seam was left.
+Suite green (+ ≥ 14 new); `grep -n "Date()" src/AetherloomCore/Sources/AetherloomCore/Orchestration src/AetherloomCore/Sources/AetherloomCore/Preview` → nothing; a held plan cannot reach `apply` without validated approval (single choke point, test-asserted); zero new warnings. Report per `agents/README.md`, stating how the advisor seam was left.

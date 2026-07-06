@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You give the engine its outcome model — refusals, decision-shaped plans, operation schedules, gates, fingerprints — and delete the pause sentinel. **Requires Task 03 merged.**
 
 ## Read first
-`design/architecture/00-overview.md`, `04-planning-and-gating.md` (your spec), `11-migration.md` (§2, §4 change 1); `Safety/SafetyAnalyzer.swift`, the Task-03 adapter, `Execution/SyncPlanExecutor.swift`, tests. Baseline green first.
+`architecture/00-overview.md`, `04-planning-and-gating.md` (your spec), `11-migration.md` (§2, §4 change 1); `Safety/SafetyAnalyzer.swift`, the Task-03 adapter, `Execution/SyncPlanExecutor.swift`, tests. Baseline green first.
 
 ## Invariants (override this prompt)
 A refusal produces no executable plan and has no approval path. The gate is monotone — computed once, pure, never downgraded by anything. Thresholds can be tuned, never disabled. Schedule invariants ([04 §3] 1–4) hold for every constructible plan.
@@ -20,7 +20,7 @@ A refusal produces no executable plan and has no approval path. The gate is mono
 8. Tests: refusal per unavailability/incomplete variant; corrupt-base-state refusal (stub store or precomputed flag if Task 05 pending); intent-counting topology test (same 30 deletions gate identically at 2 vs 4 locations); attribution groups; schedule-validator invariants (constructive + adversarial); fingerprint sensitivity/stability; gate monotonicity (no API can lower a hold).
 
 ## Prohibitions
-No executor rebuild (Phase 6); no preview/approval (Phase 7) — but `PlanFingerprint` lands now; only behavior change allowed: threshold counting; only `AetherloomCore/`.
+No executor rebuild (Phase 6); no preview/approval (Phase 7) — but `PlanFingerprint` lands now; only behavior change allowed: threshold counting; only `src/AetherloomCore/`.
 
 ## Acceptance
-Suite green (+ ≥ 10 new); `grep -rn "SyncRiskLevel\|case pause\|isPauseAction\|SafetyAnalyzer" AetherloomCore/Sources` → nothing; schedule validator passes for every plan any test constructs; zero new warnings. Report per `agents/README.md`.
+Suite green (+ ≥ 10 new); `grep -rn "SyncRiskLevel\|case pause\|isPauseAction\|SafetyAnalyzer" src/AetherloomCore/Sources` → nothing; schedule validator passes for every plan any test constructs; zero new warnings. Report per `agents/README.md`.
