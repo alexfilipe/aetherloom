@@ -1,23 +1,117 @@
 import Foundation
 
-public enum ProviderID: String, Codable, CaseIterable, Hashable, Sendable {
+public enum ProviderKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case localFolder
+    case nasFolder
     case iCloudDrive
     case googleDrive
     case oneDrive
+    case dropbox
 
     public var displayName: String {
         switch self {
+        case .localFolder:
+            "Local Folder"
+        case .nasFolder:
+            "NAS Folder"
         case .iCloudDrive:
             "iCloud Drive"
         case .googleDrive:
             "Google Drive"
         case .oneDrive:
             "OneDrive"
+        case .dropbox:
+            "Dropbox"
         }
     }
 }
 
-public struct CloudPath: Codable, Hashable, Sendable, Comparable, ExpressibleByStringLiteral {
+public struct LocationID: RawRepresentable, Codable, Hashable, Sendable, Comparable {
+    public var rawValue: UUID
+
+    public init(rawValue: UUID) {
+        self.rawValue = rawValue
+    }
+
+    public init(_ rawValue: UUID = UUID()) {
+        self.rawValue = rawValue
+    }
+
+    public static func < (lhs: LocationID, rhs: LocationID) -> Bool {
+        lhs.rawValue.uuidString < rhs.rawValue.uuidString
+    }
+}
+
+extension LocationID {
+    public static let localFolder = LocationID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!)
+    public static let nasFolder = LocationID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!)
+    public static let iCloudDrive = LocationID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!)
+    public static let googleDrive = LocationID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!)
+    public static let oneDrive = LocationID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000005")!)
+    public static let dropbox = LocationID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000006")!)
+
+    public var displayName: String {
+        switch self {
+        case .localFolder:
+            ProviderKind.localFolder.displayName
+        case .nasFolder:
+            ProviderKind.nasFolder.displayName
+        case .iCloudDrive:
+            ProviderKind.iCloudDrive.displayName
+        case .googleDrive:
+            ProviderKind.googleDrive.displayName
+        case .oneDrive:
+            ProviderKind.oneDrive.displayName
+        case .dropbox:
+            ProviderKind.dropbox.displayName
+        default:
+            rawValue.uuidString
+        }
+    }
+
+    public var defaultKind: ProviderKind {
+        switch self {
+        case .localFolder:
+            .localFolder
+        case .nasFolder:
+            .nasFolder
+        case .iCloudDrive:
+            .iCloudDrive
+        case .googleDrive:
+            .googleDrive
+        case .oneDrive:
+            .oneDrive
+        case .dropbox:
+            .dropbox
+        default:
+            .localFolder
+        }
+    }
+}
+
+public struct SyncLocation: Codable, Hashable, Sendable, Identifiable {
+    public var id: LocationID
+    public var kind: ProviderKind
+    public var displayName: String
+    public var scope: SyncScope
+    public var configuration: [String: String]
+
+    public init(
+        id: LocationID = LocationID(),
+        kind: ProviderKind,
+        displayName: String? = nil,
+        scope: SyncScope = .entireDrive,
+        configuration: [String: String] = [:]
+    ) {
+        self.id = id
+        self.kind = kind
+        self.displayName = displayName ?? kind.displayName
+        self.scope = scope
+        self.configuration = configuration
+    }
+}
+
+public struct SyncPath: Codable, Hashable, Sendable, Comparable, ExpressibleByStringLiteral {
     public var rawValue: String
 
     public init(_ rawValue: String) {
@@ -32,7 +126,7 @@ public struct CloudPath: Codable, Hashable, Sendable, Comparable, ExpressibleByS
         self.init(value)
     }
 
-    public static let root = CloudPath("/")
+    public static let root = SyncPath("/")
 
     public var isRoot: Bool {
         rawValue == "/"
@@ -46,11 +140,11 @@ public struct CloudPath: Codable, Hashable, Sendable, Comparable, ExpressibleByS
         components.last ?? ""
     }
 
-    public var parent: CloudPath {
+    public var parent: SyncPath {
         guard !isRoot else { return .root }
         var parts = components
         parts.removeLast()
-        return parts.isEmpty ? .root : CloudPath("/" + parts.joined(separator: "/"))
+        return parts.isEmpty ? .root : SyncPath("/" + parts.joined(separator: "/"))
     }
 
     public var pathExtension: String {
@@ -70,24 +164,24 @@ public struct CloudPath: Codable, Hashable, Sendable, Comparable, ExpressibleByS
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 
-    public func appending(_ component: String) -> CloudPath {
+    public func appending(_ component: String) -> SyncPath {
         guard !component.isEmpty else { return self }
         if isRoot {
-            return CloudPath("/" + component)
+            return SyncPath("/" + component)
         }
-        return CloudPath(rawValue + "/" + component)
+        return SyncPath(rawValue + "/" + component)
     }
 
-    public func replacingLastComponent(with component: String) -> CloudPath {
+    public func replacingLastComponent(with component: String) -> SyncPath {
         parent.appending(component)
     }
 
-    public func isDescendant(of ancestor: CloudPath) -> Bool {
+    public func isDescendant(of ancestor: SyncPath) -> Bool {
         guard !ancestor.isRoot else { return true }
         return rawValue == ancestor.rawValue || rawValue.hasPrefix(ancestor.rawValue + "/")
     }
 
-    public static func < (lhs: CloudPath, rhs: CloudPath) -> Bool {
+    public static func < (lhs: SyncPath, rhs: SyncPath) -> Bool {
         lhs.rawValue < rhs.rawValue
     }
 
@@ -101,10 +195,10 @@ public struct CloudPath: Codable, Hashable, Sendable, Comparable, ExpressibleByS
 }
 
 public enum SyncScope: Codable, Hashable, Sendable {
-    case selectedFolder(path: CloudPath)
+    case selectedFolder(path: SyncPath)
     case entireDrive
 
-    public var rootPath: CloudPath {
+    public var rootPath: SyncPath {
         switch self {
         case let .selectedFolder(path):
             path
@@ -114,72 +208,184 @@ public enum SyncScope: Codable, Hashable, Sendable {
     }
 }
 
-public struct CloudItem: Codable, Hashable, Sendable {
-    public var provider: ProviderID
-    public var providerItemID: String?
-    public var path: CloudPath
-    public var name: String
-    public var isFolder: Bool
+public enum ItemKind: Codable, Hashable, Sendable {
+    case file
+    case folder
+    case symlink(target: String)
+}
+
+public enum VersionComparison: Codable, Hashable, Sendable {
+    case same
+    case different
+    case unknown
+}
+
+public struct ItemVersion: Codable, Hashable, Sendable {
+    public var contentHash: String?
     public var size: Int64?
     public var modifiedAt: Date?
-    public var contentHash: String?
-    public var revisionID: String?
-    public var eTag: String?
-    public var cTag: String?
-    public var isTrashed: Bool
-    public var isPlaceholder: Bool
+    public var revisionToken: String?
 
     public init(
-        provider: ProviderID,
-        providerItemID: String? = nil,
-        path: CloudPath,
-        name: String? = nil,
-        isFolder: Bool,
+        contentHash: String? = nil,
         size: Int64? = nil,
         modifiedAt: Date? = nil,
-        contentHash: String? = nil,
-        revisionID: String? = nil,
-        eTag: String? = nil,
-        cTag: String? = nil,
-        isTrashed: Bool = false,
-        isPlaceholder: Bool = false
+        revisionToken: String? = nil
     ) {
-        self.provider = provider
-        self.providerItemID = providerItemID
-        self.path = path
-        self.name = name ?? path.name
-        self.isFolder = isFolder
+        self.contentHash = contentHash
         self.size = size
         self.modifiedAt = modifiedAt
-        self.contentHash = contentHash
-        self.revisionID = revisionID
-        self.eTag = eTag
-        self.cTag = cTag
-        self.isTrashed = isTrashed
-        self.isPlaceholder = isPlaceholder
+        self.revisionToken = revisionToken
+    }
+
+    public func comparison(to other: ItemVersion) -> VersionComparison {
+        if let contentHash, let otherHash = other.contentHash {
+            return contentHash == otherHash ? .same : .different
+        }
+        if let size, let modifiedAt, let otherSize = other.size, let otherModifiedAt = other.modifiedAt {
+            return size == otherSize && modifiedAt == otherModifiedAt ? .same : .different
+        }
+        if let revisionToken, let otherRevisionToken = other.revisionToken {
+            return revisionToken == otherRevisionToken ? .same : .different
+        }
+        return .unknown
+    }
+
+    public func itemChanged(vs base: ItemVersion) -> Bool {
+        comparison(to: base) != .same
+    }
+
+    public func isSameVersion(as other: ItemVersion) -> Bool {
+        comparison(to: other) == .same
     }
 }
 
-public struct SyncSet: Codable, Hashable, Sendable {
+public struct ItemObservation: Codable, Hashable, Sendable {
+    public var location: LocationID
+    public var itemID: String?
+    public var path: SyncPath
+    public var kind: ItemKind
+    public var version: ItemVersion
+    public var isPlaceholder: Bool
+    public var isTrashed: Bool
+
+    public init(
+        location: LocationID,
+        itemID: String? = nil,
+        path: SyncPath,
+        kind: ItemKind,
+        version: ItemVersion = ItemVersion(),
+        isPlaceholder: Bool = false,
+        isTrashed: Bool = false
+    ) {
+        self.location = location
+        self.itemID = itemID
+        self.path = path
+        self.kind = kind
+        self.version = version
+        self.isPlaceholder = isPlaceholder
+        self.isTrashed = isTrashed
+    }
+
+    public var name: String {
+        path.name
+    }
+
+    public var isFolder: Bool {
+        kind == .folder
+    }
+}
+
+public struct BaseRecord: Codable, Hashable, Sendable, Identifiable {
+    public var id: UUID
+    public var syncSetID: UUID
+    public var path: SyncPath
+    public var kind: ItemKind
+    public var version: ItemVersion
+    public var perLocation: [LocationID: LocationMemory]
+    public var tombstone: Tombstone?
+    public var lastConvergedAt: Date?
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        syncSetID: UUID,
+        path: SyncPath,
+        kind: ItemKind,
+        version: ItemVersion = ItemVersion(),
+        perLocation: [LocationID: LocationMemory] = [:],
+        tombstone: Tombstone? = nil,
+        lastConvergedAt: Date? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.syncSetID = syncSetID
+        self.path = path
+        self.kind = kind
+        self.version = version
+        self.perLocation = perLocation
+        self.tombstone = tombstone
+        self.lastConvergedAt = lastConvergedAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public func itemID(for location: LocationID) -> String? {
+        perLocation[location]?.itemID
+    }
+
+    public func revisionToken(for location: LocationID) -> String? {
+        perLocation[location]?.revisionToken
+    }
+}
+
+public struct LocationMemory: Codable, Hashable, Sendable {
+    public var itemID: String?
+    public var revisionToken: String?
+    public var lastSeenAt: Date?
+
+    public init(itemID: String? = nil, revisionToken: String? = nil, lastSeenAt: Date? = nil) {
+        self.itemID = itemID
+        self.revisionToken = revisionToken
+        self.lastSeenAt = lastSeenAt
+    }
+}
+
+public struct Tombstone: Codable, Hashable, Sendable {
+    public var deletedAt: Date
+    public var initiatedBy: LocationID?
+
+    public init(deletedAt: Date, initiatedBy: LocationID? = nil) {
+        self.deletedAt = deletedAt
+        self.initiatedBy = initiatedBy
+    }
+}
+
+public struct SyncSet: Codable, Hashable, Sendable, Identifiable {
     public var id: UUID
     public var name: String
-    public var providers: [ProviderID: SyncScope]
+    public var locations: [LocationID]
     public var mode: SyncMode
+    public var settings: SyncSettings
     public var createdAt: Date
     public var updatedAt: Date
 
     public init(
         id: UUID = UUID(),
         name: String,
-        providers: [ProviderID: SyncScope],
+        locations: [LocationID],
         mode: SyncMode = .balancedMirror,
+        settings: SyncSettings = SyncSettings(),
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id
         self.name = name
-        self.providers = providers
+        self.locations = locations
         self.mode = mode
+        self.settings = settings
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -191,109 +397,26 @@ public enum SyncMode: String, Codable, Hashable, Sendable {
     case noDeletePropagation
 }
 
-public struct SyncRecord: Codable, Hashable, Sendable {
-    public var syncID: UUID
-    public var syncSetID: UUID
-    public var canonicalPath: CloudPath
-    public var isFolder: Bool
-    public var googleDriveItemID: String?
-    public var oneDriveItemID: String?
-    public var iCloudBookmarkData: Data?
-    public var lastKnownHash: String?
-    public var lastKnownSize: Int64?
-    public var lastKnownModifiedAt: Date?
-    public var googleRevisionID: String?
-    public var oneDriveETag: String?
-    public var oneDriveCTag: String?
-    public var iCloudFileResourceIdentifier: String?
-    public var lastSyncedAt: Date?
-    public var deletedAt: Date?
-    public var createdAt: Date
-    public var updatedAt: Date
-
-    public init(
-        syncID: UUID = UUID(),
-        syncSetID: UUID,
-        canonicalPath: CloudPath,
-        isFolder: Bool,
-        googleDriveItemID: String? = nil,
-        oneDriveItemID: String? = nil,
-        iCloudBookmarkData: Data? = nil,
-        lastKnownHash: String? = nil,
-        lastKnownSize: Int64? = nil,
-        lastKnownModifiedAt: Date? = nil,
-        googleRevisionID: String? = nil,
-        oneDriveETag: String? = nil,
-        oneDriveCTag: String? = nil,
-        iCloudFileResourceIdentifier: String? = nil,
-        lastSyncedAt: Date? = nil,
-        deletedAt: Date? = nil,
-        createdAt: Date = Date(),
-        updatedAt: Date = Date()
-    ) {
-        self.syncID = syncID
-        self.syncSetID = syncSetID
-        self.canonicalPath = canonicalPath
-        self.isFolder = isFolder
-        self.googleDriveItemID = googleDriveItemID
-        self.oneDriveItemID = oneDriveItemID
-        self.iCloudBookmarkData = iCloudBookmarkData
-        self.lastKnownHash = lastKnownHash
-        self.lastKnownSize = lastKnownSize
-        self.lastKnownModifiedAt = lastKnownModifiedAt
-        self.googleRevisionID = googleRevisionID
-        self.oneDriveETag = oneDriveETag
-        self.oneDriveCTag = oneDriveCTag
-        self.iCloudFileResourceIdentifier = iCloudFileResourceIdentifier
-        self.lastSyncedAt = lastSyncedAt
-        self.deletedAt = deletedAt
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
-    }
-
-    public func itemID(for provider: ProviderID) -> String? {
-        switch provider {
-        case .iCloudDrive:
-            iCloudFileResourceIdentifier
-        case .googleDrive:
-            googleDriveItemID
-        case .oneDrive:
-            oneDriveItemID
-        }
-    }
-
-    public func providerRevision(for provider: ProviderID) -> String? {
-        switch provider {
-        case .iCloudDrive:
-            iCloudFileResourceIdentifier
-        case .googleDrive:
-            googleRevisionID
-        case .oneDrive:
-            oneDriveETag ?? oneDriveCTag
-        }
-    }
-}
-
 public enum SyncEvent: Codable, Hashable, Sendable {
-    case created(provider: ProviderID, item: CloudItem)
-    case edited(provider: ProviderID, item: CloudItem)
-    case moved(provider: ProviderID, item: CloudItem, oldPath: CloudPath, newPath: CloudPath)
-    case renamed(provider: ProviderID, item: CloudItem, oldPath: CloudPath, newPath: CloudPath)
-    case trashed(provider: ProviderID, item: CloudItem)
-    case unavailable(provider: ProviderID, reason: String)
+    case created(location: LocationID, item: ItemObservation)
+    case edited(location: LocationID, item: ItemObservation)
+    case moved(location: LocationID, item: ItemObservation, oldPath: SyncPath, newPath: SyncPath)
+    case renamed(location: LocationID, item: ItemObservation, oldPath: SyncPath, newPath: SyncPath)
+    case trashed(location: LocationID, item: ItemObservation)
+    case unavailable(location: LocationID, reason: String)
 }
 
 public enum SyncAction: Codable, Hashable, Sendable {
-    case upload(source: ProviderID, destination: ProviderID, sourceItem: CloudItem, destinationPath: CloudPath)
-    case overwrite(source: ProviderID, destination: ProviderID, sourceItem: CloudItem, destinationItem: CloudItem)
-    case createFolder(destination: ProviderID, path: CloudPath)
-    case move(destination: ProviderID, item: CloudItem, newPath: CloudPath)
-    case rename(destination: ProviderID, item: CloudItem, newName: String)
-    case trash(destination: ProviderID, item: CloudItem)
-    case createConflictCopy(source: ProviderID, destination: ProviderID, sourceItem: CloudItem, conflictPath: CloudPath)
+    case upload(source: LocationID, destination: LocationID, sourceItem: ItemObservation, destinationPath: SyncPath)
+    case overwrite(source: LocationID, destination: LocationID, sourceItem: ItemObservation, destinationItem: ItemObservation)
+    case createFolder(destination: LocationID, path: SyncPath)
+    case move(destination: LocationID, item: ItemObservation, newPath: SyncPath)
+    case rename(destination: LocationID, item: ItemObservation, newName: String)
+    case trash(destination: LocationID, item: ItemObservation)
+    case createConflictCopy(source: LocationID, destination: LocationID, sourceItem: ItemObservation, conflictPath: SyncPath)
     case pause(reason: String)
 
-    public var destinationProvider: ProviderID? {
+    public var destinationLocation: LocationID? {
         switch self {
         case let .upload(_, destination, _, _),
              let .overwrite(_, destination, _, _),
@@ -365,41 +488,41 @@ public struct SyncWarning: Codable, Hashable, Sendable {
     public var id: UUID
     public var severity: SyncWarningSeverity
     public var message: String
-    public var provider: ProviderID?
-    public var path: CloudPath?
+    public var location: LocationID?
+    public var path: SyncPath?
 
     public init(
         id: UUID = UUID(),
         severity: SyncWarningSeverity,
         message: String,
-        provider: ProviderID? = nil,
-        path: CloudPath? = nil
+        location: LocationID? = nil,
+        path: SyncPath? = nil
     ) {
         self.id = id
         self.severity = severity
         self.message = message
-        self.provider = provider
+        self.location = location
         self.path = path
     }
 }
 
 public struct SyncConflict: Codable, Hashable, Sendable {
     public var id: UUID
-    public var path: CloudPath
-    public var providers: [ProviderID]
-    public var items: [CloudItem]
+    public var path: SyncPath
+    public var locations: [LocationID]
+    public var items: [ItemObservation]
     public var message: String
 
     public init(
         id: UUID = UUID(),
-        path: CloudPath,
-        providers: [ProviderID],
-        items: [CloudItem],
+        path: SyncPath,
+        locations: [LocationID],
+        items: [ItemObservation],
         message: String
     ) {
         self.id = id
         self.path = path
-        self.providers = providers
+        self.locations = locations
         self.items = items
         self.message = message
     }
@@ -442,31 +565,47 @@ public struct UploadOptions: Codable, Hashable, Sendable {
     }
 }
 
-public enum ProviderScanStatus: Codable, Hashable, Sendable {
+public enum ScanStatus: Codable, Hashable, Sendable {
     case complete
     case unavailable(reason: String)
     case incomplete(reason: String)
 }
 
-public struct ProviderSnapshot: Codable, Hashable, Sendable {
-    public var provider: ProviderID
+public struct ObservationIndex: Codable, Hashable, Sendable {
+    public var all: [ItemObservation]
+    public var byPath: [SyncPath: ItemObservation]
+    public var byItemID: [String: ItemObservation]
+    public var byCaseFoldedPath: [String: ItemObservation]
+
+    public init(_ observations: [ItemObservation]) {
+        self.all = observations
+        self.byPath = Dictionary(uniqueKeysWithValues: observations.map { ($0.path, $0) })
+        self.byItemID = Dictionary(uniqueKeysWithValues: observations.compactMap { observation in
+            observation.itemID.map { ($0, observation) }
+        })
+        self.byCaseFoldedPath = Dictionary(observations.map { ($0.path.caseInsensitiveKey, $0) }) { first, _ in first }
+    }
+}
+
+public struct LocationSnapshot: Codable, Hashable, Sendable {
+    public var location: LocationID
     public var scope: SyncScope
-    public var items: [CloudItem]
-    public var status: ProviderScanStatus
+    public var status: ScanStatus
     public var scannedAt: Date
+    public var observations: ObservationIndex
 
     public init(
-        provider: ProviderID,
+        location: LocationID,
         scope: SyncScope,
-        items: [CloudItem],
-        status: ProviderScanStatus = .complete,
+        observations: [ItemObservation],
+        status: ScanStatus = .complete,
         scannedAt: Date = Date()
     ) {
-        self.provider = provider
+        self.location = location
         self.scope = scope
-        self.items = items
         self.status = status
         self.scannedAt = scannedAt
+        self.observations = ObservationIndex(observations)
     }
 }
 
@@ -508,7 +647,7 @@ public struct SyncExclusion: Codable, Hashable, Sendable {
         self.isCaseSensitive = isCaseSensitive
     }
 
-    public func matches(_ path: CloudPath) -> Bool {
+    public func matches(_ path: SyncPath) -> Bool {
         let candidate: String
         switch matchStyle {
         case .exactPath, .suffix, .prefix, .contains:
@@ -522,7 +661,7 @@ public struct SyncExclusion: Codable, Hashable, Sendable {
 
         switch matchStyle {
         case .exactPath:
-            return CloudPath(lhs).rawValue == CloudPath(rhs).rawValue
+            return SyncPath(lhs).rawValue == SyncPath(rhs).rawValue
         case .filename:
             return lhs == rhs
         case .suffix:
@@ -535,22 +674,50 @@ public struct SyncExclusion: Codable, Hashable, Sendable {
     }
 }
 
-public struct SyncPlannerSettings: Codable, Hashable, Sendable {
+public struct SyncSettings: Codable, Hashable, Sendable {
     public var exclusions: [SyncExclusion]
-    public var safetyThresholds: SafetyThresholds
+    public var thresholds: SafetyThresholds
 
-    public init(exclusions: [SyncExclusion] = [], safetyThresholds: SafetyThresholds = SafetyThresholds()) {
+    public init(exclusions: [SyncExclusion] = [], thresholds: SafetyThresholds = SafetyThresholds()) {
         self.exclusions = exclusions
-        self.safetyThresholds = safetyThresholds
+        self.thresholds = thresholds
     }
 
-    public func isExcluded(_ path: CloudPath) -> Bool {
+    public func isExcluded(_ path: SyncPath) -> Bool {
         exclusions.contains { $0.matches(path) }
     }
 }
 
-extension CloudItem {
-    public var versionToken: String? {
-        contentHash ?? revisionID ?? eTag ?? cTag
+public struct PlanningEnvironment: Sendable {
+    public var now: Date
+    public var makeID: @Sendable () -> UUID
+    public var locationNames: [LocationID: String]
+
+    public init(
+        now: Date,
+        makeID: @escaping @Sendable () -> UUID = { UUID() },
+        locationNames: [LocationID: String] = [:]
+    ) {
+        self.now = now
+        self.makeID = makeID
+        self.locationNames = locationNames
+    }
+}
+
+extension ItemObservation {
+    public var contentHash: String? {
+        version.contentHash
+    }
+
+    public var size: Int64? {
+        version.size
+    }
+
+    public var modifiedAt: Date? {
+        version.modifiedAt
+    }
+
+    public var revisionToken: String? {
+        version.revisionToken
     }
 }

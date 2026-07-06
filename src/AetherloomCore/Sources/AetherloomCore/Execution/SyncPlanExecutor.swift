@@ -1,10 +1,10 @@
 import Foundation
 
 public enum SyncExecutionError: Error, Equatable, Sendable {
-    case missingProvider(ProviderID)
+    case missingProvider(LocationID)
     case planPaused(reason: String)
     case planNeedsReview
-    case destinationChangedRequiresReplan(provider: ProviderID, path: CloudPath)
+    case destinationChangedRequiresReplan(provider: LocationID, path: SyncPath)
 }
 
 public struct SyncExecutionReport: Codable, Hashable, Sendable {
@@ -18,10 +18,10 @@ public struct SyncExecutionReport: Codable, Hashable, Sendable {
 }
 
 public actor SyncPlanExecutor {
-    private let providers: [ProviderID: any CloudProvider]
+    private let providers: [LocationID: any CloudProvider]
     private let fileManager: FileManager
 
-    public init(providers: [ProviderID: any CloudProvider], fileManager: FileManager = .default) {
+    public init(providers: [LocationID: any CloudProvider], fileManager: FileManager = .default) {
         self.providers = providers
         self.fileManager = fileManager
     }
@@ -61,10 +61,10 @@ public actor SyncPlanExecutor {
         case let .overwrite(source, destination, sourceItem, destinationItem):
             let destinationProvider = try provider(destination)
             let currentDestination = try await destinationProvider.metadata(for: destinationItem)
-            if sameContent(currentDestination, sourceItem) {
+            if matchingContent(currentDestination, sourceItem) {
                 return false
             }
-            guard sameVersion(currentDestination, destinationItem) else {
+            guard matchingObservationVersion(currentDestination, destinationItem) else {
                 throw SyncExecutionError.destinationChangedRequiresReplan(provider: destination, path: destinationItem.path)
             }
             return try await upload(
@@ -80,7 +80,7 @@ public actor SyncPlanExecutor {
             let destinationProvider = try provider(destination)
             do {
                 let existing = try await destinationProvider.metadata(
-                    for: CloudItem(provider: destination, path: path, isFolder: true)
+                    for: ItemObservation(location: destination, path: path, kind: .folder)
                 )
                 if existing.isFolder && !existing.isTrashed {
                     return false
@@ -97,7 +97,7 @@ public actor SyncPlanExecutor {
             if current.path == newPath {
                 return false
             }
-            guard sameVersion(current, item) else {
+            guard matchingObservationVersion(current, item) else {
                 throw SyncExecutionError.destinationChangedRequiresReplan(provider: destination, path: item.path)
             }
             _ = try await destinationProvider.move(item: current, to: newPath)
@@ -110,7 +110,7 @@ public actor SyncPlanExecutor {
             if current.path == newPath {
                 return false
             }
-            guard sameVersion(current, item) else {
+            guard matchingObservationVersion(current, item) else {
                 throw SyncExecutionError.destinationChangedRequiresReplan(provider: destination, path: item.path)
             }
             _ = try await destinationProvider.rename(item: current, to: newName)
@@ -122,7 +122,7 @@ public actor SyncPlanExecutor {
             if current.isTrashed {
                 return false
             }
-            guard sameVersion(current, item) else {
+            guard matchingObservationVersion(current, item) else {
                 throw SyncExecutionError.destinationChangedRequiresReplan(provider: destination, path: item.path)
             }
             try await destinationProvider.trash(item: current)
@@ -144,10 +144,10 @@ public actor SyncPlanExecutor {
     }
 
     private func upload(
-        source: ProviderID,
-        destination: ProviderID,
-        sourceItem: CloudItem,
-        destinationPath: CloudPath,
+        source: LocationID,
+        destination: LocationID,
+        sourceItem: ItemObservation,
+        destinationPath: SyncPath,
         allowOverwrite: Bool,
         expectedDestinationRevisionID: String?
     ) async throws -> Bool {
@@ -156,9 +156,9 @@ public actor SyncPlanExecutor {
 
         do {
             let existing = try await destinationProvider.metadata(
-                for: CloudItem(provider: destination, path: destinationPath, isFolder: false)
+                for: ItemObservation(location: destination, path: destinationPath, kind: .file)
             )
-            if sameContent(existing, sourceItem) {
+            if matchingContent(existing, sourceItem) {
                 return false
             }
             if !allowOverwrite {
@@ -184,24 +184,24 @@ public actor SyncPlanExecutor {
             return true
         } catch ProviderError.itemAlreadyExists {
             let existing = try await destinationProvider.metadata(
-                for: CloudItem(provider: destination, path: destinationPath, isFolder: false)
+                for: ItemObservation(location: destination, path: destinationPath, kind: .file)
             )
-            if sameContent(existing, sourceItem) {
+            if matchingContent(existing, sourceItem) {
                 return false
             }
             throw ProviderError.itemAlreadyExists(provider: destination, path: destinationPath)
         }
     }
 
-    private func provider(_ id: ProviderID) throws -> any CloudProvider {
+    private func provider(_ id: LocationID) throws -> any CloudProvider {
         guard let provider = providers[id] else {
             throw SyncExecutionError.missingProvider(id)
         }
         return provider
     }
 
-    private func temporaryURL(for item: CloudItem) -> URL {
-        let filename = item.providerItemID?
+    private func temporaryURL(for item: ItemObservation) -> URL {
+        let filename = item.itemID?
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
             ?? UUID().uuidString
@@ -210,30 +210,21 @@ public actor SyncPlanExecutor {
             .appendingPathComponent(filename)
     }
 
-    private func sameVersion(_ lhs: CloudItem, _ rhs: CloudItem) -> Bool {
-        if lhs.providerItemID != nil && rhs.providerItemID != nil && lhs.providerItemID != rhs.providerItemID {
+    private func matchingObservationVersion(_ lhs: ItemObservation, _ rhs: ItemObservation) -> Bool {
+        if lhs.itemID != nil && rhs.itemID != nil && lhs.itemID != rhs.itemID {
             return false
         }
-        if let lhsHash = lhs.contentHash, let rhsHash = rhs.contentHash {
-            return lhsHash == rhsHash
-        }
-        if let lhsToken = destinationRevisionToken(lhs), let rhsToken = destinationRevisionToken(rhs) {
-            return lhsToken == rhsToken
-        }
-        return lhs.size == rhs.size && lhs.modifiedAt == rhs.modifiedAt
+        return lhs.version.isSameVersion(as: rhs.version)
     }
 
-    private func sameContent(_ lhs: CloudItem, _ rhs: CloudItem) -> Bool {
-        guard lhs.isFolder == rhs.isFolder else { return false }
+    private func matchingContent(_ lhs: ItemObservation, _ rhs: ItemObservation) -> Bool {
+        guard lhs.kind == rhs.kind else { return false }
         if lhs.isFolder { return true }
-        if let lhsHash = lhs.contentHash, let rhsHash = rhs.contentHash {
-            return lhsHash == rhsHash
-        }
-        return lhs.size == rhs.size && lhs.modifiedAt == rhs.modifiedAt
+        return lhs.version.isSameVersion(as: rhs.version)
     }
 
-    private func destinationRevisionToken(_ item: CloudItem) -> String? {
-        item.revisionID ?? item.eTag ?? item.cTag
+    private func destinationRevisionToken(_ item: ItemObservation) -> String? {
+        item.version.revisionToken
     }
 }
 

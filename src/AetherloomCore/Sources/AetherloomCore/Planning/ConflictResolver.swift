@@ -1,18 +1,18 @@
 import Foundation
 
 public struct ConflictResolver: Sendable {
-    public var generatedAt: Date
+    public var environment: PlanningEnvironment
 
-    public init(generatedAt: Date = Date()) {
-        self.generatedAt = generatedAt
+    public init(environment: PlanningEnvironment) {
+        self.environment = environment
     }
 
-    public func conflictPath(for item: CloudItem, existingPaths: Set<CloudPath> = []) -> CloudPath {
-        let providerName = item.provider.displayName
-        let timestamp = Self.timestampString(from: generatedAt)
+    public func conflictPath(for item: ItemObservation, existingPaths: Set<SyncPath> = []) -> SyncPath {
+        let locationName = environment.locationNames[item.location] ?? item.location.displayName
+        let timestamp = Self.timestampString(from: environment.now)
         let baseName = item.path.deletingPathExtensionName
         let extensionValue = item.path.pathExtension
-        let suffix = " (conflict from \(providerName), \(timestamp))"
+        let suffix = " (conflict from \(locationName), \(timestamp))"
         var candidateName = baseName + suffix
         if !extensionValue.isEmpty {
             candidateName += "." + extensionValue
@@ -46,4 +46,3 @@ public struct ConflictResolver: Sendable {
         )
     }
 }
-

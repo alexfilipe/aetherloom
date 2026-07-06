@@ -2,20 +2,23 @@ import Foundation
 
 public struct SyncPlanningInput: Sendable {
     public var syncSet: SyncSet
-    public var records: [SyncRecord]
-    public var snapshots: [ProviderSnapshot]
-    public var settings: SyncPlannerSettings
+    public var locations: [SyncLocation]
+    public var records: [BaseRecord]
+    public var snapshots: [LocationSnapshot]
+    public var settings: SyncSettings
 
     public init(
         syncSet: SyncSet,
-        records: [SyncRecord] = [],
-        snapshots: [ProviderSnapshot],
-        settings: SyncPlannerSettings = SyncPlannerSettings()
+        locations: [SyncLocation] = [],
+        records: [BaseRecord] = [],
+        snapshots: [LocationSnapshot],
+        settings: SyncSettings? = nil
     ) {
         self.syncSet = syncSet
+        self.locations = locations
         self.records = records
         self.snapshots = snapshots
-        self.settings = settings
+        self.settings = settings ?? syncSet.settings
     }
 }
 
@@ -26,57 +29,63 @@ public struct SyncPlanner: Sendable {
         self.safetyAnalyzer = safetyAnalyzer
     }
 
-    public func plan(_ input: SyncPlanningInput, generatedAt: Date = Date()) -> SyncPlan {
-        let providers = input.syncSet.providers.keys.sorted { $0.rawValue < $1.rawValue }
-        let snapshotsByProvider = Dictionary(uniqueKeysWithValues: input.snapshots.map { ($0.provider, $0) })
-        let missingSnapshots = providers.filter { snapshotsByProvider[$0] == nil }
-        if let missingProvider = missingSnapshots.first {
+    public func plan(
+        _ input: SyncPlanningInput,
+        environment: PlanningEnvironment
+    ) -> SyncPlan {
+        let locationIDs = input.syncSet.locations.sorted()
+        let snapshotsByLocation = Dictionary(uniqueKeysWithValues: input.snapshots.map { ($0.location, $0) })
+        let locationsByID = Dictionary(uniqueKeysWithValues: input.locations.map { ($0.id, $0) })
+        let missingSnapshots = locationIDs.filter { snapshotsByLocation[$0] == nil }
+        if let missingLocation = missingSnapshots.first {
             return pausedPlan(
                 syncSetID: input.syncSet.id,
-                reason: "Sync paused because \(missingProvider.displayName) has no scan snapshot. No files will be deleted while provider state is unknown.",
-                provider: missingProvider
+                reason: "Sync paused because \(locationName(missingLocation, locationsByID: locationsByID, environment: environment)) has no scan snapshot. No files will be deleted while provider state is unknown.",
+                location: missingLocation
             )
         }
 
-        for provider in providers {
-            guard let snapshot = snapshotsByProvider[provider] else { continue }
+        for location in locationIDs {
+            guard let snapshot = snapshotsByLocation[location] else { continue }
             switch snapshot.status {
             case .complete:
                 break
             case let .unavailable(reason):
                 return pausedPlan(
                     syncSetID: input.syncSet.id,
-                    reason: "Sync paused because \(provider.displayName) is unavailable. No files will be deleted while a provider is unreachable.",
-                    provider: provider,
+                    reason: "Sync paused because \(locationName(location, locationsByID: locationsByID, environment: environment)) is unavailable. No files will be deleted while a provider is unreachable.",
+                    location: location,
                     detail: reason
                 )
             case let .incomplete(reason):
                 return pausedPlan(
                     syncSetID: input.syncSet.id,
-                    reason: "Sync paused because \(provider.displayName) returned an incomplete scan. No files will be deleted from an incomplete scan.",
-                    provider: provider,
+                    reason: "Sync paused because \(locationName(location, locationsByID: locationsByID, environment: environment)) returned an incomplete scan. No files will be deleted from an incomplete scan.",
+                    location: location,
                     detail: reason
                 )
             }
         }
 
-        let placeholderItems = input.snapshots.flatMap(\.items).filter {
-            $0.provider == .iCloudDrive && $0.isPlaceholder && !input.settings.isExcluded($0.path)
-        }
+        let placeholderItems = input.snapshots
+            .flatMap(\.observations.all)
+            .filter {
+                locationsByID[$0.location]?.kind == .iCloudDrive && $0.isPlaceholder && !input.settings.isExcluded($0.path)
+            }
         if let placeholder = placeholderItems.first {
             return pausedPlan(
                 syncSetID: input.syncSet.id,
                 reason: "Sync paused because \(placeholder.path.rawValue) in iCloud Drive is a placeholder. No files will be deleted while iCloud files are unavailable.",
-                provider: .iCloudDrive,
+                location: placeholder.location,
                 path: placeholder.path
             )
         }
 
         let context = PlanningContext(
             input: input,
-            providers: providers,
-            snapshotsByProvider: snapshotsByProvider,
-            resolver: ConflictResolver(generatedAt: generatedAt)
+            locationIDs: locationIDs,
+            snapshotsByLocation: snapshotsByLocation,
+            resolver: ConflictResolver(environment: environment)
         )
         var mutableContext = context
         mutableContext.processExistingRecords()
@@ -92,7 +101,7 @@ public struct SyncPlanner: Sendable {
         plan.isAutoExecutable = SafetyAnalyzer.isAutoExecutable(plan)
         return safetyAnalyzer.analyze(
             plan: plan,
-            trackedItemCount: max(input.records.filter { !input.settings.isExcluded($0.canonicalPath) }.count, 1),
+            trackedItemCount: max(input.records.filter { !input.settings.isExcluded($0.path) }.count, 1),
             settings: input.settings
         )
     }
@@ -100,60 +109,74 @@ public struct SyncPlanner: Sendable {
     private func pausedPlan(
         syncSetID: UUID,
         reason: String,
-        provider: ProviderID,
+        location: LocationID,
         detail: String? = nil,
-        path: CloudPath? = nil
+        path: SyncPath? = nil
     ) -> SyncPlan {
         let message = detail.map { "\(reason) \($0)" } ?? reason
         return SyncPlan(
             syncSetID: syncSetID,
             actions: [.pause(reason: reason)],
             warnings: [
-                SyncWarning(severity: .pause, message: message, provider: provider, path: path)
+                SyncWarning(severity: .pause, message: message, location: location, path: path)
             ],
             riskLevel: .paused,
             isAutoExecutable: false
         )
     }
+
+    private func locationName(
+        _ id: LocationID,
+        locationsByID: [LocationID: SyncLocation],
+        environment: PlanningEnvironment
+    ) -> String {
+        environment.locationNames[id] ?? locationsByID[id]?.displayName ?? id.displayName
+    }
 }
 
 private struct PlanningContext {
     let input: SyncPlanningInput
-    let providers: [ProviderID]
-    let snapshotsByProvider: [ProviderID: ProviderSnapshot]
+    let locationIDs: [LocationID]
+    let snapshotsByLocation: [LocationID: LocationSnapshot]
     let resolver: ConflictResolver
     var actions: [SyncAction] = []
     var warnings: [SyncWarning] = []
     var conflicts: [SyncConflict] = []
     var knownItemKeys: Set<ItemKey> = []
 
-    private var itemsByProviderAndPath: [ProviderID: [CloudPath: CloudItem]]
-    private var itemsByProviderAndInsensitivePath: [ProviderID: [String: CloudItem]]
-    private var itemsByProviderAndID: [ProviderID: [String: CloudItem]]
+    private var itemsByLocationAndPath: [LocationID: [SyncPath: ItemObservation]]
+    private var itemsByLocationAndInsensitivePath: [LocationID: [String: ItemObservation]]
+    private var itemsByLocationAndID: [LocationID: [String: ItemObservation]]
 
     init(
         input: SyncPlanningInput,
-        providers: [ProviderID],
-        snapshotsByProvider: [ProviderID: ProviderSnapshot],
+        locationIDs: [LocationID],
+        snapshotsByLocation: [LocationID: LocationSnapshot],
         resolver: ConflictResolver
     ) {
         self.input = input
-        self.providers = providers
-        self.snapshotsByProvider = snapshotsByProvider
+        self.locationIDs = locationIDs
+        self.snapshotsByLocation = snapshotsByLocation
         self.resolver = resolver
-        self.itemsByProviderAndPath = [:]
-        self.itemsByProviderAndInsensitivePath = [:]
-        self.itemsByProviderAndID = [:]
+        self.itemsByLocationAndPath = [:]
+        self.itemsByLocationAndInsensitivePath = [:]
+        self.itemsByLocationAndID = [:]
 
-        for provider in providers {
-            let items = snapshotsByProvider[provider]?.items.filter {
+        for location in locationIDs {
+            let items = snapshotsByLocation[location]?.observations.all.filter {
                 !$0.isTrashed && !input.settings.isExcluded($0.path)
             } ?? []
-            itemsByProviderAndPath[provider] = Dictionary(uniqueKeysWithValues: items.map { ($0.path, $0) })
-            itemsByProviderAndInsensitivePath[provider] = Dictionary(items.map { ($0.path.caseInsensitiveKey, $0) }) { first, _ in first }
-            itemsByProviderAndID[provider] = Dictionary(
+            itemsByLocationAndPath[location] = snapshotsByLocation[location]?.observations.byPath.filter {
+                !input.settings.isExcluded($0.key) && !$0.value.isTrashed
+            } ?? Dictionary(uniqueKeysWithValues: items.map { ($0.path, $0) })
+            itemsByLocationAndInsensitivePath[location] = snapshotsByLocation[location]?.observations.byCaseFoldedPath.filter {
+                !input.settings.isExcluded($0.value.path) && !$0.value.isTrashed
+            } ?? Dictionary(items.map { ($0.path.caseInsensitiveKey, $0) }) { first, _ in first }
+            itemsByLocationAndID[location] = snapshotsByLocation[location]?.observations.byItemID.filter {
+                !input.settings.isExcluded($0.value.path) && !$0.value.isTrashed
+            } ?? Dictionary(
                 uniqueKeysWithValues: items.compactMap { item in
-                    item.providerItemID.map { ($0, item) }
+                    item.itemID.map { ($0, item) }
                 }
             )
         }
@@ -162,16 +185,16 @@ private struct PlanningContext {
     mutating func processExistingRecords() {
         let records = input.records
             .filter { $0.syncSetID == input.syncSet.id }
-            .filter { !input.settings.isExcluded($0.canonicalPath) }
-            .sorted { $0.canonicalPath < $1.canonicalPath }
+            .filter { !input.settings.isExcluded($0.path) }
+            .sorted { $0.path < $1.path }
 
         for record in records {
-            let findings = providers.map { provider in
-                RecordFinding(provider: provider, item: item(for: provider, record: record))
+            let findings = locationIDs.map { location in
+                RecordFinding(location: location, item: item(for: location, record: record))
             }
             for finding in findings {
                 if let item = finding.item {
-                    knownItemKeys.insert(ItemKey(provider: finding.provider, path: item.path))
+                    knownItemKeys.insert(ItemKey(location: finding.location, path: item.path))
                 }
             }
 
@@ -188,9 +211,9 @@ private struct PlanningContext {
     }
 
     mutating func processNewItems() {
-        let allNewItems = providers.flatMap { provider -> [CloudItem] in
-            (itemsByProviderAndPath[provider]?.values.map { $0 } ?? []).filter {
-                !knownItemKeys.contains(ItemKey(provider: provider, path: $0.path))
+        let allNewItems = locationIDs.flatMap { location -> [ItemObservation] in
+            (itemsByLocationAndPath[location]?.values.map { $0 } ?? []).filter {
+                !knownItemKeys.contains(ItemKey(location: location, path: $0.path))
             }
         }
 
@@ -220,9 +243,9 @@ private struct PlanningContext {
         }
     }
 
-    private mutating func handlePathChange(record: SyncRecord, findings: [RecordFinding]) -> Bool {
+    private mutating func handlePathChange(record: BaseRecord, findings: [RecordFinding]) -> Bool {
         let movedFindings = findings.compactMap { finding -> RecordFinding? in
-            guard let item = finding.item, item.path != record.canonicalPath else { return nil }
+            guard let item = finding.item, item.path != record.path else { return nil }
             return finding
         }
 
@@ -232,32 +255,32 @@ private struct PlanningContext {
             return false
         }
 
-        for finding in findings where finding.provider != sourceFinding.provider {
-            guard let destinationItem = finding.item, destinationItem.path == record.canonicalPath else { continue }
-            if sourceItem.path.parent == record.canonicalPath.parent {
+        for finding in findings where finding.location != sourceFinding.location {
+            guard let destinationItem = finding.item, destinationItem.path == record.path else { continue }
+            if sourceItem.path.parent == record.path.parent {
                 addCaseSafeAction(
-                    destination: finding.provider,
+                    destination: finding.location,
                     destinationPath: sourceItem.path,
                     fallbackSourceItem: sourceItem,
-                    action: .rename(destination: finding.provider, item: destinationItem, newName: sourceItem.name)
+                    action: .rename(destination: finding.location, item: destinationItem, newName: sourceItem.name)
                 )
             } else {
                 addCaseSafeAction(
-                    destination: finding.provider,
+                    destination: finding.location,
                     destinationPath: sourceItem.path,
                     fallbackSourceItem: sourceItem,
-                    action: .move(destination: finding.provider, item: destinationItem, newPath: sourceItem.path)
+                    action: .move(destination: finding.location, item: destinationItem, newPath: sourceItem.path)
                 )
             }
         }
         return true
     }
 
-    private mutating func handleContentChange(record: SyncRecord, findings: [RecordFinding]) -> Bool {
+    private mutating func handleContentChange(record: BaseRecord, findings: [RecordFinding]) -> Bool {
         let presentFindings = findings.filter { $0.item != nil }
         let changedFindings = presentFindings.filter { finding in
             guard let item = finding.item else { return false }
-            return !item.isFolder && itemChanged(item, comparedTo: record)
+            return !item.isFolder && item.version.itemChanged(vs: record.version)
         }
 
         guard !changedFindings.isEmpty else { return false }
@@ -273,15 +296,15 @@ private struct PlanningContext {
             return false
         }
 
-        for finding in findings where finding.provider != sourceFinding.provider {
+        for finding in findings where finding.location != sourceFinding.location {
             guard let destinationItem = finding.item else {
                 addCaseSafeAction(
-                    destination: finding.provider,
+                    destination: finding.location,
                     destinationPath: sourceItem.path,
                     fallbackSourceItem: sourceItem,
                     action: .upload(
-                        source: sourceFinding.provider,
-                        destination: finding.provider,
+                        source: sourceFinding.location,
+                        destination: finding.location,
                         sourceItem: sourceItem,
                         destinationPath: sourceItem.path
                     )
@@ -289,11 +312,11 @@ private struct PlanningContext {
                 continue
             }
 
-            if !sameContent(sourceItem, destinationItem) {
+            if !matchingContent(sourceItem, destinationItem) {
                 actions.append(
                     .overwrite(
-                        source: sourceFinding.provider,
-                        destination: finding.provider,
+                        source: sourceFinding.location,
+                        destination: finding.location,
                         sourceItem: sourceItem,
                         destinationItem: destinationItem
                     )
@@ -303,65 +326,65 @@ private struct PlanningContext {
         return true
     }
 
-    private mutating func handleDeletion(record: SyncRecord, findings: [RecordFinding]) {
+    private mutating func handleDeletion(record: BaseRecord, findings: [RecordFinding]) {
         let present = findings.compactMap(\.item)
-        let missingProviders = findings.filter { $0.item == nil }.map(\.provider)
-        guard !missingProviders.isEmpty, !present.isEmpty else { return }
-        guard present.allSatisfy({ !itemChanged($0, comparedTo: record) }) else { return }
+        let missingLocations = findings.filter { $0.item == nil }.map(\.location)
+        guard !missingLocations.isEmpty, !present.isEmpty else { return }
+        guard present.allSatisfy({ !$0.version.itemChanged(vs: record.version) }) else { return }
 
         switch input.syncSet.mode {
         case .balancedMirror:
             for item in present.sorted(by: itemSort) {
-                actions.append(.trash(destination: item.provider, item: item))
+                actions.append(.trash(destination: item.location, item: item))
             }
         case .askBeforeDeleting:
             warnings.append(
                 SyncWarning(
                     severity: .needsReview,
-                    message: "Aetherloom found deletions for \(record.canonicalPath.rawValue). Review before moving matching files to trash.",
-                    path: record.canonicalPath
+                    message: "Aetherloom found deletions for \(record.path.rawValue). Review before moving matching files to trash.",
+                    path: record.path
                 )
             )
             for item in present.sorted(by: itemSort) {
-                actions.append(.trash(destination: item.provider, item: item))
+                actions.append(.trash(destination: item.location, item: item))
             }
         case .noDeletePropagation:
             warnings.append(
                 SyncWarning(
                     severity: .needsReview,
-                    message: "Delete propagation is disabled for \(record.canonicalPath.rawValue). No files will be moved to trash.",
-                    path: record.canonicalPath
+                    message: "Delete propagation is disabled for \(record.path.rawValue). No files will be moved to trash.",
+                    path: record.path
                 )
             )
         }
     }
 
-    private mutating func propagateNewItem(_ sourceItem: CloudItem) {
-        for provider in providers where provider != sourceItem.provider {
-            let destinationItems = itemsByProviderAndPath[provider] ?? [:]
+    private mutating func propagateNewItem(_ sourceItem: ItemObservation) {
+        for location in locationIDs where location != sourceItem.location {
+            let destinationItems = itemsByLocationAndPath[location] ?? [:]
             if let exact = destinationItems[sourceItem.path] {
-                guard !sourceItem.isFolder, !exact.isFolder, !sameContent(sourceItem, exact) else { continue }
-                createConflictCopy(sourceItem: sourceItem, destination: provider)
+                guard !sourceItem.isFolder, !exact.isFolder, !matchingContent(sourceItem, exact) else { continue }
+                createConflictCopy(sourceItem: sourceItem, destination: location)
                 continue
             }
 
             addCaseSafeAction(
-                destination: provider,
+                destination: location,
                 destinationPath: sourceItem.path,
                 fallbackSourceItem: sourceItem,
                 action: sourceItem.isFolder
-                    ? .createFolder(destination: provider, path: sourceItem.path)
-                    : .upload(source: sourceItem.provider, destination: provider, sourceItem: sourceItem, destinationPath: sourceItem.path)
+                    ? .createFolder(destination: location, path: sourceItem.path)
+                    : .upload(source: sourceItem.location, destination: location, sourceItem: sourceItem, destinationPath: sourceItem.path)
             )
         }
     }
 
-    private mutating func createEditConflict(record: SyncRecord, changedFindings: [RecordFinding]) {
+    private mutating func createEditConflict(record: BaseRecord, changedFindings: [RecordFinding]) {
         let changedItems = changedFindings.compactMap(\.item).sorted(by: itemSort)
         conflicts.append(
             SyncConflict(
-                path: record.canonicalPath,
-                providers: changedFindings.map(\.provider).sorted { $0.rawValue < $1.rawValue },
+                path: record.path,
+                locations: changedFindings.map(\.location).sorted(),
                 items: changedItems,
                 message: "This file changed in more than one place. Aetherloom preserved both versions."
             )
@@ -370,23 +393,23 @@ private struct PlanningContext {
             SyncWarning(
                 severity: .needsReview,
                 message: "This file changed in more than one place. Aetherloom preserved both versions.",
-                path: record.canonicalPath
+                path: record.path
             )
         )
 
         for sourceItem in changedItems {
-            for destination in providers where destination != sourceItem.provider {
+            for destination in locationIDs where destination != sourceItem.location {
                 createConflictCopy(sourceItem: sourceItem, destination: destination)
             }
         }
     }
 
-    private mutating func createIndependentCreationConflicts(path: CloudPath, items: [CloudItem]) {
+    private mutating func createIndependentCreationConflicts(path: SyncPath, items: [ItemObservation]) {
         let sortedItems = items.sorted(by: itemSort)
         conflicts.append(
             SyncConflict(
                 path: path,
-                providers: sortedItems.map(\.provider),
+                locations: sortedItems.map(\.location),
                 items: sortedItems,
                 message: "Different files appeared at the same path before sync. Aetherloom preserved each version."
             )
@@ -400,32 +423,32 @@ private struct PlanningContext {
         )
 
         for sourceItem in sortedItems {
-            for destination in providers where destination != sourceItem.provider {
+            for destination in locationIDs where destination != sourceItem.location {
                 createConflictCopy(sourceItem: sourceItem, destination: destination)
             }
         }
     }
 
-    private mutating func createCollisionConflictCopies(sourceItem: CloudItem, preferredPath: CloudPath) {
+    private mutating func createCollisionConflictCopies(sourceItem: ItemObservation, preferredPath: SyncPath) {
         warnings.append(
             SyncWarning(
                 severity: .needsReview,
                 message: "A filename collision was found near \(preferredPath.rawValue). Aetherloom will preserve both names.",
-                provider: sourceItem.provider,
+                location: sourceItem.location,
                 path: preferredPath
             )
         )
-        for destination in providers where destination != sourceItem.provider {
+        for destination in locationIDs where destination != sourceItem.location {
             createConflictCopy(sourceItem: sourceItem, destination: destination)
         }
     }
 
-    private mutating func createConflictCopy(sourceItem: CloudItem, destination: ProviderID) {
-        let existingPaths = Set(itemsByProviderAndPath[destination]?.keys.map { $0 } ?? [])
+    private mutating func createConflictCopy(sourceItem: ItemObservation, destination: LocationID) {
+        let existingPaths = Set(itemsByLocationAndPath[destination]?.keys.map { $0 } ?? [])
         let conflictPath = resolver.conflictPath(for: sourceItem, existingPaths: existingPaths)
         actions.append(
             .createConflictCopy(
-                source: sourceItem.provider,
+                source: sourceItem.location,
                 destination: destination,
                 sourceItem: sourceItem,
                 conflictPath: conflictPath
@@ -434,18 +457,18 @@ private struct PlanningContext {
     }
 
     private mutating func addCaseSafeAction(
-        destination: ProviderID,
-        destinationPath: CloudPath,
-        fallbackSourceItem: CloudItem,
+        destination: LocationID,
+        destinationPath: SyncPath,
+        fallbackSourceItem: ItemObservation,
         action: SyncAction
     ) {
-        if let collision = itemsByProviderAndInsensitivePath[destination]?[destinationPath.caseInsensitiveKey],
+        if let collision = itemsByLocationAndInsensitivePath[destination]?[destinationPath.caseInsensitiveKey],
            collision.path != destinationPath {
             warnings.append(
                 SyncWarning(
                     severity: .needsReview,
                     message: "A case-insensitive filename collision was found at \(destinationPath.rawValue). Aetherloom will preserve both versions.",
-                    provider: destination,
+                    location: destination,
                     path: destinationPath
                 )
             )
@@ -455,75 +478,47 @@ private struct PlanningContext {
         actions.append(action)
     }
 
-    private func item(for provider: ProviderID, record: SyncRecord) -> CloudItem? {
-        if let itemID = record.itemID(for: provider),
-           let item = itemsByProviderAndID[provider]?[itemID] {
+    private func item(for location: LocationID, record: BaseRecord) -> ItemObservation? {
+        if let itemID = record.itemID(for: location),
+           let item = itemsByLocationAndID[location]?[itemID] {
             return item
         }
-        return itemsByProviderAndPath[provider]?[record.canonicalPath]
+        return itemsByLocationAndPath[location]?[record.path]
     }
 
-    private func itemChanged(_ item: CloudItem, comparedTo record: SyncRecord) -> Bool {
-        if item.isPlaceholder || item.isFolder {
-            return false
-        }
-        if let lastKnownHash = record.lastKnownHash, let contentHash = item.contentHash {
-            return lastKnownHash != contentHash
-        }
-        if let providerRevision = record.providerRevision(for: item.provider), let itemRevision = item.revisionID ?? item.eTag ?? item.cTag {
-            return providerRevision != itemRevision
-        }
-        if let lastKnownSize = record.lastKnownSize, let size = item.size, lastKnownSize != size {
-            return true
-        }
-        if let lastKnownModifiedAt = record.lastKnownModifiedAt, let modifiedAt = item.modifiedAt {
-            return modifiedAt != lastKnownModifiedAt
+    private func differentContentVersions(_ items: [ItemObservation]) -> Bool {
+        let fileItems = items.filter { !$0.isFolder }
+        guard fileItems.count > 1 else { return false }
+        for lhsIndex in fileItems.indices {
+            for rhsIndex in fileItems.index(after: lhsIndex)..<fileItems.endIndex {
+                if fileItems[lhsIndex].version.comparison(to: fileItems[rhsIndex].version) != .same {
+                    return true
+                }
+            }
         }
         return false
     }
 
-    private func differentContentVersions(_ items: [CloudItem]) -> Bool {
-        let fileItems = items.filter { !$0.isFolder }
-        guard fileItems.count > 1 else { return false }
-        let signatures = Set(fileItems.map(contentSignature))
-        return signatures.count > 1
+    private func matchingContent(_ lhs: ItemObservation, _ rhs: ItemObservation) -> Bool {
+        guard lhs.kind == rhs.kind else { return false }
+        if lhs.isFolder { return true }
+        return lhs.version.isSameVersion(as: rhs.version)
     }
 
-    private func sameContent(_ lhs: CloudItem, _ rhs: CloudItem) -> Bool {
-        guard lhs.isFolder == rhs.isFolder else { return false }
-        if lhs.isFolder && rhs.isFolder {
-            return true
-        }
-        return contentSignature(lhs) == contentSignature(rhs)
-    }
-
-    private func contentSignature(_ item: CloudItem) -> String {
-        if let contentHash = item.contentHash {
-            return "hash:\(contentHash)"
-        }
-        if let size = item.size, let modifiedAt = item.modifiedAt {
-            return "size:\(size):modified:\(modifiedAt.timeIntervalSince1970)"
-        }
-        if let versionToken = item.versionToken {
-            return "version:\(versionToken)"
-        }
-        return "unknown:\(item.path.rawValue):\(item.provider.rawValue)"
-    }
-
-    private func itemSort(_ lhs: CloudItem, _ rhs: CloudItem) -> Bool {
+    private func itemSort(_ lhs: ItemObservation, _ rhs: ItemObservation) -> Bool {
         if lhs.path != rhs.path {
             return lhs.path < rhs.path
         }
-        return lhs.provider.rawValue < rhs.provider.rawValue
+        return lhs.location < rhs.location
     }
 }
 
 private struct RecordFinding {
-    var provider: ProviderID
-    var item: CloudItem?
+    var location: LocationID
+    var item: ItemObservation?
 }
 
 private struct ItemKey: Hashable {
-    var provider: ProviderID
-    var path: CloudPath
+    var location: LocationID
+    var path: SyncPath
 }

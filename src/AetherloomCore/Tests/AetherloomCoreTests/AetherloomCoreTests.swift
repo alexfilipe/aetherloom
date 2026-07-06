@@ -13,8 +13,8 @@ import Testing
 
     #expect(plan.riskLevel == .safe)
     #expect(uploadCount(plan) == 2)
-    #expect(containsUpload(plan, source: source.provider, destination: .iCloudDrive, path: source.path))
-    #expect(containsUpload(plan, source: source.provider, destination: .oneDrive, path: source.path))
+    #expect(containsUpload(plan, source: source.location, destination: .iCloudDrive, path: source.path))
+    #expect(containsUpload(plan, source: source.location, destination: .oneDrive, path: source.path))
 }
 
 @Test func folderCreatedInOneProviderPropagatesToOthers() async throws {
@@ -37,14 +37,14 @@ import Testing
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     let oldItems = await seedFile(path: "/Budget.xlsx", contents: "old", providers: [iCloud, google, oneDrive])
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Budget.xlsx", iCloud: oldItems[.iCloudDrive], google: oldItems[.googleDrive], oneDrive: oldItems[.oneDrive])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Budget.xlsx", items: oldItems)
     let source = await google.putFile(path: "/Budget.xlsx", contents: data("new"))
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google, oneDrive])
 
     #expect(overwriteCount(plan) == 2)
-    #expect(containsOverwrite(plan, source: source.provider, destination: .iCloudDrive, path: "/Budget.xlsx"))
-    #expect(containsOverwrite(plan, source: source.provider, destination: .oneDrive, path: "/Budget.xlsx"))
+    #expect(containsOverwrite(plan, source: source.location, destination: .iCloudDrive, path: "/Budget.xlsx"))
+    #expect(containsOverwrite(plan, source: source.location, destination: .oneDrive, path: "/Budget.xlsx"))
     #expect(conflictCopyCount(plan) == 0)
 }
 
@@ -54,7 +54,7 @@ import Testing
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     let oldItems = await seedFile(path: "/Budget.xlsx", contents: "old", providers: [iCloud, google, oneDrive])
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Budget.xlsx", iCloud: oldItems[.iCloudDrive], google: oldItems[.googleDrive], oneDrive: oldItems[.oneDrive])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Budget.xlsx", items: oldItems)
     await google.putFile(path: "/Budget.xlsx", contents: data("google edit"))
     await oneDrive.putFile(path: "/Budget.xlsx", contents: data("onedrive edit"))
 
@@ -73,7 +73,7 @@ import Testing
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     let oldItems = await seedFile(path: "/Old Name.txt", contents: "note", providers: [iCloud, google, oneDrive])
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Old Name.txt", iCloud: oldItems[.iCloudDrive], google: oldItems[.googleDrive], oneDrive: oldItems[.oneDrive])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Old Name.txt", items: oldItems)
     _ = try await google.rename(item: oldItems[.googleDrive]!, to: "New Name.txt")
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google, oneDrive])
@@ -89,7 +89,7 @@ import Testing
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     let oldItems = await seedFile(path: "/Report.txt", contents: "report", providers: [iCloud, google, oneDrive])
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Report.txt", iCloud: oldItems[.iCloudDrive], google: oldItems[.googleDrive], oneDrive: oldItems[.oneDrive])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Report.txt", items: oldItems)
     _ = try await google.move(item: oldItems[.googleDrive]!, to: "/Archive/Report.txt")
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google, oneDrive])
@@ -105,7 +105,7 @@ import Testing
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     let oldItems = await seedFile(path: "/Old Notes.txt", contents: "old", providers: [iCloud, google, oneDrive])
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Old Notes.txt", iCloud: oldItems[.iCloudDrive], google: oldItems[.googleDrive], oneDrive: oldItems[.oneDrive])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Old Notes.txt", items: oldItems)
     await google.remove(path: "/Old Notes.txt")
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google, oneDrive])
@@ -120,7 +120,7 @@ import Testing
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     let item = await oneDrive.putFile(path: "/Keep.txt", contents: data("keep"))
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", oneDrive: item)
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.oneDrive: item])
     await google.setUnavailable(reason: "Network unavailable")
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
@@ -135,7 +135,7 @@ import Testing
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     let item = await oneDrive.putFile(path: "/Keep.txt", contents: data("keep"))
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", oneDrive: item)
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Keep.txt", items: [.oneDrive: item])
     await google.setIncompleteScan(reason: "Pagination stopped early")
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
@@ -149,9 +149,9 @@ import Testing
     let syncSet = makeSyncSet([.iCloudDrive, .googleDrive])
     let iCloud = FakeCloudProvider(id: .iCloudDrive)
     let google = FakeCloudProvider(id: .googleDrive)
-    let iCloudItem = await iCloud.putFile(path: "/Photo.jpg", contents: data("placeholder"), isPlaceholder: true)
+    let icloudObservation = await iCloud.putFile(path: "/Photo.jpg", contents: data("placeholder"), isPlaceholder: true)
     let googleItem = await google.putFile(path: "/Photo.jpg", contents: data("placeholder"))
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Photo.jpg", iCloud: iCloudItem, google: googleItem)
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Photo.jpg", items: [.iCloudDrive: icloudObservation, .googleDrive: googleItem])
     await google.remove(path: "/Photo.jpg")
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [iCloud, google])
@@ -164,15 +164,15 @@ import Testing
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
-    var records: [SyncRecord] = []
+    var records: [BaseRecord] = []
     for index in 0..<6 {
-        let path = CloudPath("/Deleted-\(index).txt")
+        let path = SyncPath("/Deleted-\(index).txt")
         let googleItem = await google.putFile(path: path, contents: data("old \(index)"))
         let oneDriveItem = await oneDrive.putFile(path: path, contents: data("old \(index)"))
-        records.append(makeRecord(syncSetID: syncSet.id, path: path, google: googleItem, oneDrive: oneDriveItem))
+        records.append(makeRecord(syncSetID: syncSet.id, path: path, items: [.googleDrive: googleItem, .oneDrive: oneDriveItem]))
         await google.remove(path: path)
     }
-    let settings = SyncPlannerSettings(safetyThresholds: SafetyThresholds(massDeleteAbsolute: 3, massDeleteRatio: 0.5, massEditAbsolute: 99, massEditRatio: 1))
+    let settings = SyncSettings(thresholds: SafetyThresholds(massDeleteAbsolute: 3, massDeleteRatio: 0.5, massEditAbsolute: 99, massEditRatio: 1))
 
     let plan = await makePlan(syncSet: syncSet, records: records, providers: [google, oneDrive], settings: settings)
 
@@ -185,15 +185,15 @@ import Testing
     let syncSet = makeSyncSet([.googleDrive, .oneDrive])
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
-    var records: [SyncRecord] = []
+    var records: [BaseRecord] = []
     for index in 0..<6 {
-        let path = CloudPath("/Edited-\(index).txt")
+        let path = SyncPath("/Edited-\(index).txt")
         let googleItem = await google.putFile(path: path, contents: data("old \(index)"))
         let oneDriveItem = await oneDrive.putFile(path: path, contents: data("old \(index)"))
-        records.append(makeRecord(syncSetID: syncSet.id, path: path, google: googleItem, oneDrive: oneDriveItem))
+        records.append(makeRecord(syncSetID: syncSet.id, path: path, items: [.googleDrive: googleItem, .oneDrive: oneDriveItem]))
         await google.putFile(path: path, contents: data("new \(index)"))
     }
-    let settings = SyncPlannerSettings(safetyThresholds: SafetyThresholds(massDeleteAbsolute: 99, massDeleteRatio: 1, massEditAbsolute: 3, massEditRatio: 0.5))
+    let settings = SyncSettings(thresholds: SafetyThresholds(massDeleteAbsolute: 99, massDeleteRatio: 1, massEditAbsolute: 3, massEditRatio: 0.5))
 
     let plan = await makePlan(syncSet: syncSet, records: records, providers: [google, oneDrive], settings: settings)
 
@@ -208,7 +208,7 @@ import Testing
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     let googleOld = await google.putFile(path: "/Draft.txt", contents: data("old"))
     let oneDriveOld = await oneDrive.putFile(path: "/Draft.txt", contents: data("old"))
-    let record = makeRecord(syncSetID: syncSet.id, path: "/Draft.txt", google: googleOld, oneDrive: oneDriveOld)
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Draft.txt", items: [.googleDrive: googleOld, .oneDrive: oneDriveOld])
     await google.putFile(path: "/Draft.txt", contents: data("new from google"))
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [google, oneDrive])
@@ -241,8 +241,8 @@ import Testing
 }
 
 @Test func conflictNamesPreserveFileExtensions() {
-    let resolver = ConflictResolver(generatedAt: Date(timeIntervalSince1970: 1_770_000_000))
-    let item = CloudItem(provider: .oneDrive, path: "/Money/Budget.final.xlsx", isFolder: false)
+    let resolver = ConflictResolver(environment: makeEnvironment())
+    let item = ItemObservation(location: .oneDrive, path: "/Money/Budget.final.xlsx", kind: .file)
 
     let conflictPath = resolver.conflictPath(for: item)
 
@@ -303,7 +303,7 @@ import Testing
     let google = FakeCloudProvider(id: .googleDrive)
     let oneDrive = FakeCloudProvider(id: .oneDrive)
     await google.putFile(path: "/.DS_Store", contents: data("metadata"))
-    let settings = SyncPlannerSettings(exclusions: [
+    let settings = SyncSettings(exclusions: [
         SyncExclusion(pattern: ".DS_Store", matchStyle: .filename)
     ])
 
@@ -312,10 +312,104 @@ import Testing
     #expect(plan.actions.isEmpty)
 }
 
-private func makeSyncSet(_ providers: [ProviderID] = [.iCloudDrive, .googleDrive, .oneDrive]) -> SyncSet {
+@Test func twoSameKindLocationsPropagateCreates() async throws {
+    let first = LocationID(rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!)
+    let second = LocationID(rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000002")!)
+    let syncSet = makeSyncSet([first, second])
+    let firstFolder = FakeCloudProvider(id: first, displayName: "Local A")
+    let secondFolder = FakeCloudProvider(id: second, displayName: "Local B")
+    await firstFolder.putFile(path: "/Shared.txt", contents: data("same kind"))
+
+    let plan = await makePlan(syncSet: syncSet, providers: [firstFolder, secondFolder])
+
+    #expect(plan.riskLevel == .safe)
+    #expect(containsUpload(plan, source: first, destination: second, path: "/Shared.txt"))
+}
+
+@Test func localAndNASLocationsPropagateCreates() async throws {
+    let syncSet = makeSyncSet([.localFolder, .nasFolder])
+    let local = FakeCloudProvider(id: .localFolder)
+    let nas = FakeCloudProvider(id: .nasFolder)
+    await local.putFile(path: "/Media.mov", contents: data("movie"))
+
+    let plan = await makePlan(syncSet: syncSet, providers: [local, nas])
+
+    #expect(plan.riskLevel == .safe)
+    #expect(containsUpload(plan, source: .localFolder, destination: .nasFolder, path: "/Media.mov"))
+}
+
+@Test func localAndNASLocationsPreserveIndependentEditConflicts() async throws {
+    let syncSet = makeSyncSet([.localFolder, .nasFolder])
+    let local = FakeCloudProvider(id: .localFolder)
+    let nas = FakeCloudProvider(id: .nasFolder)
+    let oldItems = await seedFile(path: "/Sketch.psd", contents: "base", providers: [local, nas])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Sketch.psd", items: oldItems)
+    await local.putFile(path: "/Sketch.psd", contents: data("local"))
+    await nas.putFile(path: "/Sketch.psd", contents: data("nas"))
+
+    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
+
+    #expect(plan.riskLevel == .needsReview)
+    #expect(plan.conflicts.count == 1)
+    #expect(conflictCopyCount(plan) == 2)
+    #expect(overwriteCount(plan) == 0)
+}
+
+@Test func localAndNASLocationsPropagateDeletesToTrash() async throws {
+    let syncSet = makeSyncSet([.localFolder, .nasFolder])
+    let local = FakeCloudProvider(id: .localFolder)
+    let nas = FakeCloudProvider(id: .nasFolder)
+    let oldItems = await seedFile(path: "/Archive.zip", contents: "base", providers: [local, nas])
+    let record = makeRecord(syncSetID: syncSet.id, path: "/Archive.zip", items: oldItems)
+    await local.remove(path: "/Archive.zip")
+
+    let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
+
+    #expect(trashCount(plan) == 1)
+    #expect(containsTrash(plan, destination: .nasFolder, path: "/Archive.zip"))
+}
+
+@Test func baseRecordJSONRoundTrips() throws {
+    let record = BaseRecord(
+        id: UUID(uuidString: "20000000-0000-0000-0000-000000000001")!,
+        syncSetID: UUID(uuidString: "20000000-0000-0000-0000-000000000002")!,
+        path: "/RoundTrip.txt",
+        kind: .file,
+        version: ItemVersion(contentHash: "hash", size: 4, modifiedAt: fixedDate, revisionToken: "rev-1"),
+        perLocation: [
+            .localFolder: LocationMemory(itemID: "local-1", revisionToken: "rev-1", lastSeenAt: fixedDate),
+            .nasFolder: LocationMemory(itemID: "nas-1", revisionToken: "rev-1", lastSeenAt: fixedDate)
+        ],
+        tombstone: Tombstone(deletedAt: fixedDate, initiatedBy: .localFolder),
+        lastConvergedAt: fixedDate,
+        createdAt: fixedDate,
+        updatedAt: fixedDate
+    )
+
+    let encoded = try JSONEncoder().encode(record)
+    let decoded = try JSONDecoder().decode(BaseRecord.self, from: encoded)
+
+    #expect(decoded == record)
+}
+
+@Test func versionComparisonMatrixTreatsUnknownAsNotEqual() {
+    let baseDate = fixedDate
+
+    #expect(ItemVersion(contentHash: "a", size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(contentHash: "a", size: 2, modifiedAt: baseDate.addingTimeInterval(1), revisionToken: "2")) == .same)
+    #expect(ItemVersion(contentHash: "a").comparison(to: ItemVersion(contentHash: "b")) == .different)
+    #expect(ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "2")) == .same)
+    #expect(ItemVersion(size: 1, modifiedAt: baseDate).comparison(to: ItemVersion(size: 2, modifiedAt: baseDate)) == .different)
+    #expect(ItemVersion(revisionToken: "1").comparison(to: ItemVersion(revisionToken: "1")) == .same)
+    #expect(ItemVersion(revisionToken: "1").comparison(to: ItemVersion(revisionToken: "2")) == .different)
+    #expect(ItemVersion(contentHash: "a").comparison(to: ItemVersion(revisionToken: "a")) == .unknown)
+    #expect(ItemVersion().comparison(to: ItemVersion()) == .unknown)
+    #expect(ItemVersion(contentHash: "a").isSameVersion(as: ItemVersion(revisionToken: "a")) == false)
+}
+
+private func makeSyncSet(_ locations: [LocationID] = [.iCloudDrive, .googleDrive, .oneDrive]) -> SyncSet {
     SyncSet(
         name: "Documents",
-        providers: Dictionary(uniqueKeysWithValues: providers.map { ($0, SyncScope.entireDrive) }),
+        locations: locations,
         mode: .balancedMirror,
         createdAt: fixedDate,
         updatedAt: fixedDate
@@ -324,26 +418,56 @@ private func makeSyncSet(_ providers: [ProviderID] = [.iCloudDrive, .googleDrive
 
 private func makePlan(
     syncSet: SyncSet,
-    records: [SyncRecord] = [],
+    records: [BaseRecord] = [],
     providers: [FakeCloudProvider],
-    settings: SyncPlannerSettings = SyncPlannerSettings()
+    settings: SyncSettings? = nil
 ) async -> SyncPlan {
-    var snapshots: [ProviderSnapshot] = []
+    let resolvedSettings = settings ?? syncSet.settings
+    let locations = providers.map {
+        SyncLocation(
+            id: $0.id,
+            kind: $0.id.defaultKind,
+            displayName: $0.displayName,
+            scope: .entireDrive
+        )
+    }
+    var snapshots: [LocationSnapshot] = []
     for provider in providers {
-        snapshots.append(await provider.snapshot(scope: syncSet.providers[provider.id] ?? .entireDrive))
+        let scope = locations.first { $0.id == provider.id }?.scope ?? .entireDrive
+        snapshots.append(await provider.snapshot(scope: scope))
     }
     return SyncPlanner().plan(
-        SyncPlanningInput(syncSet: syncSet, records: records, snapshots: snapshots, settings: settings),
-        generatedAt: fixedDate
+        SyncPlanningInput(
+            syncSet: syncSet,
+            locations: locations,
+            records: records,
+            snapshots: snapshots,
+            settings: resolvedSettings
+        ),
+        environment: makeEnvironment(locations: locations)
+    )
+}
+
+private func makeEnvironment(locations: [SyncLocation] = [
+    SyncLocation(id: .iCloudDrive, kind: .iCloudDrive, displayName: "iCloud Drive"),
+    SyncLocation(id: .googleDrive, kind: .googleDrive, displayName: "Google Drive"),
+    SyncLocation(id: .oneDrive, kind: .oneDrive, displayName: "OneDrive"),
+    SyncLocation(id: .localFolder, kind: .localFolder, displayName: "Local Folder"),
+    SyncLocation(id: .nasFolder, kind: .nasFolder, displayName: "NAS Folder")
+]) -> PlanningEnvironment {
+    PlanningEnvironment(
+        now: fixedDate,
+        makeID: { UUID(uuidString: "30000000-0000-0000-0000-000000000001")! },
+        locationNames: Dictionary(uniqueKeysWithValues: locations.map { ($0.id, $0.displayName) })
     )
 }
 
 private func seedFile(
-    path: CloudPath,
+    path: SyncPath,
     contents: String,
     providers: [FakeCloudProvider]
-) async -> [ProviderID: CloudItem] {
-    var items: [ProviderID: CloudItem] = [:]
+) async -> [LocationID: ItemObservation] {
+    var items: [LocationID: ItemObservation] = [:]
     for provider in providers {
         items[provider.id] = await provider.putFile(path: path, contents: data(contents), modifiedAt: fixedDate)
     }
@@ -352,27 +476,27 @@ private func seedFile(
 
 private func makeRecord(
     syncSetID: UUID,
-    path: CloudPath,
-    isFolder: Bool = false,
-    iCloud: CloudItem? = nil,
-    google: CloudItem? = nil,
-    oneDrive: CloudItem? = nil
-) -> SyncRecord {
-    let baseline = google ?? oneDrive ?? iCloud
-    return SyncRecord(
+    path: SyncPath,
+    kind: ItemKind = .file,
+    items: [LocationID: ItemObservation]
+) -> BaseRecord {
+    let baseline = items.values.sorted { $0.location < $1.location }.first
+    return BaseRecord(
         syncSetID: syncSetID,
-        canonicalPath: path,
-        isFolder: isFolder,
-        googleDriveItemID: google?.providerItemID,
-        oneDriveItemID: oneDrive?.providerItemID,
-        lastKnownHash: baseline?.contentHash,
-        lastKnownSize: baseline?.size,
-        lastKnownModifiedAt: baseline?.modifiedAt,
-        googleRevisionID: google?.revisionID,
-        oneDriveETag: oneDrive?.eTag,
-        oneDriveCTag: oneDrive?.cTag,
-        iCloudFileResourceIdentifier: iCloud?.providerItemID,
-        lastSyncedAt: fixedDate,
+        path: path,
+        kind: kind,
+        version: baseline?.version ?? ItemVersion(),
+        perLocation: Dictionary(uniqueKeysWithValues: items.map { location, item in
+            (
+                location,
+                LocationMemory(
+                    itemID: item.itemID,
+                    revisionToken: item.version.revisionToken,
+                    lastSeenAt: fixedDate
+                )
+            )
+        }),
+        lastConvergedAt: fixedDate,
         createdAt: fixedDate,
         updatedAt: fixedDate
     )
@@ -446,7 +570,7 @@ private func count(_ plan: SyncPlan, where predicate: (SyncAction) -> Bool) -> I
     }
 }
 
-private func containsUpload(_ plan: SyncPlan, source: ProviderID, destination: ProviderID, path: CloudPath) -> Bool {
+private func containsUpload(_ plan: SyncPlan, source: LocationID, destination: LocationID, path: SyncPath) -> Bool {
     plan.actions.contains {
         if case let .upload(actionSource, actionDestination, _, destinationPath) = $0 {
             return actionSource == source && actionDestination == destination && destinationPath == path
@@ -455,7 +579,7 @@ private func containsUpload(_ plan: SyncPlan, source: ProviderID, destination: P
     }
 }
 
-private func containsOverwrite(_ plan: SyncPlan, source: ProviderID, destination: ProviderID, path: CloudPath) -> Bool {
+private func containsOverwrite(_ plan: SyncPlan, source: LocationID, destination: LocationID, path: SyncPath) -> Bool {
     plan.actions.contains {
         if case let .overwrite(actionSource, actionDestination, _, destinationItem) = $0 {
             return actionSource == source && actionDestination == destination && destinationItem.path == path
@@ -464,7 +588,7 @@ private func containsOverwrite(_ plan: SyncPlan, source: ProviderID, destination
     }
 }
 
-private func containsCreateFolder(_ plan: SyncPlan, destination: ProviderID, path: CloudPath) -> Bool {
+private func containsCreateFolder(_ plan: SyncPlan, destination: LocationID, path: SyncPath) -> Bool {
     plan.actions.contains {
         if case let .createFolder(actionDestination, actionPath) = $0 {
             return actionDestination == destination && actionPath == path
@@ -473,7 +597,7 @@ private func containsCreateFolder(_ plan: SyncPlan, destination: ProviderID, pat
     }
 }
 
-private func containsRename(_ plan: SyncPlan, destination: ProviderID, newName: String) -> Bool {
+private func containsRename(_ plan: SyncPlan, destination: LocationID, newName: String) -> Bool {
     plan.actions.contains {
         if case let .rename(actionDestination, _, actionNewName) = $0 {
             return actionDestination == destination && actionNewName == newName
@@ -482,7 +606,7 @@ private func containsRename(_ plan: SyncPlan, destination: ProviderID, newName: 
     }
 }
 
-private func containsMove(_ plan: SyncPlan, destination: ProviderID, newPath: CloudPath) -> Bool {
+private func containsMove(_ plan: SyncPlan, destination: LocationID, newPath: SyncPath) -> Bool {
     plan.actions.contains {
         if case let .move(actionDestination, _, actionNewPath) = $0 {
             return actionDestination == destination && actionNewPath == newPath
@@ -491,7 +615,7 @@ private func containsMove(_ plan: SyncPlan, destination: ProviderID, newPath: Cl
     }
 }
 
-private func containsTrash(_ plan: SyncPlan, destination: ProviderID, path: CloudPath) -> Bool {
+private func containsTrash(_ plan: SyncPlan, destination: LocationID, path: SyncPath) -> Bool {
     plan.actions.contains {
         if case let .trash(actionDestination, item) = $0 {
             return actionDestination == destination && item.path == path

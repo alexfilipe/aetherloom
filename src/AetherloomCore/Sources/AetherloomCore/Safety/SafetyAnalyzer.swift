@@ -6,7 +6,7 @@ public struct SafetyAnalyzer: Sendable {
     public func analyze(
         plan: SyncPlan,
         trackedItemCount: Int,
-        settings: SyncPlannerSettings
+        settings: SyncSettings
     ) -> SyncPlan {
         var updated = plan
         let trashCount = updated.actions.filter(\.isTrashAction).count
@@ -16,8 +16,8 @@ public struct SafetyAnalyzer: Sendable {
         if exceeds(
             count: trashCount,
             denominator: denominator,
-            absoluteThreshold: settings.safetyThresholds.massDeleteAbsolute,
-            ratioThreshold: settings.safetyThresholds.massDeleteRatio
+            absoluteThreshold: settings.thresholds.massDeleteAbsolute,
+            ratioThreshold: settings.thresholds.massDeleteRatio
         ) {
             updated.warnings.append(
                 SyncWarning(
@@ -31,8 +31,8 @@ public struct SafetyAnalyzer: Sendable {
         if exceeds(
             count: overwriteCount,
             denominator: denominator,
-            absoluteThreshold: settings.safetyThresholds.massEditAbsolute,
-            ratioThreshold: settings.safetyThresholds.massEditRatio
+            absoluteThreshold: settings.thresholds.massEditAbsolute,
+            ratioThreshold: settings.thresholds.massEditRatio
         ) {
             updated.warnings.append(
                 SyncWarning(
