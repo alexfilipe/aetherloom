@@ -113,6 +113,7 @@
                             "Every sync location holds a full copy of your files",
                             "Deletes go to each provider's trash, never permanent deletion",
                             "Independent edits are preserved as conflict copies",
+                            "Optional on-device AI suggests which conflicting version to keep, entirely on your Mac",
                             "Sync pauses for review on suspicious mass changes",
                             "Provider outages and unmounted volumes are never treated as deletions"
                         ],
@@ -1537,6 +1538,20 @@
                         <article class="safety-card">
                             <span class="safety-glyph" aria-hidden="true">
                                 <svg viewBox="0 0 24 24">
+                                    <path
+                                        d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"
+                                    />
+                                </svg>
+                            </span>
+                            <h3>Advice that stays on your Mac</h3>
+                            <p>
+                                On Apple&nbsp;Silicon, an optional on-device model can suggest which
+                                conflict version to keep. It only advises; you decide.
+                            </p>
+                        </article>
+                        <article class="safety-card">
+                            <span class="safety-glyph" aria-hidden="true">
+                                <svg viewBox="0 0 24 24">
                                     <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
                                 </svg>
                             </span>
@@ -1558,20 +1573,6 @@
                             <p>
                                 Risky changes are shown as a sync plan first. Nothing is applied
                                 until you've seen what Aetherloom intends to do.
-                            </p>
-                        </article>
-                        <article class="safety-card">
-                            <span class="safety-glyph" aria-hidden="true">
-                                <svg viewBox="0 0 24 24">
-                                    <path
-                                        d="M20.94 6.35a1.6 1.6 0 0 1 0 2.26l-9.6 9.6a1.6 1.6 0 0 1-2.26 0l-4.8-4.8a1.6 1.6 0 1 1 2.26-2.26l3.67 3.67 8.47-8.47a1.6 1.6 0 0 1 2.26 0z"
-                                    />
-                                </svg>
-                            </span>
-                            <h3>Verified writes</h3>
-                            <p>
-                                Destination state is verified before overwriting, so independently
-                                edited files are never clobbered.
                             </p>
                         </article>
                     </div>
@@ -1730,6 +1731,7 @@
                                 <li class="is-now">Conflict detection</li>
                                 <li class="is-now">Safe delete behavior</li>
                                 <li class="is-now">Local folder support</li>
+                                <li>On-device AI conflict advice</li>
                                 <li>NAS-backed folder support</li>
                                 <li>iCloud Drive folder support</li>
                                 <li>Google Drive support</li>
