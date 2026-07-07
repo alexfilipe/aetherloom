@@ -118,4 +118,4 @@ For questions, feedback, or anything that shouldn't be a GitHub issue: [hello@ae
 
 ## License
 
-A license has not been chosen yet. The source is available to read on GitHub.
+Aetherloom is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
