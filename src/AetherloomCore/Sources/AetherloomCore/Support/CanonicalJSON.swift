@@ -45,16 +45,26 @@ enum CanonicalCoding {
     }
 
     private static func fractionalDateFormatter() -> ISO8601DateFormatter {
+        let key = "Aetherloom.CanonicalCoding.fractionalDateFormatter"
+        if let formatter = Thread.current.threadDictionary[key] as? ISO8601DateFormatter {
+            return formatter
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        Thread.current.threadDictionary[key] = formatter
         return formatter
     }
 
     private static func wholeSecondDateFormatter() -> ISO8601DateFormatter {
+        let key = "Aetherloom.CanonicalCoding.wholeSecondDateFormatter"
+        if let formatter = Thread.current.threadDictionary[key] as? ISO8601DateFormatter {
+            return formatter
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        Thread.current.threadDictionary[key] = formatter
         return formatter
     }
 }
