@@ -1,7 +1,7 @@
 {
   "name": "Aetherloom",
   "short_name": "Aetherloom",
-  "description": "A native macOS app that syncs the same folders across clouds, your Mac, and your NAS — every location holds a full copy, so losing access to one never means losing your files.",
+  "description": "Open-source native macOS sync for using multiple cloud ecosystems while keeping complete, readable copies of your files in storage you control.",
   "start_url": "/",
   "scope": "/",
   "display": "browser",

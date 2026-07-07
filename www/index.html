@@ -8,7 +8,7 @@
         <title>Aetherloom — Sync folders across iCloud, Google Drive, OneDrive, Mac &amp; NAS</title>
         <meta
             name="description"
-            content="Aetherloom is a native macOS app that keeps the same folders in sync across iCloud Drive, Google Drive, OneDrive, your Mac, and your NAS. Open source, safety-first."
+            content="Open-source native macOS sync for using multiple cloud ecosystems while keeping complete, readable copies of your files in storage you control."
         />
         <meta name="application-name" content="Aetherloom" />
         <meta name="apple-mobile-web-app-title" content="Aetherloom" />
@@ -51,10 +51,13 @@
         <meta property="og:type" content="website" />
         <meta property="og:locale" content="en_US" />
         <meta property="og:site_name" content="Aetherloom" />
-        <meta property="og:title" content="Aetherloom: Keep your clouds interwoven" />
+        <meta
+            property="og:title"
+            content="Aetherloom — Sync folders across iCloud, Google Drive, OneDrive, Mac &amp; NAS"
+        />
         <meta
             property="og:description"
-            content="Keep the same folders synchronized across your clouds, your Mac, and your NAS. Every location holds a full copy — lose access to one, and your files are still everywhere else."
+            content="Open-source native macOS sync for using multiple cloud ecosystems while keeping complete, readable copies of your files in storage you control."
         />
         <meta property="og:url" content="https://aetherloom.app/" />
         <meta property="og:image" content="https://aetherloom.app/assets/social-preview.png" />
@@ -67,18 +70,21 @@
         <meta property="og:image:height" content="630" />
         <meta
             property="og:image:alt"
-            content="Aetherloom link preview with gradient A mark, product headline, and description"
+            content="Aetherloom link preview for open-source native macOS sync across clouds and storage you control"
         />
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Aetherloom: Keep your clouds interwoven" />
+        <meta
+            name="twitter:title"
+            content="Aetherloom — Sync folders across iCloud, Google Drive, OneDrive, Mac &amp; NAS"
+        />
         <meta
             name="twitter:description"
-            content="Every location holds a full copy of your folders — lose access to one, and your files are still everywhere else. Native macOS, open source."
+            content="Open-source native macOS sync for using multiple cloud ecosystems while keeping complete, readable copies of your files in storage you control."
         />
         <meta name="twitter:image" content="https://aetherloom.app/assets/social-preview.png" />
         <meta
             name="twitter:image:alt"
-            content="Aetherloom link preview with gradient A mark, product headline, and description"
+            content="Aetherloom link preview for open-source native macOS sync across clouds and storage you control"
         />
         <script type="application/ld+json">
             {
@@ -105,15 +111,20 @@
                             "https://aetherloom.app/assets/ui-activity.png",
                             "https://aetherloom.app/assets/ui-conflicts.png"
                         ],
-                        "description": "A native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive, OneDrive, local folders, and NAS-backed folders. Every location holds a full copy, so losing access to one never means losing your files.",
+                        "description": "Open-source native macOS sync for using multiple cloud ecosystems while keeping complete, readable copies of your files in storage you control.",
                         "operatingSystem": "macOS",
                         "applicationCategory": "UtilitiesApplication",
                         "featureList": [
-                            "Sync the same folders across iCloud Drive, Google Drive, OneDrive, local folders, and NAS",
-                            "Every sync location holds a full copy of your files",
-                            "Deletes go to each provider's trash, never permanent deletion",
+                            "Sync folders across iCloud Drive, Google Drive, OneDrive, Mac, and NAS",
+                            "Use cloud features without locking files into one provider or place",
+                            "Keep complete, readable copies of files in more than one place",
+                            "Safe sync plans before changes touch files",
+                            "Provider-agnostic engine for keeping files aligned across chosen locations",
+                            "Safe-delete flows using each provider's trash or recycle bin where possible",
                             "Independent edits are preserved as conflict copies",
-                            "Optional on-device AI suggests which conflicting version to keep, entirely on your Mac",
+                            "Approval gates for suspicious mass changes",
+                            "Mock providers for testing",
+                            "Optional on-device AI conflict advice",
                             "Sync pauses for review on suspicious mass changes",
                             "Provider outages and unmounted volumes are never treated as deletions"
                         ],
@@ -140,7 +151,7 @@
                         "name": "What is Aetherloom?",
                         "acceptedAnswer": {
                             "@type": "Answer",
-                            "text": "Aetherloom is a native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive, OneDrive, local folders on your Mac, and NAS-backed folders. Every location holds a full copy of your files, so losing access to one location never means losing the files themselves."
+                            "text": "Aetherloom is an open-source native macOS app that keeps your folders safely in sync across the clouds and storage you control. It lets you use multiple cloud ecosystems while keeping complete, readable copies of your files in more than one place."
                         }
                     },
                     {
@@ -148,7 +159,7 @@
                         "name": "Can it sync folders between two clouds, like Google Drive and OneDrive?",
                         "acceptedAnswer": {
                             "@type": "Answer",
-                            "text": "That is the core idea. You choose folders, and Aetherloom keeps them aligned across every location in the sync set \u2014 cloud, Mac, or NAS. Cloud provider integrations are still in development; the provider-independent sync engine comes first."
+                            "text": "That is the goal. You choose folders, and Aetherloom keeps them aligned across every location in the sync set \u2014 cloud, Mac, or NAS. Cloud provider integrations are still in development; the provider-agnostic sync engine comes first."
                         }
                     },
                     {
@@ -180,7 +191,15 @@
                         "name": "Is Aetherloom free and open source?",
                         "acceptedAnswer": {
                             "@type": "Answer",
-                            "text": "Aetherloom is developed in the open and the source is available on GitHub. A license hasn't been chosen yet."
+                            "text": "Aetherloom is open-source and developed in public on GitHub. A license hasn't been chosen yet."
+                        }
+                    },
+                    {
+                        "@type": "Question",
+                        "name": "What does AI-first development workflow mean?",
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": "Architecture, product direction, review, and safety decisions are coordinated by a human developer while AI agents help implement and iterate on the codebase."
                         }
                     },
                     {
@@ -1330,15 +1349,14 @@
                                 height="805"
                             />
                         </div>
-                        <div class="eyebrow-pill">Open source<span class="pill-sep">·</span>Early development</div>
+                        <div class="eyebrow-pill">Open source<span class="pill-sep">·</span>In development</div>
                         <h1>Keep your clouds interwoven.</h1>
                         <p class="hero-subtitle">
-                            Aetherloom is a native macOS app that keeps the same folders
-                            synchronized across iCloud Drive, Google Drive, OneDrive, your Mac, and
-                            your NAS.
+                            Aetherloom is an open-source native macOS app that keeps your folders
+                            safely in sync across the clouds and storage you control.
                             <span class="hero-kicker"
-                                >Every location holds a full copy &mdash; lose access to one, and
-                                your files are still everywhere else.</span
+                                >Use the cloud features you like without locking your files into one
+                                provider or place.</span
                             >
                         </p>
                         <div class="cta-row">
@@ -1425,13 +1443,12 @@
                 <section id="what" class="section">
                     <p class="eyebrow">What it does</p>
                     <h2 class="section-title">
-                        Choose folders. Aetherloom keeps them aligned, everywhere.
+                        Choose folders. Aetherloom keeps them aligned across locations.
                     </h2>
                     <p class="section-copy">
-                        Pick folders &mdash; or eventually whole drives &mdash; and keep them in
-                        sync everywhere you keep files. It's more than convenience: when your files
-                        live in several places at once, no locked account, failed disk, or provider
-                        outage can take them from you.
+                        Aetherloom keeps the same files synchronized across different cloud
+                        ecosystems, so you can use the features you like from each provider while
+                        keeping complete, readable copies in more than one place.
                     </p>
                     <div class="two-grid">
                         <article class="info-card">
@@ -1485,7 +1502,7 @@
 
                 <section id="safety" class="section">
                     <p class="eyebrow">Safety first</p>
-                    <h2 class="section-title">Nothing happens without you.</h2>
+                    <h2 class="section-title">Your files stay under your control.</h2>
                     <p class="section-copy">
                         Sync tools shouldn't surprise you. Aetherloom shows its work before
                         touching your files &mdash; and pauses for review when a change set looks
@@ -1500,10 +1517,10 @@
                                     />
                                 </svg>
                             </span>
-                            <h3>Never permanently deletes</h3>
+                            <h3>Safe-delete flows</h3>
                             <p>
                                 During normal sync, deleted files move to each provider's trash or
-                                recycle bin where possible &mdash; never gone for good.
+                                recycle bin where possible instead of being permanently removed.
                             </p>
                         </article>
                         <article class="safety-card">
@@ -1711,8 +1728,10 @@
                             <p class="eyebrow">Current status</p>
                             <h2 class="section-title">Early development, built in the open.</h2>
                             <p class="section-copy">
-                                Aetherloom is young. The priorities below come first &mdash; follow
-                                along, open issues, or contribute on GitHub.
+                                Aetherloom is still young, but the foundation is already taking
+                                shape: safe sync plans, conflict preservation, approval gates, and a
+                                provider-agnostic engine for keeping files aligned across the places
+                                you choose.
                             </p>
                             <a
                                 class="text-link"
@@ -1724,12 +1743,12 @@
                         </div>
                         <div>
                             <ul class="roadmap">
-                                <li class="is-now">Provider-independent sync&nbsp;engine</li>
+                                <li class="is-now">Provider-agnostic sync&nbsp;engine</li>
                                 <li class="is-now">Folder selection</li>
                                 <li class="is-now">Sync plan preview</li>
                                 <li class="is-now">Activity log</li>
                                 <li class="is-now">Conflict detection</li>
-                                <li class="is-now">Safe delete behavior</li>
+                                <li class="is-now">Safe-delete flows</li>
                                 <li class="is-now">Local folder support</li>
                                 <li>On-device AI conflict advice</li>
                                 <li>NAS-backed folder support</li>
@@ -1759,21 +1778,17 @@
                         <article class="fine-card">
                             <h3>Not a backup replacement</h3>
                             <p>
-                                Synchronized copies keep your files available if you lose access to
-                                a location, but sync isn't versioned backup. Keep an
-                                independent backup of files you can't afford to lose.
+                                Lose access to one location, and your files still live elsewhere as
+                                complete, readable copies. Aetherloom improves availability, but
+                                sync is not a replacement for versioned backup.
                             </p>
                         </article>
                         <article class="fine-card">
-                            <h3>License</h3>
+                            <h3>AI-first development workflow</h3>
                             <p>
-                                A license hasn't been chosen yet. The source is available to read on
-                                <a
-                                    href="https://github.com/alexfilipe/aetherloom"
-                                    target="_blank"
-                                    rel="noopener"
-                                    >GitHub</a
-                                >.
+                                Architecture, product direction, review, and safety decisions are
+                                coordinated by a human developer while AI agents help implement and
+                                iterate on the codebase.
                             </p>
                         </article>
                     </div>
@@ -1794,7 +1809,7 @@
                             />
                             <div>
                                 <div class="footer-name">Aetherloom</div>
-                                <div class="footer-tagline">Every drive, one weave.</div>
+                                <div class="footer-tagline">Safe sync for Mac.</div>
                             </div>
                         </div>
                         <nav class="footer-links" aria-label="Footer navigation">
