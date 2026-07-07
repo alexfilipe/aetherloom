@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The package declares swift-tools-version 6.3, but the runner's stable
       # Xcode ships an older Swift. Select the newest stable Xcode anyway so a
@@ -51,7 +51,7 @@ jobs:
         run: swift --version
 
       - name: Cache SwiftPM build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             src/AetherloomCore/.build
