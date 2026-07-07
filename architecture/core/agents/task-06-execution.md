@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You rebuild execution around content staging, the write-ahead journal, and post-write verification — then delete the legacy executor and the Phase-4 adapter. **Requires Tasks 04 and 05 merged.**
 
 ## Read first
-`architecture/00-overview.md`, `05-execution-and-orchestration.md` §2–§4 (your spec), `11-migration.md`; `Execution/SyncPlanExecutor.swift` **and its tests** — its precondition-abort and skip-if-satisfied behaviors are the scaffold's crown jewels and must transfer intact. Baseline green first.
+`architecture/core/00-overview.md`, `05-execution-and-orchestration.md` §2–§4 (your spec), `11-migration.md`; `Execution/SyncPlanExecutor.swift` **and its tests** — its precondition-abort and skip-if-satisfied behaviors are the scaffold's crown jewels and must transfer intact. Baseline green first.
 
 ## Invariants (override this prompt)
 Journal intent before any side effect. Precondition mismatch aborts the remainder of the run (`stoppedForReplan`) and is never retried internally. Already-satisfied operations are skipped (idempotent re-runs). All transfers complete before any trash begins, globally. Corrupt staged content never propagates.

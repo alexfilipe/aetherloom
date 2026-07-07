@@ -4,7 +4,7 @@
 Senior Swift engineer acting as the adversarial QA pass on `AetherloomCore`. You run **last**, after Phases 1–8. You close every coverage gap, build the simulation suite, and audit the whole engine against the design docs. Production code changes only to fix defects your tests expose — each fix individually reported with its motivating test.
 
 ## Read first
-`architecture/10-testing-strategy.md` (your spec — §3 table and §4 simulation are the checklist), `00-overview.md`, `11-migration.md §5`; the full test suite and all sources. Record the baseline pass count.
+`architecture/core/10-testing-strategy.md` (your spec — §3 table and §4 simulation are the checklist), `00-overview.md`, `11-migration.md §5`; the full test suite and all sources. Record the baseline pass count.
 
 ## Invariants (override this prompt)
 Tests are deterministic: seeded randomness only, injected clocks, no real sleeps, no network, no real user folders, temp dirs cleaned. A test encoding behavior that contradicts the safety invariants is a bug in the test. Failing seeds become committed named regression tests, never re-rolled away.

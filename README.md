@@ -56,7 +56,7 @@ When a file changes in more than one place, Aetherloom keeps every version — a
 - **Advisory only.** The AI suggests, you decide — a suggestion can never delete, overwrite, or sync anything by itself.
 - **Optional.** Aetherloom works exactly the same with it turned off.
 
-The full design, including the hard safety boundaries, is in [architecture/07-ai-conflict-advisor.md](architecture/07-ai-conflict-advisor.md).
+The full design, including the hard safety boundaries, is in [architecture/core/07-ai-conflict-advisor.md](architecture/core/07-ai-conflict-advisor.md).
 
 ## Status
 
@@ -69,11 +69,12 @@ Follow progress, open issues, or contribute on GitHub; the project website is [a
 ```text
 src/AetherloomApp/    SwiftUI macOS app (UI only)
 src/AetherloomCore/   Swift package with the sync engine
-architecture/         Engine design documentation
+architecture/core/    Sync engine design documentation
+architecture/ui/      macOS app UI design documentation
 www/                  Project website
 ```
 
-Curious how it works — or want to contribute? The full engine design (provider-agnostic sync architecture, conflict preservation, safe-delete flows, approval gates, mock providers for testing, on-device AI advice, testing strategy) lives in [architecture/](architecture/README.md).
+Curious how it works — or want to contribute? The full engine design (provider-agnostic sync architecture, conflict preservation, safe-delete flows, approval gates, mock providers for testing, on-device AI advice, testing strategy) lives in [architecture/core/](architecture/core/README.md), and the native app's UI design lives in [architecture/ui/](architecture/ui/README.md). [architecture/](architecture/README.md) is the index.
 
 ## AI-first development workflow
 
@@ -110,7 +111,7 @@ The ground rules are simple:
 - Sync logic goes in `src/AetherloomCore` with tests, never in SwiftUI views.
 - Run `swift test --package-path src/AetherloomCore` before submitting changes.
 
-Start with [architecture/README.md](architecture/README.md) for how the engine fits together.
+Start with [architecture/core/README.md](architecture/core/README.md) for how the engine fits together, or [architecture/ui/README.md](architecture/ui/README.md) for the app's UI design.
 
 ## Contact
 

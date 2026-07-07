@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You compose the whole pipeline into `SyncOrchestrator`, build the change preview and approval contract, and flip placeholder handling to item-level `waiting`. **Requires Tasks 01–06 merged.**
 
 ## Read first
-`architecture/00-overview.md` (pipeline), `05-execution-and-orchestration.md` §1+§5, `06-preview-and-approval.md` (your specs), `11-migration.md §4.3`; all `Sources/`. Baseline green first.
+`architecture/core/00-overview.md` (pipeline), `05-execution-and-orchestration.md` §1+§5, `06-preview-and-approval.md` (your specs), `11-migration.md §4.3`; all `Sources/`. Baseline green first.
 
 ## Invariants (override this prompt)
 `prepare` mutates nothing at any provider. Refusals are unexecutable by type; held plans run only with a valid approval; approval never bypasses per-operation preconditions. Every decision appears exactly once in the preview. Gates never downgrade.
