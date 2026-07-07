@@ -486,12 +486,7 @@ private func phase08Version(hash: String, size: Int64, modifiedAt: Date) -> Item
 }
 
 private func phase08TemporaryDirectory(_ name: String) throws -> URL {
-    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        .appendingPathComponent("AetherloomPhase08Tests", isDirectory: true)
-        .appendingPathComponent(name, isDirectory: true)
-    try? FileManager.default.removeItem(at: directory)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory
+    try TestTemporaryDirectory.make(suite: "AetherloomPhase08Tests", name: name)
 }
 
 private func phase08UUID(_ suffix: String) -> UUID {
