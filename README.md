@@ -16,9 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-macOS-blue" alt="Platform: macOS" />
-  <img src="https://img.shields.io/badge/swift-6.3-orange" alt="Swift 6.3" />
-  <img src="https://img.shields.io/badge/UI-SwiftUI-purple" alt="SwiftUI" />
+  <a href="https://github.com/alexfilipe/aetherloom/actions/workflows/ci.yml"><img src="https://github.com/alexfilipe/aetherloom/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>&nbsp;<img src="https://img.shields.io/badge/platform-macOS-blue" alt="Platform: macOS" />&nbsp;<img src="https://img.shields.io/badge/swift-6.3-orange" alt="Swift 6.3" />&nbsp;<img src="https://img.shields.io/badge/UI-SwiftUI-purple" alt="SwiftUI" />
 </p>
 
 <p align="center">
