@@ -191,31 +191,6 @@ public struct ConflictResolutionRecord: Codable, Hashable, Sendable, Identifiabl
     }
 }
 
-public struct ConflictAdvice: Codable, Hashable, Sendable, Identifiable {
-    public var id: UUID
-    public var conflictID: UUID?
-    public var createdAt: Date
-    public var summary: String
-    public var suggestedResolution: ConflictDecision.Resolution
-    public var attribution: String?
-
-    public init(
-        id: UUID = UUID(),
-        conflictID: UUID? = nil,
-        createdAt: Date = Date(),
-        summary: String,
-        suggestedResolution: ConflictDecision.Resolution = .preserveAll,
-        attribution: String? = nil
-    ) {
-        self.id = id
-        self.conflictID = conflictID
-        self.createdAt = createdAt
-        self.summary = summary
-        self.suggestedResolution = suggestedResolution
-        self.attribution = attribution
-    }
-}
-
 public enum JournalOperationResultOutcome: String, Codable, Hashable, Sendable {
     case applied
     case skippedAlreadySatisfied

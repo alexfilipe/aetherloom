@@ -8,6 +8,7 @@ public struct ChangePreview: Codable, Hashable, Sendable {
     public var holds: [HoldNotice]
     public var sections: [PreviewSection]
     public var conflicts: [ConflictDecision]
+    public var advice: [ConflictAdvice]
     public var generatedAt: Date
 
     public init(
@@ -18,6 +19,7 @@ public struct ChangePreview: Codable, Hashable, Sendable {
         holds: [HoldNotice] = [],
         sections: [PreviewSection] = [],
         conflicts: [ConflictDecision] = [],
+        advice: [ConflictAdvice] = [],
         generatedAt: Date
     ) {
         self.syncSetID = syncSetID
@@ -27,6 +29,7 @@ public struct ChangePreview: Codable, Hashable, Sendable {
         self.holds = holds
         self.sections = sections
         self.conflicts = conflicts
+        self.advice = advice
         self.generatedAt = generatedAt
     }
 }
@@ -52,12 +55,20 @@ public struct HoldNotice: Codable, Hashable, Sendable, Identifiable {
     public var reason: HoldReason
     public var message: String
     public var evidence: MassChangeEvidence?
+    public var advisoryNote: HoldTriageNote?
 
-    public init(id: UUID, reason: HoldReason, message: String, evidence: MassChangeEvidence? = nil) {
+    public init(
+        id: UUID,
+        reason: HoldReason,
+        message: String,
+        evidence: MassChangeEvidence? = nil,
+        advisoryNote: HoldTriageNote? = nil
+    ) {
         self.id = id
         self.reason = reason
         self.message = message
         self.evidence = evidence
+        self.advisoryNote = advisoryNote
     }
 }
 
@@ -135,7 +146,8 @@ public struct ChangePreviewRenderer: Sendable {
         outcome: PlanOutcome,
         locations: LocationDirectory,
         base: [BaseRecord],
-        advice _: [ConflictAdvice] = [],
+        advice: [ConflictAdvice] = [],
+        triageNotes: [HoldTriageNote] = [],
         generatedAt: Date
     ) -> ChangePreview {
         switch outcome {
@@ -161,6 +173,7 @@ public struct ChangePreviewRenderer: Sendable {
             let sections = PreviewSectionKind.allCases.map { kind in
                 PreviewSection(kind: kind, entries: sectionEntries[kind] ?? [])
             }
+            let notesByHold = Dictionary(uniqueKeysWithValues: triageNotes.map { ($0.holdReason, $0) })
             return ChangePreview(
                 syncSetID: plan.syncSetID,
                 planFingerprint: plan.fingerprint,
@@ -170,11 +183,13 @@ public struct ChangePreviewRenderer: Sendable {
                         id: noticeID("hold", plan.syncSetID, index, generatedAt),
                         reason: reason,
                         message: reason.message,
-                        evidence: reason.evidence
+                        evidence: reason.evidence,
+                        advisoryNote: notesByHold[reason]
                     )
                 },
                 sections: sections,
                 conflicts: plan.conflicts,
+                advice: advice.sorted(by: adviceSort),
                 generatedAt: generatedAt
             )
         }
@@ -341,6 +356,10 @@ public struct ChangePreviewRenderer: Sendable {
             return lhs.path < rhs.path
         }
         return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private func adviceSort(_ lhs: ConflictAdvice, _ rhs: ConflictAdvice) -> Bool {
+        lhs.conflictID.uuidString < rhs.conflictID.uuidString
     }
 }
 

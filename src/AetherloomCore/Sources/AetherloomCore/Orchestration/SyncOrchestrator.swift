@@ -53,6 +53,9 @@ public actor SyncOrchestrator {
     private let stores: EngineStores
     private let contentStage: ContentStage
     private let environment: EngineEnvironment
+    private let advisor: (any ConflictAdvisor)?
+    private let advisoryBudget: AdvisoryBudget
+    private let adviceValidator = AdviceValidator()
     private let renderer = ChangePreviewRenderer()
     private var activeSyncSets: Set<UUID> = []
 
@@ -61,13 +64,17 @@ public actor SyncOrchestrator {
         providers: [LocationID: any StorageProvider],
         stores: EngineStores,
         stage: ContentStage,
-        environment: EngineEnvironment
+        environment: EngineEnvironment,
+        advisor: (any ConflictAdvisor)? = nil,
+        advisoryBudget: AdvisoryBudget = .default
     ) {
         self.locations = locations
         self.providers = providers
         self.stores = stores
         self.contentStage = stage
         self.environment = environment
+        self.advisor = advisor
+        self.advisoryBudget = advisoryBudget
     }
 
     public func prepare(_ syncSet: SyncSet) async throws -> SyncPreparation {
@@ -183,12 +190,13 @@ public actor SyncOrchestrator {
         baseRecords: [BaseRecord]
     ) async throws -> SyncPreparation {
         await appendStage("Preview", syncSetID: syncSet.id, runID: runID, started: true)
-        let advice = await conflictAdvice(for: outcome)
+        let annotations = await advisoryAnnotations(for: outcome, syncSetID: syncSet.id, runID: runID)
         let preview = renderer.render(
             outcome: outcome,
             locations: locations,
             base: baseRecords,
-            advice: advice,
+            advice: annotations.advice,
+            triageNotes: annotations.triageNotes,
             generatedAt: environment.now()
         )
         if case let .plan(plan) = outcome {
@@ -208,7 +216,7 @@ public actor SyncOrchestrator {
         return SyncPreparation(
             outcome: outcome,
             preview: preview,
-            advice: advice,
+            advice: annotations.advice,
             runID: runID,
             syncSetName: syncSet.name
         )
@@ -323,9 +331,162 @@ public actor SyncOrchestrator {
         )
     }
 
-    // Task 08 seam: advisory integration will request conflict advice here.
-    private func conflictAdvice(for _: PlanOutcome) async -> [ConflictAdvice] {
-        []
+    private func advisoryAnnotations(
+        for outcome: PlanOutcome,
+        syncSetID: UUID,
+        runID: UUID
+    ) async -> AdvisoryAnnotations {
+        guard let advisor, case let .plan(plan) = outcome, !plan.gate.isClear else {
+            return AdvisoryAnnotations()
+        }
+
+        let result = await withAdvisoryTimeout(seconds: advisoryBudget.perPreparationSeconds, mode: advisoryBudget.timeoutMode) {
+            await self.collectAdvisoryAnnotations(plan: plan, advisor: advisor, syncSetID: syncSetID, runID: runID)
+        }
+        switch result {
+        case let .completed(annotations):
+            return annotations
+        case .timedOut:
+            await logAdviceUnavailable(
+                syncSetID: syncSetID,
+                runID: runID,
+                detail: "preparationBudgetExceeded"
+            )
+            return AdvisoryAnnotations()
+        }
+    }
+
+    private func collectAdvisoryAnnotations(
+        plan: SyncPlan,
+        advisor: any ConflictAdvisor,
+        syncSetID: UUID,
+        runID: UUID
+    ) async -> AdvisoryAnnotations {
+        var annotations = AdvisoryAnnotations()
+        for conflict in plan.conflicts.sorted(by: conflictSort) {
+            if let advice = await conflictAdvice(for: conflict, advisor: advisor, syncSetID: syncSetID, runID: runID) {
+                annotations.advice.append(advice)
+            }
+        }
+        for hold in plan.gate.holdReasons {
+            if let note = await triageNote(for: hold, plan: plan, advisor: advisor, syncSetID: syncSetID, runID: runID) {
+                annotations.triageNotes.append(note)
+            }
+        }
+        return annotations
+    }
+
+    private func conflictAdvice(
+        for conflict: ConflictDecision,
+        advisor: any ConflictAdvisor,
+        syncSetID: UUID,
+        runID: UUID
+    ) async -> ConflictAdvice? {
+        let request = ConflictAdvisoryRequest(
+            conflict: conflict,
+            locationNames: locationNames(),
+            contentExcerpts: nil
+        )
+        let cacheKey = AdviceCacheKey(conflict: conflict, advisor: advisor.descriptor).rawValue
+        if let cached = await stores.adviceCache.cachedAdvice(forKey: cacheKey) {
+            switch adviceValidator.validate(cached, for: request) {
+            case let .accepted(advice):
+                await logAdviceShown(advice, syncSetID: syncSetID, runID: runID)
+                return advice
+            case let .rejected(reason):
+                await logAdviceUnavailable(
+                    syncSetID: syncSetID,
+                    runID: runID,
+                    path: conflict.path,
+                    relatedConflictID: conflict.id,
+                    detail: "cachedValidation.\(reason.rawValue)"
+                )
+                return nil
+            }
+        }
+
+        let result = await withAdvisoryTimeout(seconds: advisoryBudget.perConflictSeconds, mode: advisoryBudget.timeoutMode) {
+            await advisor.advise(on: request)
+        }
+        switch result {
+        case .timedOut:
+            await logAdviceUnavailable(
+                syncSetID: syncSetID,
+                runID: runID,
+                path: conflict.path,
+                relatedConflictID: conflict.id,
+                detail: "timeout"
+            )
+            return nil
+
+        case let .completed(rawAdvice?):
+            switch adviceValidator.validate(rawAdvice, for: request) {
+            case let .accepted(advice):
+                await stores.adviceCache.store(advice, forKey: cacheKey)
+                await logAdviceShown(advice, syncSetID: syncSetID, runID: runID)
+                return advice
+            case let .rejected(reason):
+                await logAdviceUnavailable(
+                    syncSetID: syncSetID,
+                    runID: runID,
+                    path: conflict.path,
+                    relatedConflictID: conflict.id,
+                    detail: "validation.\(reason.rawValue)"
+                )
+                return nil
+            }
+
+        case .completed(nil):
+            await logAdviceUnavailable(
+                syncSetID: syncSetID,
+                runID: runID,
+                path: conflict.path,
+                relatedConflictID: conflict.id,
+                detail: "unavailable"
+            )
+            return nil
+        }
+    }
+
+    private func triageNote(
+        for hold: HoldReason,
+        plan: SyncPlan,
+        advisor: any ConflictAdvisor,
+        syncSetID: UUID,
+        runID: UUID
+    ) async -> HoldTriageNote? {
+        guard let request = HoldTriageRequest(syncSetID: plan.syncSetID, holdReason: hold, locationNames: locationNames()) else {
+            return nil
+        }
+
+        let result = await withAdvisoryTimeout(seconds: advisoryBudget.perConflictSeconds, mode: advisoryBudget.timeoutMode) {
+            await advisor.triage(request)
+        }
+        switch result {
+        case .timedOut:
+            await logAdviceUnavailable(syncSetID: syncSetID, runID: runID, detail: "triage.timeout")
+            return nil
+
+        case let .completed(rawNote?):
+            switch adviceValidator.validate(rawNote, for: request) {
+            case let .accepted(note):
+                await appendActivity(
+                    syncSetID: syncSetID,
+                    runID: runID,
+                    category: .advisory,
+                    message: ActivityMessageCatalog.holdTriageShown,
+                    detail: "Generated by \(note.generatedBy.name) via \(note.generatedBy.backend). \(note.summary)"
+                )
+                return note
+            case let .rejected(reason):
+                await logAdviceUnavailable(syncSetID: syncSetID, runID: runID, detail: "triage.validation.\(reason.rawValue)")
+                return nil
+            }
+
+        case .completed(nil):
+            await logAdviceUnavailable(syncSetID: syncSetID, runID: runID, detail: "triage.unavailable")
+            return nil
+        }
     }
 
     private func logPreparationSummary(_ preview: ChangePreview, syncSetID: UUID, runID: UUID) async {
@@ -385,6 +546,39 @@ public actor SyncOrchestrator {
         }
     }
 
+    private func logAdviceShown(_ advice: ConflictAdvice, syncSetID: UUID, runID: UUID) async {
+        await appendActivity(
+            syncSetID: syncSetID,
+            runID: runID,
+            category: .advisory,
+            locationID: advice.recommended.locationID,
+            message: ActivityMessageCatalog.adviceShown(
+                recommendation: advice.recommended,
+                locationName: advice.recommended.locationID.map { locationName($0) }
+            ),
+            detail: "Generated by \(advice.generatedBy.name) via \(advice.generatedBy.backend); confidence \(advice.confidence.rawValue). \(advice.rationale)",
+            relatedConflictID: advice.conflictID
+        )
+    }
+
+    private func logAdviceUnavailable(
+        syncSetID: UUID,
+        runID: UUID,
+        path: SyncPath? = nil,
+        relatedConflictID: UUID? = nil,
+        detail: String
+    ) async {
+        await appendActivity(
+            syncSetID: syncSetID,
+            runID: runID,
+            category: .advisory,
+            path: path,
+            message: ActivityMessageCatalog.adviceUnavailable,
+            detail: detail,
+            relatedConflictID: relatedConflictID
+        )
+    }
+
     private func appendStage(_ name: String, syncSetID: UUID, runID: UUID, started: Bool) async {
         await appendActivity(
             syncSetID: syncSetID,
@@ -432,6 +626,44 @@ public actor SyncOrchestrator {
     }
 }
 
+private struct AdvisoryAnnotations: Sendable {
+    var advice: [ConflictAdvice] = []
+    var triageNotes: [HoldTriageNote] = []
+}
+
+private enum AdvisoryTimeoutResult<Value: Sendable>: Sendable {
+    case completed(Value)
+    case timedOut
+}
+
+private func withAdvisoryTimeout<Value: Sendable>(
+    seconds: TimeInterval,
+    mode: AdvisoryTimeoutMode,
+    operation: @escaping @Sendable () async -> Value
+) async -> AdvisoryTimeoutResult<Value> {
+    guard seconds > 0 || mode == .immediateAfterYield else {
+        return .timedOut
+    }
+    return await withTaskGroup(of: AdvisoryTimeoutResult<Value>.self) { group in
+        group.addTask {
+            .completed(await operation())
+        }
+        group.addTask {
+            if mode == .immediateAfterYield, seconds <= 0 {
+                await Task.yield()
+            } else {
+                let nanoseconds = UInt64(max(seconds, 0) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanoseconds)
+            }
+            return .timedOut
+        }
+
+        let first = await group.next() ?? .timedOut
+        group.cancelAll()
+        return first
+    }
+}
+
 private func scanWithTimeout(
     provider: any StorageProvider,
     scope: SyncScope,
@@ -472,6 +704,22 @@ private func timeoutSnapshot(
     )
 }
 
+private extension ConflictResolutionOption {
+    var locationID: LocationID? {
+        if case let .makeCanonical(location) = self {
+            return location
+        }
+        return nil
+    }
+}
+
+private func conflictSort(_ lhs: ConflictDecision, _ rhs: ConflictDecision) -> Bool {
+    if lhs.path != rhs.path {
+        return lhs.path < rhs.path
+    }
+    return lhs.id.uuidString < rhs.id.uuidString
+}
+
 private extension PlanOutcome {
     var syncSetID: UUID {
         switch self {
@@ -480,6 +728,16 @@ private extension PlanOutcome {
         case let .plan(plan):
             return plan.syncSetID
         }
+    }
+}
+
+private extension SyncOrchestrator {
+    func locationNames() -> [LocationID: String] {
+        Dictionary(uniqueKeysWithValues: locations.map { ($0.key, $0.value.displayName) })
+    }
+
+    func locationName(_ locationID: LocationID) -> String {
+        locations[locationID]?.displayName ?? locationID.displayName
     }
 }
 

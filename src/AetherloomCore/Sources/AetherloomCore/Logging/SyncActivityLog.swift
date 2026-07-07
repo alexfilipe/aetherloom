@@ -132,6 +132,7 @@ public struct ActivityMessageCatalog: Sendable {
     public static let approvalAccepted = "Plan approval accepted. Aetherloom will apply the reviewed changes."
     public static let adviceShown = "Aetherloom showed conflict advice."
     public static let adviceUnavailable = "Aetherloom could not generate advice."
+    public static let holdTriageShown = "Aetherloom summarized why this hold needs review."
     public static let recoveryPerformed = "Aetherloom checked an unfinished sync run and preserved the safest state."
     public static let stoppedForReplan = "Sync stopped because a file changed after planning. Preview changes again before continuing."
     public static let verificationFailed = "Sync could not verify a completed write."
@@ -164,6 +165,20 @@ public struct ActivityMessageCatalog: Sendable {
     ) -> String {
         let gateText = gate.isClear ? "clear" : "needs review"
         return "Prepared \(additions) additions, \(updates) updates, \(moves) moves, \(trash) trash moves, \(conflicts) conflicts, and \(waiting) waiting items; gate is \(gateText)."
+    }
+
+    public static func adviceShown(recommendation: ConflictResolutionOption, locationName: String? = nil) -> String {
+        switch recommendation {
+        case .keepBoth:
+            return "Aetherloom suggested keeping both versions. Both versions remain preserved."
+        case .makeCanonical:
+            let name = locationName ?? "the selected location"
+            return "Aetherloom suggested keeping the version from \(name). Both versions remain preserved."
+        }
+    }
+
+    public static func adviceFailure(reason: AdviceValidationRejection) -> String {
+        "\(Self.adviceUnavailable) Reason: \(reason.rawValue)."
     }
 
     public func message(for operation: Operation) -> String {
