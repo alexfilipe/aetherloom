@@ -27,6 +27,7 @@ import Testing
     #expect(ActivityMessageCatalog.approvalAccepted == "Plan approval accepted. Aetherloom will apply the reviewed changes.")
     #expect(ActivityMessageCatalog.adviceShown == "Aetherloom showed conflict advice.")
     #expect(ActivityMessageCatalog.adviceUnavailable == "Aetherloom could not generate advice.")
+    #expect(ActivityMessageCatalog.holdTriageShown == "Aetherloom summarized why this hold needs review.")
     #expect(ActivityMessageCatalog.recoveryPerformed == "Aetherloom checked an unfinished sync run and preserved the safest state.")
     #expect(ActivityMessageCatalog.stoppedForReplan == "Sync stopped because a file changed after planning. Preview changes again before continuing.")
     #expect(ActivityMessageCatalog.verificationFailed == "Sync could not verify a completed write.")
@@ -234,11 +235,12 @@ import Testing
 @Test func adviceCacheRoundTripsAdviceWithoutPromptsOrCredentials() async {
     let store = InMemoryAdviceCacheStore()
     let advice = ConflictAdvice(
-        id: uuid("000000001101"),
         conflictID: uuid("000000001102"),
-        createdAt: phaseDate,
-        summary: "Preserve both versions.",
-        attribution: "local heuristic"
+        recommended: .keepBoth,
+        confidence: .low,
+        rationale: "Preserve both versions.",
+        generatedBy: AdvisorDescriptor(name: "Test", backend: "stub"),
+        generatedAt: phaseDate
     )
 
     await store.store(advice, forKey: "conflict-key")
