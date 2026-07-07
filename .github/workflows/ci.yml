@@ -35,7 +35,21 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      # Cache swiftly itself (~/.swiftly: proxies + config) and the installed
+      # toolchain (~/Library/Developer/Toolchains) so the ~1.4 GB Swift download
+      # only happens on a cache miss. Runner paths are stable (user is always
+      # "runner"), so the cached absolute paths remain valid across runs.
+      - name: Cache Swift 6.3 toolchain
+        id: swift-toolchain
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.swiftly
+            ~/Library/Developer/Toolchains
+          key: swiftly-macos-15-6.3.2
+
       - name: Install Swift 6.3 toolchain via swiftly
+        if: steps.swift-toolchain.outputs.cache-hit != 'true'
         working-directory: ${{ runner.temp }}
         run: |
           curl -fsSL -O https://download.swift.org/swiftly/darwin/swiftly.pkg
@@ -44,8 +58,11 @@ jobs:
           # shellcheck disable=SC1091
           . "$HOME/.swiftly/env.sh"
           swiftly install --use 6.3.2
-          # Expose the swiftly toolchain to later steps.
-          echo "$HOME/.swiftly/bin" >> "$GITHUB_PATH"
+
+      # Expose the swiftly toolchain to later steps on every run. The bin proxies
+      # route to the 6.3.2 default recorded in the (possibly cached) config.
+      - name: Put Swift 6.3 on PATH
+        run: echo "$HOME/.swiftly/bin" >> "$GITHUB_PATH"
 
       - name: Show Swift version
         run: swift --version
