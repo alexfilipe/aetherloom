@@ -7,6 +7,12 @@
 <p align="center"><b>Every drive, one weave.</b></p>
 
 <p align="center">
+  <a href="https://github.com/alexfilipe/aetherloom/actions/workflows/ci.yml">
+    <img src="https://github.com/alexfilipe/aetherloom/actions/workflows/ci.yml/badge.svg" alt="CI status" />
+  </a>
+</p>
+
+<p align="center">
   A native macOS app that keeps the same folders synchronized across iCloud Drive, Google Drive,
   OneDrive, local folders, and NAS-backed drives.
 </p>
