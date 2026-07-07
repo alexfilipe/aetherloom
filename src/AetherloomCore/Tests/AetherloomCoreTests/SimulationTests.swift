@@ -76,7 +76,7 @@ func performanceSmoke_reconcileAndPlanTenThousandItemsThreeLocations() {
     )
 
     #expect(outcome.planValue?.decisions.isEmpty == true)
-    #expect(Date().timeIntervalSince(startedAt) < 7)
+    #expect(Date().timeIntervalSince(startedAt) < 5)
 }
 
 private let simulationDefaultSeeds: [UInt64] = (1...500).map { 0x09_0000 + UInt64($0) }

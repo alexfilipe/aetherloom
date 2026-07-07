@@ -201,6 +201,15 @@ private struct PlanLowerer {
     }
 
     func lower(_ reconciled: [ReconciledItem]) -> LoweredPlan {
+        if reconciled.allSatisfy(\.verdict.isInSync) {
+            return LoweredPlan(
+                decisions: [],
+                schedule: OperationSchedule(),
+                conflicts: [],
+                waiting: []
+            )
+        }
+
         var state = LoweringState(existingPathsByLocation: existingPaths(from: reconciled))
 
         for (index, reconciledItem) in reconciled.sorted(by: reconciledSort).enumerated() {
