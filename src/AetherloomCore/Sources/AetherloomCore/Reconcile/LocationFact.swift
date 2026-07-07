@@ -107,6 +107,7 @@ public func deriveFacts(_ input: ReconciliationInput) -> [ReconciliationItem] {
 
     let records = input.base
         .filter { $0.syncSetID == input.syncSet.id }
+        .filter { $0.tombstone == nil }
         .filter { !settings.isExcluded(path: $0.path, kind: $0.kind) }
         .sorted { $0.path < $1.path }
 

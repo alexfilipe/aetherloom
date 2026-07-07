@@ -141,6 +141,18 @@ public struct ActivityMessageCatalog: Sendable {
         "Sync started for \(locationCount) locations."
     }
 
+    public static func stageStarted(_ name: String) -> String {
+        "\(name) started."
+    }
+
+    public static func stageFinished(_ name: String) -> String {
+        "\(name) finished."
+    }
+
+    public static func approvalAccepted(trashCount: Int, syncSetName: String) -> String {
+        "You approved \(trashCount) items to move to trash for '\(syncSetName)'."
+    }
+
     public static func preparationSummary(
         additions: Int,
         updates: Int,

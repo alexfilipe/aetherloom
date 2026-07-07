@@ -50,6 +50,7 @@ public protocol RunJournalStore: Sendable {
 
 public protocol ConflictStore: Sendable {
     func openConflicts(for syncSetID: UUID) async throws -> [ConflictDecision]
+    func resolvedConflicts(for syncSetID: UUID) async throws -> [ConflictResolutionRecord]
     func upsert(_ conflicts: [ConflictDecision]) async throws
     func resolve(_ id: UUID, as resolution: Resolution, at date: Date) async throws
 }
@@ -174,6 +175,20 @@ public enum LocationRegistryError: Error, Equatable, Sendable {
 
 public enum ConflictStoreError: Error, Equatable, Sendable {
     case missing(UUID)
+}
+
+public struct ConflictResolutionRecord: Codable, Hashable, Sendable, Identifiable {
+    public var id: UUID
+    public var conflict: ConflictDecision
+    public var resolution: Resolution
+    public var resolvedAt: Date
+
+    public init(id: UUID, conflict: ConflictDecision, resolution: Resolution, resolvedAt: Date) {
+        self.id = id
+        self.conflict = conflict
+        self.resolution = resolution
+        self.resolvedAt = resolvedAt
+    }
 }
 
 public struct ConflictAdvice: Codable, Hashable, Sendable, Identifiable {
@@ -380,6 +395,12 @@ public actor InMemoryConflictStore: ConflictStore {
             .sorted { $0.path == $1.path ? $0.id.uuidString < $1.id.uuidString : $0.path < $1.path }
     }
 
+    public func resolvedConflicts(for syncSetID: UUID) async throws -> [ConflictResolutionRecord] {
+        resolved.values
+            .filter { $0.conflict.syncSetID == nil || $0.conflict.syncSetID == syncSetID }
+            .sorted { $0.conflict.path == $1.conflict.path ? $0.id.uuidString < $1.id.uuidString : $0.conflict.path < $1.conflict.path }
+    }
+
     public func upsert(_ conflicts: [ConflictDecision]) async throws {
         for conflict in conflicts {
             open[conflict.id] = conflict
@@ -387,10 +408,10 @@ public actor InMemoryConflictStore: ConflictStore {
     }
 
     public func resolve(_ id: UUID, as resolution: Resolution, at date: Date) async throws {
-        guard open.removeValue(forKey: id) != nil else {
+        guard let conflict = open.removeValue(forKey: id) else {
             throw ConflictStoreError.missing(id)
         }
-        resolved[id] = ConflictResolutionRecord(id: id, resolution: resolution, resolvedAt: date)
+        resolved[id] = ConflictResolutionRecord(id: id, conflict: conflict, resolution: resolution, resolvedAt: date)
     }
 }
 
@@ -812,12 +833,6 @@ private struct InMemoryJournalRun: Sendable {
     var fingerprint: PlanFingerprint
     var events: [JournalEvent]
     var isReconciled: Bool
-}
-
-private struct ConflictResolutionRecord: Codable, Hashable, Sendable {
-    var id: UUID
-    var resolution: Resolution
-    var resolvedAt: Date
 }
 
 private struct BaseRecordsEnvelope: Codable, Hashable, Sendable {

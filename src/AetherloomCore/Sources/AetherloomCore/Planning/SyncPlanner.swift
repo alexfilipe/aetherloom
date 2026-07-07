@@ -7,6 +7,7 @@ public struct SyncPlanningInput: Sendable {
     public var snapshots: [LocationSnapshot]
     public var settings: SyncSettings
     public var baseStateUnreadableDetail: String?
+    public var resolvedConflicts: [ConflictResolutionRecord]
 
     public init(
         syncSet: SyncSet,
@@ -14,7 +15,8 @@ public struct SyncPlanningInput: Sendable {
         records: [BaseRecord] = [],
         snapshots: [LocationSnapshot],
         settings: SyncSettings? = nil,
-        baseStateUnreadableDetail: String? = nil
+        baseStateUnreadableDetail: String? = nil,
+        resolvedConflicts: [ConflictResolutionRecord] = []
     ) {
         self.syncSet = syncSet
         self.locations = locations
@@ -22,6 +24,7 @@ public struct SyncPlanningInput: Sendable {
         self.snapshots = snapshots
         self.settings = settings ?? syncSet.settings
         self.baseStateUnreadableDetail = baseStateUnreadableDetail
+        self.resolvedConflicts = resolvedConflicts
     }
 }
 
@@ -38,8 +41,7 @@ public struct SyncPlanner: Sendable {
         let reasons = refusalReasons(
             input: input,
             locationIDs: locationIDs,
-            snapshotsByLocation: snapshotsByLocation,
-            locationsByID: locationsByID
+            snapshotsByLocation: snapshotsByLocation
         )
         if !reasons.isEmpty {
             return .refusal(SyncRefusal(syncSetID: input.syncSet.id, reasons: reasons, occurredAt: environment.now))
@@ -62,9 +64,13 @@ public struct SyncPlanner: Sendable {
         )
         let reconciler = Reconciler(environment: environment)
         let reconciled = foldSubtreeMoves(
-            deriveFacts(reconciliationInput).map { item in
-                ReconciledItem(item: item, verdict: reconciler.reconcile(item))
-            }
+            applyConflictResolutions(
+                deriveFacts(reconciliationInput).map { item in
+                    ReconciledItem(item: item, verdict: reconciler.reconcile(item))
+                },
+                resolutions: input.resolvedConflicts,
+                locationIDs: locationIDs
+            )
         )
         let builder = PlanLowerer(
             syncSet: syncSet,
@@ -106,8 +112,7 @@ public struct SyncPlanner: Sendable {
     private func refusalReasons(
         input: SyncPlanningInput,
         locationIDs: [LocationID],
-        snapshotsByLocation: [LocationID: LocationSnapshot],
-        locationsByID: [LocationID: SyncLocation]
+        snapshotsByLocation: [LocationID: LocationSnapshot]
     ) -> [RefusalReason] {
         var reasons: [RefusalReason] = []
 
@@ -130,24 +135,39 @@ public struct SyncPlanner: Sendable {
             }
         }
 
-        let placeholderItems = input.snapshots
-            .flatMap(\.observations.all)
-            .filter {
-                locationsByID[$0.location]?.kind == .iCloudDrive
-                    && $0.isPlaceholder
-                    && !input.settings.isExcluded($0)
-            }
-        for placeholder in placeholderItems {
-            reasons.append(
-                .locationUnavailable(
-                    placeholder.location,
-                    .unknown(detail: "\(placeholder.path.rawValue) in iCloud Drive is a placeholder.")
-                )
-            )
-        }
-
         return reasons
     }
+}
+
+private func applyConflictResolutions(
+    _ items: [ReconciledItem],
+    resolutions: [ConflictResolutionRecord],
+    locationIDs: [LocationID]
+) -> [ReconciledItem] {
+    guard !resolutions.isEmpty else { return items }
+    return items.map { item in
+        guard case let .conflict(conflict) = item.verdict,
+              let resolution = resolutions.first(where: { matches($0.conflict, conflict: conflict) }) else {
+            return item
+        }
+
+        switch resolution.resolution {
+        case .preserveAll:
+            return item
+        case let .makeCanonical(source):
+            guard item.item.observations[source] != nil else {
+                return item
+            }
+            return ReconciledItem(
+                item: item.item,
+                verdict: .propagateContent(from: source, to: Set(locationIDs.filter { $0 != source }))
+            )
+        }
+    }
+}
+
+private func matches(_ resolved: ConflictDecision, conflict: ConflictDecision) -> Bool {
+    resolved.id == conflict.id || (resolved.kind == conflict.kind && resolved.path == conflict.path)
 }
 
 private struct LoweredPlan {

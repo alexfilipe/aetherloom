@@ -24,8 +24,9 @@ public struct ConflictVersion: Codable, Hashable, Sendable {
 }
 
 public struct ConflictDecision: Codable, Hashable, Sendable, Identifiable {
-    public enum Resolution: String, Codable, Hashable, Sendable {
+    public enum Resolution: Codable, Hashable, Sendable {
         case preserveAll
+        case makeCanonical(LocationID)
     }
 
     public var id: UUID

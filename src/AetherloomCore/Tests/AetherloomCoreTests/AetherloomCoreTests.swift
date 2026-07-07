@@ -222,12 +222,11 @@ import Testing
     await google.remove(path: "/Photo.jpg")
 
     let outcome = await makePlanOutcome(syncSet: syncSet, records: [record], providers: [iCloud, google])
-    let refusal = try #require(outcome.refusalValue)
+    let plan = try #require(outcome.planValue)
 
-    #expect(refusal.reasons.contains { reason in
-        if case .locationUnavailable(.iCloudDrive, .unknown) = reason { return true }
-        return false
-    })
+    #expect(trashCount(plan) == 0)
+    #expect(plan.waiting.count == 1)
+    #expect(plan.waiting.first?.path == "/Photo.jpg")
 }
 
 @Test func massDeletePausesPlan() async throws {

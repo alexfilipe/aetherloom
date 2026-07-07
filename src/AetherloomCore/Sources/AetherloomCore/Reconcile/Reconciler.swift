@@ -327,7 +327,7 @@ private func contentDecisionNeeded(
     relocatedLocations: [LocationID],
     missingLocations: [LocationID]
 ) -> Bool {
-    !changedLocations.isEmpty || (!relocatedLocations.isEmpty && missingLocations.isEmpty)
+    !changedLocations.isEmpty || !relocatedLocations.isEmpty || !missingLocations.isEmpty
 }
 
 private func isUnknownChange(_ fact: LocationFact?, comparedTo baseVersion: ItemVersion) -> Bool {

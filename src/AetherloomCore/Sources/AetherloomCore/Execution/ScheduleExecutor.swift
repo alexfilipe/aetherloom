@@ -3,10 +3,13 @@ import Foundation
 public enum ScheduleExecutionError: Error, Equatable, Sendable {
     case missingProvider(LocationID)
     case planNeedsReview
+    case invalidApproval(ApprovalRejectionReason)
     case invalidSchedule(String)
 }
 
 public enum SyncRunOutcome: Codable, Hashable, Sendable {
+    case refused
+    case held
     case completed
     case stoppedForReplan(location: LocationID, path: SyncPath)
     case cancelled
@@ -127,10 +130,14 @@ public struct ScheduleExecutor: Sendable {
         self.environment = environment
     }
 
-    public func execute(_ plan: SyncPlan, runID requestedRunID: UUID? = nil) async throws -> SyncRunSummary {
-        guard plan.gate.isClear else {
-            throw ScheduleExecutionError.planNeedsReview
-        }
+    public func execute(
+        _ plan: SyncPlan,
+        runID requestedRunID: UUID? = nil,
+        approval: PlanApproval? = nil,
+        syncSetName: String? = nil,
+        logRunBoundaryActivity: Bool = true
+    ) async throws -> SyncRunSummary {
+        let acceptedApproval = try authorize(plan, approval: approval)
         do {
             try plan.schedule.validate(decisions: plan.decisions)
         } catch {
@@ -139,12 +146,26 @@ public struct ScheduleExecutor: Sendable {
 
         let runID = requestedRunID ?? environment.makeID()
         try await stores.journal.begin(runID: runID, syncSetID: plan.syncSetID, fingerprint: plan.fingerprint)
-        await appendActivity(
-            syncSetID: plan.syncSetID,
-            runID: runID,
-            category: .sync,
-            message: ActivityMessageCatalog.runStarted(locationCount: providers.count)
-        )
+        if logRunBoundaryActivity {
+            await appendActivity(
+                syncSetID: plan.syncSetID,
+                runID: runID,
+                category: .sync,
+                message: ActivityMessageCatalog.runStarted(locationCount: providers.count)
+            )
+        }
+        if acceptedApproval {
+            await appendActivity(
+                syncSetID: plan.syncSetID,
+                runID: runID,
+                category: .safety,
+                message: ActivityMessageCatalog.approvalAccepted(
+                    trashCount: plan.approvalTrashCount,
+                    syncSetName: syncSetName ?? "this sync set"
+                ),
+                detail: plan.fingerprint.rawValue
+            )
+        }
 
         var state = ExecutionState(plan: plan)
         var baseRecords = try await stores.baseRecords.records(for: plan.syncSetID)
@@ -213,6 +234,10 @@ public struct ScheduleExecutor: Sendable {
 
         let journalOutcome: JournalRunOutcome
         switch summaryOutcome {
+        case .refused:
+            journalOutcome = .failed
+        case .held:
+            journalOutcome = .cancelled
         case .completed:
             journalOutcome = .succeeded
         case .stoppedForReplan:
@@ -226,13 +251,15 @@ public struct ScheduleExecutor: Sendable {
             .runFinished(outcome: journalOutcome, occurredAt: environment.now(), detail: summaryOutcome.detail),
             runID: runID
         )
-        await appendActivity(
-            syncSetID: plan.syncSetID,
-            runID: runID,
-            category: .sync,
-            message: ActivityMessageCatalog.runFinished,
-            detail: summaryOutcome.detail
-        )
+        if logRunBoundaryActivity {
+            await appendActivity(
+                syncSetID: plan.syncSetID,
+                runID: runID,
+                category: .sync,
+                message: ActivityMessageCatalog.runFinished,
+                detail: summaryOutcome.detail
+            )
+        }
 
         return SyncRunSummary(
             runID: runID,
@@ -243,6 +270,21 @@ public struct ScheduleExecutor: Sendable {
             failedOperations: state.failedOperations,
             perItemResults: state.itemResults.sorted { $0.path == $1.path ? $0.id.uuidString < $1.id.uuidString : $0.path < $1.path }
         )
+    }
+
+    private func authorize(_ plan: SyncPlan, approval: PlanApproval?) throws -> Bool {
+        guard !plan.gate.isClear else {
+            return false
+        }
+        guard let approval else {
+            throw ScheduleExecutionError.planNeedsReview
+        }
+        switch approval.validate(against: plan, at: environment.now()) {
+        case .accepted:
+            return true
+        case let .rejected(reason):
+            throw ScheduleExecutionError.invalidApproval(reason)
+        }
     }
 
     private func execute(
@@ -817,9 +859,13 @@ private extension OperationExecutionStatus {
     }
 }
 
-private extension SyncRunOutcome {
+extension SyncRunOutcome {
     var detail: String? {
         switch self {
+        case .refused:
+            return "Refused."
+        case .held:
+            return "Held for review."
         case .completed:
             return nil
         case let .stoppedForReplan(location, path):
