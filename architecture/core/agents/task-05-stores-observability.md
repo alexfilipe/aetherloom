@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You build the store protocols and their in-memory/file implementations, plus the activity system. **Requires Task 01; may run parallel to Task 04** (merge 04 first; the corrupt-store→refusal wiring is finished by whichever lands second).
 
 ## Read first
-`architecture/00-overview.md`, `09-persistence.md` and `08-observability.md` (your specs), `11-migration.md`; `Logging/SyncActivityLog.swift`, `Models/*`. Baseline green first.
+`architecture/core/00-overview.md`, `09-persistence.md` and `08-observability.md` (your specs), `11-migration.md`; `Logging/SyncActivityLog.swift`, `Models/*`. Baseline green first.
 
 ## Invariants (override this prompt)
 Corrupt/unreadable base state degrades to "no memory ⇒ nothing deletable", never toward trash. A journal intent that cannot be persisted must make the corresponding side effect impossible (the API shape enforces write-ahead). Store failures are loud. Never store credentials, tokens, file contents, or advisor prompts.

@@ -4,7 +4,7 @@
 Senior Swift engineer on Aetherloom. You build the advisory subsystem: protocol, validator, deterministic heuristics, and orchestrator seam in `AetherloomCore`; the Apple FoundationModels adapter in a new `AetherloomIntelligence` target. **Requires Task 07 merged.** The advisor must be architecturally incapable of causing an action — that property is the deliverable.
 
 ## Read first
-`architecture/00-overview.md` (invariant 7), `07-ai-conflict-advisor.md` (your spec; §1 boundaries are the contract), `Planning`/`Preview`/`Orchestration` sources, `Storage/AdviceCacheStore`. Baseline green first.
+`architecture/core/00-overview.md` (invariant 7), `07-ai-conflict-advisor.md` (your spec; §1 boundaries are the contract), `Planning`/`Preview`/`Orchestration` sources, `Storage/AdviceCacheStore`. Baseline green first.
 
 ## Non-negotiable boundaries (violating any is task failure regardless of other criteria)
 Advisory only — text + a ranking over engine-enumerated options; closed vocabulary (`keepBoth` always first, `makeCanonical(LocationID)`); on-device only, zero network; metadata by default, content excerpts opt-in and **unpopulated by any current code path**; `advisor == nil` leaves `PlanOutcome` byte-identical; fail closed and quiet (timeout/malformed/unavailable ⇒ no advice, nothing blocked). Advice never touches `SyncPlan`, gates, `ConflictDecision` resolution state, or `PlanApproval`.

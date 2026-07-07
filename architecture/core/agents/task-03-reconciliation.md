@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You replace the imperative planner heart with the pure, total decision table — the deepest cut of the migration. **Requires Tasks 01–02 merged.**
 
 ## Read first
-`architecture/00-overview.md`, `03-reconciliation.md` (your spec — the §3 table is normative row by row), `11-migration.md` (§1, §4 change 2); `Planning/SyncPlanner.swift` in full (every `PlanningContext` branch), `Planning/ConflictResolver.swift`, all planner tests. Baseline green first.
+`architecture/core/00-overview.md`, `03-reconciliation.md` (your spec — the §3 table is normative row by row), `11-migration.md` (§1, §4 change 2); `Planning/SyncPlanner.swift` in full (every `PlanningContext` branch), `Planning/ConflictResolver.swift`, all planner tests. Baseline green first.
 
 ## Invariants (override this prompt)
 No `propagateDeletion` without a base record AND all present sides matching base AND complete healthy scans (guaranteed upstream). `VersionComparison.unknown` never wins an overwrite. Every ambiguous pattern lands on a preservation-shaped verdict. The function is total — no silent default branch.

@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`. You reshape the provider contract so availability, capabilities, and truthful scanning are first-class, and upgrade the fakes into the engine's full test rig. **Requires Task 01 merged.**
 
 ## Read first
-`architecture/00-overview.md`, `02-provider-abstraction.md` (your spec — implement exactly), `11-migration.md` (§2 rows 7–9); current `Providers/*`, `Execution/*`, tests. Baseline green first.
+`architecture/core/00-overview.md`, `02-provider-abstraction.md` (your spec — implement exactly), `11-migration.md` (§2 rows 7–9); current `Providers/*`, `Execution/*`, tests. Baseline green first.
 
 ## Invariants (override this prompt)
 Failure never masquerades as emptiness — every failure is `unavailable` or `incomplete`, never an empty `.complete` scan. No permanent-delete path may exist on the protocol or be wrapped by any implementation. `notFound` requires positively confirmed absence at a healthy backend.

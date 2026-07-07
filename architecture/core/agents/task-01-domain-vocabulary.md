@@ -4,7 +4,7 @@
 Senior Swift engineer on `AetherloomCore`, the safety-first sync engine of Aetherloom (macOS multi-location folder sync). You perform the foundational model refactor. No features beyond it.
 
 ## Read first
-`architecture/00-overview.md` (invariants), `01-domain-model.md` (your spec), `11-migration.md` (§1 rules, §2 map rows 1–6), then all of `src/AetherloomCore/Sources` and `Tests`. Run `swift test --package-path src/AetherloomCore` and record the baseline (expect 20 green).
+`architecture/core/00-overview.md` (invariants), `01-domain-model.md` (your spec), `11-migration.md` (§1 rules, §2 map rows 1–6), then all of `src/AetherloomCore/Sources` and `Tests`. Run `swift test --package-path src/AetherloomCore` and record the baseline (expect 20 green).
 
 ## Invariants (override this prompt)
 Never permanent-delete; failure-absence ≠ deletion; never silently overwrite; unknown comparisons route to preservation; when in doubt, preserve and pause.
