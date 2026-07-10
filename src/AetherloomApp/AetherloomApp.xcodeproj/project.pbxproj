@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		09AF8AE02FD6BC6B00A2E399 /* AetherloomCore in Frameworks */ = {isa = PBXBuildFile; productRef = 09AF8ADF2FD6BC6B00A2E399 /* AetherloomCore */; };
+		09AF8AE22FD6BC6B00A2E399 /* AetherloomBridge in Frameworks */ = {isa = PBXBuildFile; productRef = 09AF8AE12FD6BC6B00A2E399 /* AetherloomBridge */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +28,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				09AF8AE22FD6BC6B00A2E399 /* AetherloomBridge in Frameworks */,
 				09AF8AE02FD6BC6B00A2E399 /* AetherloomCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -70,6 +72,7 @@
 			);
 			name = AetherloomApp;
 			packageProductDependencies = (
+				09AF8AE12FD6BC6B00A2E399 /* AetherloomBridge */,
 				09AF8ADF2FD6BC6B00A2E399 /* AetherloomCore */,
 			);
 			productName = AetherloomApp;
@@ -282,8 +285,9 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -315,8 +319,9 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -351,6 +356,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		09AF8AE12FD6BC6B00A2E399 /* AetherloomBridge */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AetherloomBridge;
+		};
 		09AF8ADF2FD6BC6B00A2E399 /* AetherloomCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AetherloomCore;

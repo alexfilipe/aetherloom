@@ -1,12 +1,59 @@
-import SwiftUI
+import AetherloomBridge
+import AetherloomCore
 import AppKit
+import SwiftUI
 
 struct ContentView: View {
-    @Environment(DemoStore.self) private var store
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
+    @SceneStorage("selectedDestination") private var selectedDestination = SidebarDestination.overview
 
     var body: some View {
-        @Bindable var store = store
+        @Bindable var appModel = appModel
 
+        Group {
+            switch appModel.bootstrapPhase {
+            case .loading:
+                BrandedLoadingView()
+            case .ready:
+                readyShell
+            case let .failed(message):
+                BootstrapFailedView(message: message)
+            }
+        }
+        .frame(minWidth: 980, minHeight: 620)
+        .background(WindowTitleVisibilityConfigurator())
+        .sheet(item: $appModel.activeSheet) { sheet in
+            sheetContent(sheet)
+        }
+        .alert(
+            "Aetherloom",
+            isPresented: Binding(
+                get: { appModel.presentedError != nil },
+                set: { if !$0 { appModel.presentedError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                appModel.presentedError = nil
+            }
+        } message: {
+            Text(appModel.presentedError ?? "")
+        }
+        .onAppear {
+            restoreNavigation()
+        }
+        .onChange(of: appModel.selectedDestination) { _, destination in
+            guard destination != .settings else {
+                appModel.selectedDestination = .overview
+                openSettings()
+                return
+            }
+            selectedDestination = destination
+        }
+    }
+
+    private var readyShell: some View {
         NavigationSplitView {
             sidebar
         } detail: {
@@ -14,27 +61,50 @@ struct ContentView: View {
                 .frame(minWidth: 760, minHeight: 560)
         }
         .toolbar { toolbarContent }
-        .background(WindowTitleVisibilityConfigurator())
-        .sheet(isPresented: $store.showingPreviewChanges) {
-            PreviewChangesSheet()
+        .overlay(alignment: .bottomTrailing) {
+            if let toast = appModel.pendingToast {
+                RunResultToast(
+                    model: toast,
+                    openActivity: {
+                        appModel.pendingToast = nil
+                        appModel.show(.activity, filteredToRun: toast.runID)
+                    },
+                    dismiss: {
+                        if appModel.pendingToast?.id == toast.id {
+                            appModel.pendingToast = nil
+                        }
+                    }
+                )
+                .padding(22)
+                .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+            }
         }
-        .sheet(isPresented: $store.showingNewSyncSet) {
-            NewSyncSetSheet()
-        }
+        .animation(reduceMotion ? .easeOut(duration: 0.12) : .smooth, value: appModel.pendingToast)
     }
 
     // MARK: Sidebar
 
     private var sidebar: some View {
-        @Bindable var store = store
+        @Bindable var appModel = appModel
 
-        return List(selection: $store.selectedDestination) {
+        return List(selection: $appModel.selectedDestination) {
             Section {
-                ForEach(SidebarDestination.allCases) { destination in
+                ForEach(SidebarDestination.allCases.filter { $0 != .settings }) { destination in
                     Label(destination.title, systemImage: destination.systemImage)
                         .badge(badge(for: destination))
                         .tag(destination)
+                        .accessibilityLabel(sidebarAccessibilityLabel(for: destination))
                 }
+            }
+
+            Section {
+                Button {
+                    openSettings()
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open Settings")
             }
         }
         .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
@@ -64,29 +134,24 @@ struct ContentView: View {
         .padding(.bottom, 8)
     }
 
-    private func badge(for destination: SidebarDestination) -> Int {
-        switch destination {
-        case .conflicts: store.unresolvedConflictCount
-        case .syncSets: store.pausedSyncSetCount
-        default: 0
-        }
-    }
-
+    @ViewBuilder
     private var sidebarFooter: some View {
+        let status = appModel.workspace?.status ?? .busy(stage: "Preparing")
         HStack(spacing: 8) {
-            if store.isScanning {
+            switch status {
+            case let .busy(stage):
                 ProgressView()
                     .controlSize(.small)
-                Text("Scanning…")
-            } else {
-                Circle()
-                    .fill(store.everythingInSync ? Color.green : Color.orange)
-                    .frame(width: 8, height: 8)
-                    .shadow(
-                        color: (store.everythingInSync ? Color.green : Color.orange).opacity(0.6),
-                        radius: 3
-                    )
-                Text(store.everythingInSync ? "Everything in sync" : "Needs review")
+                Text(stage)
+            case .needsReview:
+                ToneDot(tone: .attention)
+                Text("Needs review")
+            case .pausedForSafety:
+                ToneDot(tone: .paused)
+                Text("Paused for safety")
+            case .allInSync:
+                ToneDot(tone: .healthy)
+                Text("Everything in sync")
             }
             Spacer()
         }
@@ -95,6 +160,26 @@ struct ContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.bar)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func badge(for destination: SidebarDestination) -> Int {
+        switch destination {
+        case .conflicts:
+            appModel.workspace?.openConflictCount ?? 0
+        case .syncSets:
+            appModel.workspace?.syncSets.filter {
+                let statusTone = AetherloomBridge.tone(for: $0)
+                return statusTone == .paused || statusTone == .attention
+            }.count ?? 0
+        default:
+            0
+        }
+    }
+
+    private func sidebarAccessibilityLabel(for destination: SidebarDestination) -> String {
+        let count = badge(for: destination)
+        return count == 0 ? destination.title : "\(destination.title), \(count)"
     }
 
     // MARK: Toolbar
@@ -103,27 +188,47 @@ struct ContentView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup {
             Button {
-                store.scan()
+                Task { await appModel.scanAll() }
             } label: {
-                if store.isScanning {
+                if appModel.isScanning {
                     ProgressView()
                         .controlSize(.small)
                 } else {
                     Label("Scan Now", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
-            .help("Scan all connected clouds for changes")
-            .disabled(store.isScanning)
+            .help("Scan all unpaused sync sets for changes without applying them")
+            .disabled(appModel.isScanning)
+            .accessibilityLabel(appModel.isScanning ? "Scanning" : "Scan Now")
 
-            Button {
-                store.showingPreviewChanges = true
-            } label: {
-                Label("Preview Changes", systemImage: "doc.text.magnifyingglass")
+            if appModel.pendingPreparations.count > 1 {
+                Menu {
+                    ForEach(appModel.pendingPreparations, id: \.runID) { preparation in
+                        Button(preparation.syncSetName) {
+                            appModel.showCachedPreview(preparation)
+                        }
+                    }
+                } label: {
+                    Label("Preview Changes", systemImage: "doc.text.magnifyingglass")
+                }
+                .help("Choose a sync set to preview")
+            } else {
+                Button {
+                    if let preparation = appModel.pendingPreparations.first {
+                        appModel.showCachedPreview(preparation)
+                    }
+                } label: {
+                    Label("Preview Changes", systemImage: "doc.text.magnifyingglass")
+                }
+                .help(appModel.pendingPreparations.isEmpty
+                      ? "Scan first to prepare changes for preview"
+                      : "Review every planned change before it happens")
+                .disabled(appModel.pendingPreparations.isEmpty)
             }
-            .help("Review every planned change before it happens")
 
             Button {
-                store.showingNewSyncSet = true
+                guard appModel.activeSheet == nil else { return }
+                appModel.activeSheet = .newSyncSet
             } label: {
                 Label("New Sync Set", systemImage: "plus")
             }
@@ -132,11 +237,11 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Detail
+    // MARK: Detail and routing
 
     @ViewBuilder
     private var detailView: some View {
-        switch store.selectedDestination ?? .overview {
+        switch appModel.selectedDestination {
         case .overview:
             OverviewView()
         case .syncSets:
@@ -146,14 +251,102 @@ struct ContentView: View {
         case .conflicts:
             ConflictsView()
         case .settings:
-            SettingsView()
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func sheetContent(_ sheet: AppSheet) -> some View {
+        switch sheet {
+        case let .previewChanges(preparation):
+            PreviewChangesSheet(preparation: preparation)
+        case .newSyncSet:
+            NewSyncSetSheet()
+        case let .syncSetDetail(id):
+            SyncSetDetailView(syncSetID: id)
+        case let .connectProvider(kind):
+            ConnectProviderSheet(kind: kind)
+        }
+    }
+
+    private func restoreNavigation() {
+        if selectedDestination == .settings {
+            selectedDestination = .overview
+            appModel.selectedDestination = .overview
+            openSettings()
+        } else {
+            appModel.selectedDestination = selectedDestination
         }
     }
 }
 
-#Preview {
+private struct BrandedLoadingView: View {
+    var body: some View {
+        ZStack {
+            WeaveMesh()
+                .ignoresSafeArea()
+            VStack(spacing: 18) {
+                AppLogoMark(size: 72)
+                Text("Preparing your weave…")
+                    .font(.title2.weight(.semibold))
+                    .fontDesign(.rounded)
+                    .foregroundStyle(.white)
+                ProgressView()
+                    .tint(.white)
+                    .controlSize(.small)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Preparing your weave")
+    }
+}
+
+private struct BootstrapFailedView: View {
+    var message: String
+
+    var body: some View {
+        ZStack {
+            ContentBackdrop()
+            VStack(spacing: 12) {
+                AppLogoMark(size: 56)
+                Text("Aetherloom could not prepare the workspace")
+                    .font(.title2.weight(.semibold))
+                    .fontDesign(.rounded)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 480)
+            }
+            .padding(28)
+            .card(hoverLift: false)
+        }
+    }
+}
+
+#Preview("Loading shell") {
+    let session = PreviewEngineSession(snapshot: .previewReady)
+    let model = AppModel(
+        session: session,
+        bootstrapImmediately: false,
+        initialWorkspace: .previewReady,
+        initialPhase: .loading
+    )
     ContentView()
-        .environment(DemoStore())
+        .environment(model)
+        .tint(Theme.accent)
+}
+
+#Preview("Ready shell") {
+    let session = PreviewEngineSession(snapshot: .previewReady)
+    let model = AppModel(
+        session: session,
+        bootstrapImmediately: false,
+        initialWorkspace: .previewReady,
+        initialPhase: .ready
+    )
+    ContentView()
+        .environment(model)
         .tint(Theme.accent)
 }
 

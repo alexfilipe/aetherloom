@@ -40,7 +40,8 @@ The single source of truth for what the app **actually does** versus what it **p
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Provider availability states in UI (unreachable, unmounted, etc.) | ✅ | real `LocationAvailability` taxonomy |
-| Account labels ("alex@…") | 🎭 | scripted strings on `LocationState` |
+| Account labels ("alex@…") | 🎭 | scripted strings on `LocationState`, visibly prefixed “Demo account” |
+| Provider identity glyphs | 🎭 | SF Symbol preview marks; help and accessibility copy name the future official artwork |
 | Connect / disconnect / OAuth | 🎭 | connect sheet is a scripted preview that cannot "succeed" |
 | NAS mount/wake | 🎭 control → ✅ state | button is demo-scripted; resulting availability change and engine reaction are real |
 | Dropbox | 🎭 | listed as planned |
@@ -50,7 +51,9 @@ The single source of truth for what the app **actually does** versus what it **p
 | Capability | Status |
 | --- | --- |
 | Navigation, badges, workspace status footer, toasts, deep links | ✅ |
-| Keyboard shortcuts, VoiceOver labels, reduced motion | ✅ |
+| Keyboard shortcuts and approval focus order | ✅ |
+| VoiceOver labels and run/hold announcements | ✅ |
+| Reduced motion and mesh scene/occlusion pausing | ✅ |
 | Menu bar extra: status line | ✅ · its Pause All / Sync All items 🎭 |
 | Demo menu & Settings Demo pane | ✅ (demo-only surface, absent for real sessions) |
 | Finder reveal, log export, file comparison | 🎭 |

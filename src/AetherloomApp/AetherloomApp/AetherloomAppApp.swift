@@ -1,29 +1,43 @@
 import SwiftUI
 import AppKit
+import AetherloomBridge
 
 @main
 struct AetherloomAppApp: App {
-    @State private var store = DemoStore()
+    @State private var appModel = AppModel(session: DemoEngineSession.standard())
+    @AppStorage("aetherloom.menu-bar.visible") private var showMenuBarExtra = true
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environment(store)
+                .environment(appModel)
                 .tint(Theme.accent)
         }
         .defaultSize(width: 1180, height: 760)
         .windowStyle(.hiddenTitleBar)
         .commands {
-            CommandGroup(replacing: .appInfo) {
-                Button("About Aetherloom") {
-                    AboutWindowController.shared.show()
-                }
-            }
+            AetherloomCommands(appModel: appModel)
         }
+
+        Settings {
+            SettingsView()
+                .environment(appModel)
+                .tint(Theme.accent)
+        }
+
+        MenuBarExtra(
+            "Aetherloom",
+            image: "LogoMarkFlat",
+            isInserted: $showMenuBarExtra
+        ) {
+            MenuBarPlaceholderView()
+                .environment(appModel)
+        }
+        .menuBarExtraStyle(.menu)
     }
 }
 
-private final class AboutWindowController: NSWindowController {
+final class AboutWindowController: NSWindowController {
     static let shared = AboutWindowController()
 
     private init() {
@@ -122,6 +136,7 @@ private struct AboutLink: View {
     var body: some View {
         Text(title)
             .foregroundStyle(.link)
+            .frame(minHeight: 24)
             .contentShape(Rectangle())
             .onTapGesture {
                 NSWorkspace.shared.open(destination)
