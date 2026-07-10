@@ -3,7 +3,7 @@ import AetherloomCore
 import SwiftUI
 
 struct NewSyncSetSheet: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.dismiss) private var dismiss
 
     @State private var step: WizardStep
@@ -380,7 +380,7 @@ struct SyncModeChoice: Identifiable {
 private func wizardPreview(_ step: WizardStep) -> some View {
     let fixture = OverviewPreviewFixture.populated
     return NewSyncSetSheet(initialStep: step)
-        .environment(
+        .environmentObject(
             AppModel(
                 session: PreviewEngineSession(snapshot: fixture.workspace),
                 bootstrapImmediately: false,

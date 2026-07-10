@@ -10,7 +10,7 @@ private enum ConflictTab: String, CaseIterable, Identifiable {
 }
 
 struct ConflictsView: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("conflicts.dismissedAdviceIDs") private var dismissedAdviceStorage = ""
 
@@ -417,7 +417,7 @@ private struct ConflictsPreviewHost: View {
 
     var body: some View {
         ConflictsView()
-            .environment(model)
+            .environmentObject(model)
             .tint(Theme.accent)
             .frame(width: 960, height: 820)
             .onAppear {

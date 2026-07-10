@@ -3,7 +3,7 @@ import AetherloomCore
 import SwiftUI
 
 struct SettingsView: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
 
     var body: some View {
         TabView {
@@ -25,8 +25,6 @@ struct SettingsView: View {
 }
 
 private struct GeneralSettingsPane: View {
-    @AppStorage("aetherloom.menu-bar.visible") private var showInMenuBar = true
-
     var body: some View {
         SettingsPaneContainer(title: "General", subtitle: "Choose how Aetherloom appears on this Mac.") {
             Form {
@@ -48,9 +46,21 @@ private struct GeneralSettingsPane: View {
                         }
                     }
 
-                    Toggle(isOn: $showInMenuBar) {
-                        Text("Show in menu bar")
-                        Text("Show Aetherloom’s current workspace status in the menu bar.")
+                    // 🎭 placeholder: menu bar status — see architecture/ui/11-functioning-vs-placeholder.md
+                    LabeledContent {
+                        HStack {
+                            PlaceholderChip(text: "Arrives with background sync")
+                            Toggle("Show in menu bar", isOn: .constant(false))
+                                .labelsHidden()
+                                .disabled(true)
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Show in menu bar")
+                            Text("Shows Aetherloom’s current workspace status in the menu bar.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -68,7 +78,7 @@ private struct GeneralSettingsPane: View {
 }
 
 private struct SafetySettingsPane: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     @State private var thresholds = SafetyThresholds()
 
     var body: some View {
@@ -166,7 +176,7 @@ private struct SafetySettingsPane: View {
 }
 
 private struct SuggestionsSettingsPane: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     @AppStorage(AppModel.suggestionsPreferenceKey) private var storedSuggestionsEnabled = true
 
     var body: some View {
@@ -227,7 +237,7 @@ private struct SuggestionsSettingsPane: View {
 }
 
 private struct ProvidersSettingsPane: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     @State private var connectProvider: ProviderKind?
 
     var body: some View {
@@ -361,7 +371,7 @@ private struct ProvidersSettingsPane: View {
 }
 
 private struct DemoSettingsPane: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
 
     var body: some View {
         SettingsPaneContainer(title: "Demo", subtitle: "Exercise the real safety engine over fake providers.") {
@@ -470,35 +480,35 @@ private func settingsPreviewModel(demo: Bool = false) -> AppModel {
 
 #Preview("Settings · General") {
     GeneralSettingsPane()
-        .environment(settingsPreviewModel())
+        .environmentObject(settingsPreviewModel())
         .tint(Theme.accent)
         .frame(width: 720, height: 500)
 }
 
 #Preview("Settings · Safety") {
     SafetySettingsPane()
-        .environment(settingsPreviewModel())
+        .environmentObject(settingsPreviewModel())
         .tint(Theme.accent)
         .frame(width: 720, height: 500)
 }
 
 #Preview("Settings · Suggestions") {
     SuggestionsSettingsPane()
-        .environment(settingsPreviewModel())
+        .environmentObject(settingsPreviewModel())
         .tint(Theme.accent)
         .frame(width: 720, height: 500)
 }
 
 #Preview("Settings · Providers") {
     ProvidersSettingsPane()
-        .environment(settingsPreviewModel())
+        .environmentObject(settingsPreviewModel())
         .tint(Theme.accent)
         .frame(width: 720, height: 500)
 }
 
 #Preview("Settings · Demo") {
     DemoSettingsPane()
-        .environment(settingsPreviewModel(demo: true))
+        .environmentObject(settingsPreviewModel(demo: true))
         .tint(Theme.accent)
         .frame(width: 720, height: 500)
 }

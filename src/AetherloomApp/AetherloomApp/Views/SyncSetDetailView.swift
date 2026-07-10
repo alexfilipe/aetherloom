@@ -3,7 +3,7 @@ import AetherloomCore
 import SwiftUI
 
 struct SyncSetDetailView: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.dismiss) private var dismiss
 
     var syncSetID: UUID
@@ -458,7 +458,7 @@ private struct ExclusionStyleChoice: Identifiable {
 #Preview("Sync set detail") {
     let fixture = OverviewPreviewFixture.populated
     SyncSetDetailView(syncSetID: DemoWorld.documentsID)
-        .environment(
+        .environmentObject(
             AppModel(
                 session: PreviewEngineSession(snapshot: fixture.workspace),
                 bootstrapImmediately: false,

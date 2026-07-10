@@ -3,7 +3,7 @@ import AetherloomCore
 import SwiftUI
 
 struct PreviewChangesSheet: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
 
@@ -663,7 +663,7 @@ private enum PreviewSheetFixture {
             initialPhase: .ready
         )
         return PreviewChangesSheet(preparation: preparation, initialState: state)
-            .environment(model)
+            .environmentObject(model)
             .tint(Theme.accent)
     }
 

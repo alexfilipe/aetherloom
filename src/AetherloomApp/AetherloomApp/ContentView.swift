@@ -4,14 +4,12 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
-    @Environment(AppModel.self) private var appModel
+    @ObservedObject var appModel: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openSettings) private var openSettings
     @SceneStorage("selectedDestination") private var selectedDestination = SidebarDestination.overview
 
     var body: some View {
-        @Bindable var appModel = appModel
-
         Group {
             switch appModel.bootstrapPhase {
             case .loading:
@@ -42,6 +40,7 @@ struct ContentView: View {
         }
         .onAppear {
             restoreNavigation()
+            appModel.startBootstrapIfNeeded()
         }
         .onChange(of: appModel.selectedDestination) { _, destination in
             guard destination != .settings else {
@@ -85,9 +84,7 @@ struct ContentView: View {
     // MARK: Sidebar
 
     private var sidebar: some View {
-        @Bindable var appModel = appModel
-
-        return List(selection: $appModel.selectedDestination) {
+        List(selection: $appModel.selectedDestination) {
             Section {
                 ForEach(SidebarDestination.allCases.filter { $0 != .settings }) { destination in
                     Label(destination.title, systemImage: destination.systemImage)
@@ -332,8 +329,8 @@ private struct BootstrapFailedView: View {
         initialWorkspace: .previewReady,
         initialPhase: .loading
     )
-    ContentView()
-        .environment(model)
+    ContentView(appModel: model)
+        .environmentObject(model)
         .tint(Theme.accent)
 }
 
@@ -345,8 +342,8 @@ private struct BootstrapFailedView: View {
         initialWorkspace: .previewReady,
         initialPhase: .ready
     )
-    ContentView()
-        .environment(model)
+    ContentView(appModel: model)
+        .environmentObject(model)
         .tint(Theme.accent)
 }
 

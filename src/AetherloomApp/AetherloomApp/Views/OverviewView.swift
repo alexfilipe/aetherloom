@@ -3,7 +3,7 @@ import AetherloomCore
 import SwiftUI
 
 struct OverviewView: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
 
     private let gridColumns = [
         GridItem(.adaptive(minimum: 250), spacing: 14)
@@ -92,7 +92,7 @@ struct OverviewView: View {
 // MARK: - Hero
 
 private struct OverviewHero: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var display: OverviewDisplay
 
@@ -209,7 +209,7 @@ private struct OverviewHero: View {
 // MARK: - Services
 
 private struct OverviewServiceTile: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     var location: OverviewLocationDisplay
 
     var body: some View {
@@ -303,7 +303,7 @@ private struct OverviewServiceTile: View {
 // MARK: - Pending changes
 
 private struct PendingChangesCard: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     var display: OverviewDisplay
 
     var body: some View {
@@ -370,7 +370,7 @@ private struct PendingChangesCard: View {
 // MARK: - Recent activity
 
 private struct RecentActivityCard: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     var rows: [ActivityRowDisplay]
 
     var body: some View {
@@ -450,7 +450,7 @@ private struct OverviewPreviewHost: View {
 
     var body: some View {
         OverviewView()
-            .environment(model)
+            .environmentObject(model)
             .tint(Theme.accent)
             .frame(width: 1100, height: 900)
     }

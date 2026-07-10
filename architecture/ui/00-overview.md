@@ -27,10 +27,10 @@ AetherloomBridge      NEW library target in the AetherloomCore package          
    │                  EngineSession protocol · DemoEngineSession (actor)
    │                  DemoWorld script · EngineEvent stream
    │                  display models + formatters (pure, tested)
-   │                  imports: AetherloomCore, Foundation, Observation — NO SwiftUI/AppKit
+   │                  imports: AetherloomCore, Foundation — NO SwiftUI/AppKit
    ▲
 AetherloomApp         SwiftUI only                                                 [02, 05–10]
-   ├─ AppModel        @MainActor @Observable: navigation, sheet routing,
+   ├─ AppModel        @MainActor ObservableObject: navigation, sheet routing,
    │                  cached bridge snapshots, event subscription
    ├─ Design/         Theme, components (design system)                            [01]
    └─ Views/          one file per screen; render display models; no engine calls
@@ -39,7 +39,7 @@ AetherloomApp         SwiftUI only                                              
 
 Rules that keep the layers honest:
 
-- Views read `AppModel` (and per-screen `@Observable` sub-models); they never hold an `EngineSession` directly and never `import AetherloomCore` for anything but value types being displayed.
+- Views read `AppModel` through SwiftUI ownership (`@StateObject` at the scene root, `environmentObject`/observed references below); they never hold an `EngineSession` directly and never `import AetherloomCore` for anything but value types being displayed.
 - `AppModel` is thin: navigation state, in-flight flags, cached snapshots from the session, and async intents that forward to the session. Anything computable from core values lives in `AetherloomBridge` display mappings, where `swift test` reaches it.
 - `AetherloomBridge` holds no UI types: colors, fonts, and SF Symbol names appear only as semantic tokens (e.g. `tone: .attention`, `symbol: .providerICloud`) that the app maps to real styling.
 
@@ -70,7 +70,7 @@ The `EngineEvent` stream (activity appended, run finished, availability changed)
 | --- | --- | --- |
 | UI ↔ engine seam | **`EngineSession` protocol** in a new `AetherloomBridge` target; demo implementation composes the real orchestrator over fakes | (a) Wiring views to `SyncOrchestrator` directly — bakes demo composition into views, untestable without the app; (b) keeping the hardcoded `DemoStore` — zero engine coverage, UI drifts from real value shapes (it already has: no refusal/hold distinction, no fingerprints, no acknowledged counts) |
 | Bridge placement | Library target inside the `src/AetherloomCore` package (like `AetherloomIntelligence`) | App-target-only code — `xcodebuild test` is the only harness, CI cost, and the temptation to reach into views; a separate package — dependency ceremony for no isolation gain |
-| State pattern | `@Observable` model tree (MV): one `AppModel` + small per-screen models | One god `DemoStore` (current) — becomes the "large view model that contains sync logic" `CLAUDE.md` bans; classic MVVM with per-view VMs + Combine — ceremony without benefit under Observation |
+| State pattern | One `@MainActor ObservableObject` `AppModel`, owned by the scene as `@StateObject`, plus small local view state; see [13](13-startup-bootstrap-lessons.md) for why startup ownership and isolation are explicit | One god `DemoStore` (current) — becomes the "large view model that contains sync logic" `CLAUDE.md` bans; rebuilding the app around per-screen view models — ceremony without moving engine logic into the testable bridge |
 | Demo data | **Scripted demo world executed through the real engine**: seed fakes → run a converging pass to build real `BaseRecord`s → apply scripted divergences | Hardcoded sample structs (current) — can silently contradict engine semantics; recorded JSON fixtures — rot the moment core types evolve |
 | Placeholder policy | Every screen and flow exists; unimplemented capabilities are visible, labeled, inert | Hiding unfinished areas — the app frame never gets exercised as a whole; silently faking success — violates "report outcomes faithfully" and trains users to distrust the real thing later |
 | Pause semantics | Pause is **bridge state** (session skips paused sets; persisted with demo workspace), since the core has no pause concept by design | Adding pause to `SyncSet` in core — a UI scheduling concern would leak into the pure engine |

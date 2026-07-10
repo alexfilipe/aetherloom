@@ -1,6 +1,6 @@
 # 03 — The Engine Session (`AetherloomBridge`)
 
-The seam between the app and the engine. `AetherloomBridge` is a **new library target** in the `src/AetherloomCore` package (alongside `AetherloomIntelligence`): depends on `AetherloomCore` + Foundation + Observation, never SwiftUI/AppKit, fully covered by `swift test`. 🆕
+The seam between the app and the engine. `AetherloomBridge` is a **new library target** in the `src/AetherloomCore` package (alongside `AetherloomIntelligence`): depends on `AetherloomCore` + Foundation, never SwiftUI/AppKit, fully covered by `swift test`. 🆕
 
 ```swift
 // Package.swift additions

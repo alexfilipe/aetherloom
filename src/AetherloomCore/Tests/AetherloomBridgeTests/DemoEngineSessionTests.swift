@@ -5,6 +5,17 @@ import Testing
 
 @Suite("Demo engine session")
 struct DemoEngineSessionTests {
+    @Test("standard app session completes bootstrap")
+    func standardAppSessionCompletesBootstrap() async throws {
+        let session = DemoEngineSession.standard()
+        let snapshot = try await session.bootstrap()
+        let activity = await session.activity(matching: ActivityQuery(limit: 100))
+
+        #expect(snapshot.syncSets.count == 4)
+        #expect(snapshot.locations.count == 5)
+        #expect(!activity.isEmpty)
+    }
+
     @Test("bootstrap produces the scripted safety world")
     func bootstrapProducesScriptedSafetyWorld() async throws {
         let session = makeSession()

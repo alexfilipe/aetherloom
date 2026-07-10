@@ -3,7 +3,7 @@ import AetherloomCore
 import SwiftUI
 
 struct SyncSetsView: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
 
     private var displayedStates: [SyncSetState] {
         guard let states = appModel.workspace?.syncSets else { return [] }
@@ -85,7 +85,7 @@ struct SyncSetsView: View {
 }
 
 private struct SyncSetCard: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
     var state: SyncSetState
     var locations: [LocationState]
     var isBusy: Bool
@@ -305,7 +305,7 @@ func scopeText(_ scope: SyncScope) -> String {
 #Preview("Standard four cards") {
     let fixture = OverviewPreviewFixture.populated
     SyncSetsView()
-        .environment(
+        .environmentObject(
             AppModel(
                 session: PreviewEngineSession(snapshot: fixture.workspace),
                 bootstrapImmediately: false,
@@ -321,7 +321,7 @@ func scopeText(_ scope: SyncScope) -> String {
 
 #Preview("Empty") {
     SyncSetsView()
-        .environment(
+        .environmentObject(
             AppModel(
                 session: PreviewEngineSession(snapshot: .previewReady),
                 bootstrapImmediately: false,

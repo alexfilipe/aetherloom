@@ -54,7 +54,7 @@ The single source of truth for what the app **actually does** versus what it **p
 | Keyboard shortcuts and approval focus order | ✅ |
 | VoiceOver labels and run/hold announcements | ✅ |
 | Reduced motion and mesh scene/occlusion pausing | ✅ |
-| Menu bar extra: status line | ✅ · its Pause All / Sync All items 🎭 |
+| Menu bar extra / status line | 🎭 deferred; Settings has a disabled placeholder until background sync reintroduces the scene safely |
 | Demo menu & Settings Demo pane | ✅ (demo-only surface, absent for real sessions) |
 | Finder reveal, log export, file comparison | 🎭 |
 | Notifications | 🎭 (not present at all — no placeholder chosen) |

@@ -4,13 +4,12 @@ import AetherloomBridge
 
 @main
 struct AetherloomAppApp: App {
-    @State private var appModel = AppModel(session: DemoEngineSession.standard())
-    @AppStorage("aetherloom.menu-bar.visible") private var showMenuBarExtra = true
+    @StateObject private var appModel = AppModel(session: DemoEngineSession.standard())
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environment(appModel)
+            ContentView(appModel: appModel)
+                .environmentObject(appModel)
                 .tint(Theme.accent)
         }
         .defaultSize(width: 1180, height: 760)
@@ -21,19 +20,9 @@ struct AetherloomAppApp: App {
 
         Settings {
             SettingsView()
-                .environment(appModel)
+                .environmentObject(appModel)
                 .tint(Theme.accent)
         }
-
-        MenuBarExtra(
-            "Aetherloom",
-            image: "LogoMarkFlat",
-            isInserted: $showMenuBarExtra
-        ) {
-            MenuBarPlaceholderView()
-                .environment(appModel)
-        }
-        .menuBarExtraStyle(.menu)
     }
 }
 

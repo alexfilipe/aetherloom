@@ -1,7 +1,7 @@
 import AetherloomBridge
 import AetherloomCore
+import Combine
 import Foundation
-import Observation
 import SwiftUI
 
 enum BootstrapPhase: Equatable {
@@ -60,6 +60,46 @@ enum AppSheet: Identifiable, Hashable {
     }
 }
 
+private struct AppBootstrapPayload: Sendable {
+    var thresholds: SafetyThresholds
+    var workspace: WorkspaceSnapshot
+    var activity: [ActivityEntry]
+    var openConflicts: [ConflictDecision]
+    var resolvedConflicts: [ConflictResolutionRecord]
+    var conflictAdvice: [ConflictAdvice]
+    var preparations: [UUID: SyncPreparation]
+
+    nonisolated static func load(
+        session: any EngineSession,
+        preferences: BridgePreferences,
+        suggestionsEnabled: Bool
+    ) async throws -> AppBootstrapPayload {
+        let thresholds = await preferences.defaultSafetyThresholds()
+        try await session.setSuggestionsEnabled(suggestionsEnabled)
+        let workspace = try await session.bootstrap()
+        let activity = await session.activity(matching: ActivityQuery(limit: 100))
+        let openConflicts = try await session.openConflicts(in: nil)
+        let resolvedConflicts = try await session.resolvedConflicts(in: nil)
+        let conflictAdvice = await session.advice(for: openConflicts.map(\.id))
+        var preparations: [UUID: SyncPreparation] = [:]
+        for state in workspace.syncSets {
+            if let preparation = await session.lastPreparation(for: state.id) {
+                preparations[state.id] = preparation
+            }
+        }
+
+        return AppBootstrapPayload(
+            thresholds: thresholds,
+            workspace: workspace,
+            activity: activity,
+            openConflicts: openConflicts,
+            resolvedConflicts: resolvedConflicts,
+            conflictAdvice: conflictAdvice,
+            preparations: preparations
+        )
+    }
+}
+
 enum DemoAction {
     case toggleOneDrive
     case toggleNAS
@@ -70,39 +110,39 @@ enum DemoAction {
 }
 
 @MainActor
-@Observable
-final class AppModel {
+final class AppModel: ObservableObject {
     static let suggestionsPreferenceKey = "aetherloom.suggestions.enabled"
 
-    var selectedDestination: SidebarDestination = .overview
-    var activeSheet: AppSheet?
-    var pendingToast: RunResultToast.Model?
-    var presentedError: String?
-    var bootstrapPhase: BootstrapPhase
-    var activityFilterRunID: UUID?
-    var syncSetsLocationFilter: LocationID?
-    private(set) var focusedConflictID: UUID?
+    @Published var selectedDestination: SidebarDestination = .overview
+    @Published var activeSheet: AppSheet?
+    @Published var pendingToast: RunResultToast.Model?
+    @Published var presentedError: String?
+    @Published var bootstrapPhase: BootstrapPhase
+    @Published var activityFilterRunID: UUID?
+    @Published var syncSetsLocationFilter: LocationID?
+    @Published private(set) var focusedConflictID: UUID?
 
-    private(set) var workspace: WorkspaceSnapshot?
-    private(set) var recentActivity: [ActivityEntry]
-    private(set) var activityEntries: [ActivityEntry]
-    private(set) var activityIsLoading = false
-    private(set) var activityCanLoadMore = false
-    private(set) var preparations: [UUID: SyncPreparation]
-    private(set) var busySyncSets: Set<UUID>
-    private(set) var openConflicts: [ConflictDecision]
-    private(set) var resolvedConflicts: [ConflictResolutionRecord]
-    private(set) var conflictAdviceByID: [UUID: ConflictAdvice]
-    private(set) var defaultSafetyThresholds: SafetyThresholds
-    private(set) var suggestionsEnabled: Bool
+    @Published private(set) var workspace: WorkspaceSnapshot?
+    @Published private(set) var recentActivity: [ActivityEntry]
+    @Published private(set) var activityEntries: [ActivityEntry]
+    @Published private(set) var activityIsLoading = false
+    @Published private(set) var activityCanLoadMore = false
+    @Published private(set) var preparations: [UUID: SyncPreparation]
+    @Published private(set) var busySyncSets: Set<UUID>
+    @Published private(set) var openConflicts: [ConflictDecision]
+    @Published private(set) var resolvedConflicts: [ConflictResolutionRecord]
+    @Published private(set) var conflictAdviceByID: [UUID: ConflictAdvice]
+    @Published private(set) var defaultSafetyThresholds: SafetyThresholds
+    @Published private(set) var suggestionsEnabled: Bool
 
     private let session: any EngineSession
     private let preferences: BridgePreferences
     private let demoControls: DemoScenarioControls?
-    @ObservationIgnored private var activeActivityQuery: ActivityQuery?
-    @ObservationIgnored private var activityRequestID = UUID()
-    @ObservationIgnored private var eventLoopTask: Task<Void, Never>?
-    @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
+    private let bootstrapsOnAppear: Bool
+    private var activeActivityQuery: ActivityQuery?
+    private var activityRequestID = UUID()
+    private var eventLoopTask: Task<Void, Never>?
+    private var bootstrapTask: Task<Void, Never>?
 
     init(
         session: any EngineSession,
@@ -123,6 +163,7 @@ final class AppModel {
         self.session = session
         self.preferences = preferences
         self.demoControls = (session as? DemoEngineSession)?.scenarioControls
+        self.bootstrapsOnAppear = bootstrapImmediately
         self.workspace = initialWorkspace
         self.recentActivity = initialActivity
         self.activityEntries = initialActivity
@@ -137,12 +178,6 @@ final class AppModel {
         self.suggestionsEnabled = initialSuggestionsEnabled
         self.bootstrapPhase = initialPhase
 
-        startEventLoop()
-        if bootstrapImmediately {
-            bootstrapTask = Task { [weak self] in
-                await self?.bootstrap()
-            }
-        }
     }
 
     var isDemoSession: Bool { demoControls != nil }
@@ -161,6 +196,28 @@ final class AppModel {
 
     var nasIsMounted: Bool {
         workspace?.locations.first(where: { $0.location.kind == .nasFolder })?.availability == .available
+    }
+
+    func startBootstrapIfNeeded() {
+        guard bootstrapsOnAppear, bootstrapPhase == .loading, bootstrapTask == nil else { return }
+        let session = session
+        let preferences = preferences
+        let suggestionsEnabled = suggestionsEnabled
+        bootstrapTask = Task.detached(priority: .userInitiated) { [weak self, session, preferences, suggestionsEnabled] in
+            do {
+                let payload = try await AppBootstrapPayload.load(
+                    session: session,
+                    preferences: preferences,
+                    suggestionsEnabled: suggestionsEnabled
+                )
+                guard !Task.isCancelled else { return }
+                await self?.completeBootstrap(with: payload)
+            } catch is CancellationError {
+                return
+            } catch {
+                await self?.failBootstrap(with: error)
+            }
+        }
     }
 
     func refreshWorkspace() async {
@@ -435,32 +492,31 @@ final class AppModel {
         }
     }
 
-    private func bootstrap() async {
-        do {
-            defaultSafetyThresholds = await preferences.defaultSafetyThresholds()
-            try await session.setSuggestionsEnabled(suggestionsEnabled)
-            let snapshot = try await session.bootstrap()
-            guard !Task.isCancelled else { return }
-            workspace = snapshot
-            recentActivity = await session.activity(matching: ActivityQuery(limit: 100))
-            activityEntries = recentActivity
-            await refreshConflicts()
-            for state in snapshot.syncSets {
-                if let preparation = await session.lastPreparation(for: state.id) {
-                    preparations[state.id] = preparation
-                }
-            }
-            bootstrapPhase = .ready
-        } catch is CancellationError {
-            return
-        } catch {
-            bootstrapPhase = .failed(error.localizedDescription)
-        }
+    private func completeBootstrap(with payload: AppBootstrapPayload) {
+        defaultSafetyThresholds = payload.thresholds
+        workspace = payload.workspace
+        recentActivity = payload.activity
+        activityEntries = payload.activity
+        openConflicts = payload.openConflicts
+        resolvedConflicts = payload.resolvedConflicts
+        conflictAdviceByID = Dictionary(
+            uniqueKeysWithValues: payload.conflictAdvice.map { ($0.conflictID, $0) }
+        )
+        preparations = payload.preparations
+        startEventLoop()
+        bootstrapPhase = .ready
+        bootstrapTask = nil
+    }
+
+    private func failBootstrap(with error: Error) {
+        bootstrapPhase = .failed(error.localizedDescription)
+        bootstrapTask = nil
     }
 
     private func startEventLoop() {
+        guard eventLoopTask == nil else { return }
         let events = session.events
-        eventLoopTask = Task { [weak self] in
+        eventLoopTask = Task.detached(priority: .utility) { [weak self, events] in
             for await event in events {
                 guard !Task.isCancelled else { return }
                 await self?.receive(event)

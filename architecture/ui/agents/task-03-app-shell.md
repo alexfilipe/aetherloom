@@ -11,7 +11,7 @@ Views never hold an `EngineSession`; all engine access via `AppModel` intents; n
 
 ## Deliverables
 1. `AppModel` per `ui/02 §2`: navigation, `activeSheet` routing, cached snapshots, `busySyncSets` re-entry guard, event-loop task, the listed intents. Screens not yet reshaped (tasks 04–09) keep rendering `DemoStore` data — inject both during transition; `AppModel` owns `DemoStore` retirement progress notes in code comments.
-2. Scenes per `ui/02 §1`: session constructed once (`DemoEngineSession.standard()` — add that factory to the bridge if Task 01 didn't); branded loading state on `bootstrapPhase`; `Settings` scene stub (pane shells only; content is Task 09); `MenuBarExtra` placeholder per `ui/02 §6`.
+2. Scenes per `ui/02 §1`: session constructed once (`DemoEngineSession.standard()` — add that factory to the bridge if Task 01 didn't); branded loading state on `bootstrapPhase`; `Settings` scene stub (pane shells only; content is Task 09). Do **not** add `MenuBarExtra` in this task; it is deferred per `ui/02 §6` and `ui/13`.
 3. Sidebar per `ui/02 §3`: live badges from `WorkspaceSnapshot`, status footer from `WorkspaceStatus` (extract `ToneDot`).
 4. Toolbar per `ui/02 §4`: Scan Now (prepare-all, no execution), Preview Changes (menu when multiple pending), New Sync Set. Wire to intents; keep icons/prominence.
 5. `AetherloomCommands` per `ui/02 §5` incl. the Demo menu calling `DemoScenarioControls` (menu absent for non-demo sessions).

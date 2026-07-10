@@ -9,6 +9,7 @@ The core suite ([../core/10-testing-strategy.md](../core/10-testing-strategy.md)
 | `AetherloomBridgeTests` (session, demo world, display models) | Swift Testing, `swift test --package-path src/AetherloomCore` | yes — same command as core |
 | SwiftUI previews (every screen × key states) | Xcode canvas | no (compile-checked by the app build) |
 | App build | `xcodebuild -project src/AetherloomApp/AetherloomApp.xcodeproj -scheme AetherloomApp -destination 'platform=macOS' build` | yes |
+| Startup smoke pass | launch the built macOS app and verify it leaves "Preparing your weave…" for Overview | when shell/scenes/bootstrap change |
 | Manual demo-script pass (§4) | human / agent with the running app | release gates only |
 
 No XCUITest suite now: the demo world makes flows testable at the bridge level, which is faster and less brittle; revisit when real providers arrive.
@@ -57,6 +58,8 @@ A ten-minute pass exercising what automation can't judge — feel, wording, appe
 8. Settings: advice toggle off/on; placeholder sweep — every 🎭 control labeled and inert.
 9. Keyboard-only approval pass; VoiceOver spot-check on Overview and the approval sheet.
 10. Reduce Motion on: mesh frozen, no hover lift.
+
+For any change to `AetherloomAppApp`, `ContentView`, `AppModel`, scene declarations, or menu-bar behavior, run the startup smoke pass before the full manual script. The bridge tests can prove `DemoEngineSession` bootstraps; only the built app can prove SwiftUI scene startup reaches `.ready`. See [13-startup-bootstrap-lessons.md](13-startup-bootstrap-lessons.md).
 
 ## 5. Policy
 

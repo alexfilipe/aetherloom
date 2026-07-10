@@ -4,7 +4,7 @@ import AppKit
 import SwiftUI
 
 struct ActivityView: View {
-    @Environment(AppModel.self) private var appModel
+    @EnvironmentObject private var appModel: AppModel
 
     private let loadsOnAppear: Bool
     @State private var selectedCategory: ActivityCategory?
@@ -641,7 +641,7 @@ private struct ActivityPreviewFixture {
 #Preview("Populated grouped feed") {
     let fixture = ActivityPreviewFixture.populated
     ActivityView(loadsOnAppear: false)
-        .environment(
+        .environmentObject(
             AppModel(
                 session: PreviewEngineSession(snapshot: fixture.workspace),
                 bootstrapImmediately: false,
@@ -657,7 +657,7 @@ private struct ActivityPreviewFixture {
 #Preview("Filtered empty") {
     let fixture = ActivityPreviewFixture.populated
     ActivityView(loadsOnAppear: false, initialCategory: .error)
-        .environment(
+        .environmentObject(
             AppModel(
                 session: PreviewEngineSession(snapshot: fixture.workspace),
                 bootstrapImmediately: false,
@@ -672,7 +672,7 @@ private struct ActivityPreviewFixture {
 
 #Preview("Fresh empty") {
     ActivityView(loadsOnAppear: false)
-        .environment(
+        .environmentObject(
             AppModel(
                 session: PreviewEngineSession(snapshot: .previewReady),
                 bootstrapImmediately: false,
