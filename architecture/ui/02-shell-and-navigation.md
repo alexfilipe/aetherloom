@@ -6,29 +6,35 @@ The shell is everything outside a screen's content: scenes, window chrome, sideb
 
 ```swift
 @main struct AetherloomApp: App {
-    @State private var appModel = AppModel(session: DemoEngineSession.standard())
+    @StateObject private var appModel = AppModel(session: DemoEngineSession.standard())
 
     var body: some Scene {
-        WindowGroup { ContentView().environment(appModel).tint(Theme.accent) }
+        WindowGroup {
+            ContentView(appModel: appModel)
+                .environmentObject(appModel)
+                .tint(Theme.accent)
+        }
             .defaultSize(width: 1180, height: 760)
             .windowStyle(.hiddenTitleBar)
             .commands { AetherloomCommands(appModel: appModel) }
 
-        Settings { SettingsScene().environment(appModel) }   // standard ⌘, window [10]
-
-        MenuBarExtra("Aetherloom", image: "LogoMarkFlat") { MenuBarPlaceholderView() }
-            .menuBarExtraStyle(.menu)                        // 🎭 [see §6]
+        Settings {
+            SettingsView()
+                .environmentObject(appModel)
+                .tint(Theme.accent)
+        }   // standard ⌘, window [10]
     }
 }
 ```
 
-- The session is constructed once at app start. `DemoEngineSession.standard()` boots the demo world asynchronously; `AppModel` exposes `bootstrapPhase: .loading/.ready/.failed(String)` and `ContentView` shows a branded loading state (mesh + logo + "Preparing your weave…") until `.ready`. ✅
+- The session is constructed once at app start. `DemoEngineSession.standard()` boots the demo world asynchronously; `AppModel` exposes `bootstrapPhase: .loading/.ready/.failed(String)` and `ContentView` shows a branded loading state (mesh + logo + "Preparing your weave…") until `.ready`. Bootstrap starts from `ContentView.onAppear`, builds a detached `AppBootstrapPayload`, and applies the payload back on the main actor. ✅ See [13-startup-bootstrap-lessons.md](13-startup-bootstrap-lessons.md) before changing this startup path.
 - The About panel (`AboutWindowController`) stays as-is. ✅
 - Settings moves from a sidebar destination into the standard macOS `Settings` scene; the sidebar keeps a Settings item only as a shortcut that opens it (see [10-screen-settings-and-providers.md](10-screen-settings-and-providers.md)).
+- `MenuBarExtra` is intentionally **not** part of the first UI PR. The Settings row is a disabled placeholder until background sync/menu-bar behavior is implemented. 🎭
 
 ## 2. AppModel
 
-`@MainActor @Observable final class AppModel` — the only object views talk to. Thin by contract ([00-overview.md](00-overview.md#layering)).
+`@MainActor final class AppModel: ObservableObject` — the only object views talk to. Thin by contract ([00-overview.md](00-overview.md#layering)).
 
 ```swift
 // Navigation & routing
@@ -52,7 +58,7 @@ func setPaused(_ paused: Bool, syncSetID: UUID) async
 func resolveConflict(_ id: UUID, as resolution: Resolution) async
 ```
 
-Event loop: on init, `AppModel` spawns a task iterating `session.events`; each `EngineEvent` triggers the narrow refresh it names (activity append → prepend to `recentActivity`; run finished → refresh that sync set + toast; availability changed → refresh locations). No timers, no polling. ✅
+Event loop: after the initial bootstrap payload is applied, `AppModel` spawns a task iterating `session.events`; each `EngineEvent` triggers the narrow refresh it names (activity append → prepend to `recentActivity`; run finished → refresh that sync set + toast; availability changed → refresh locations). No timers, no polling. ✅
 
 Concurrency rules: every intent guards re-entry per sync set via `busySyncSets` (the orchestrator would throw `runAlreadyInProgress` anyway — the UI simply disables the buttons first); all session calls are `await`ed off the main actor by the session itself (it is an actor), so intents stay trivially small.
 
@@ -89,9 +95,11 @@ The window title stays hidden (`WindowTitleVisibilityConfigurator` kept — AppK
 - **Demo** (menu title "Demo" — present only when the session is a demo session): scripted scenario toggles, each calling `DemoScenarioControls` ([03-engine-session.md](03-engine-session.md#scenario-controls)): Make OneDrive Reachable/Unreachable · Mount/Unmount NAS "Tank" · Edit a File in Two Places · Delete Many Files in "Projects" · Simulate Interrupted Run · Reset Demo World. ✅ (this menu is itself a demo-only surface, clearly not shipping UI)
 - **Help**: Aetherloom Help → opens aetherloom.app. ✅
 
-## 6. Menu bar extra 🎭
+## 6. Menu bar extra 🎭 — deferred
 
-A `MenuBarExtra` with the flat logo showing: current workspace status line (mirrors sidebar footer, live ✅), then disabled placeholder items "Pause All Syncing", "Sync All Now", separator, "Open Aetherloom" (functioning). The dropdown carries a footnote "Background syncing arrives in a later phase." Rationale: the frame demonstrates the eventual ambient presence without pretending background sync exists.
+The first UI PR does **not** declare a `MenuBarExtra` scene. During startup debugging, even a static/gated menu extra kept the built app on the loading screen; see [13-startup-bootstrap-lessons.md](13-startup-bootstrap-lessons.md).
+
+Current shape: Settings shows "Show in menu bar" as a disabled, labeled placeholder ("Arrives with background sync"). Future background-sync work may reintroduce `MenuBarExtra`, but it must be added in isolation with a launch smoke test proving the app reaches Overview with the scene present.
 
 ## 7. Navigation rules
 

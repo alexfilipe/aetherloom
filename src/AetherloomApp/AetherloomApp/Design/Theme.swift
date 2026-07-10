@@ -1,3 +1,5 @@
+import AetherloomBridge
+import AppKit
 import SwiftUI
 
 // MARK: - Palette
@@ -34,9 +36,19 @@ enum Theme {
 
 /// A slowly drifting mesh gradient — the "aether" the app is named for.
 struct WeaveMesh: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isWindowOccluded = false
+    @State private var frozenDate = Date()
+
+    private var isPaused: Bool {
+        reduceMotion || scenePhase != .active || isWindowOccluded
+    }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isPaused)) { context in
+            let date = isPaused ? frozenDate : context.date
+            let t = date.timeIntervalSinceReferenceDate
             MeshGradient(
                 width: 3,
                 height: 3,
@@ -50,6 +62,67 @@ struct WeaveMesh: View {
                 colors: Theme.meshColors
             )
         }
+        .background {
+            WindowOcclusionObserver { isVisible in
+                isWindowOccluded = !isVisible
+            }
+        }
+        .onChange(of: isPaused) { wasPaused, paused in
+            if !wasPaused && paused {
+                frozenDate = Date()
+            }
+        }
+    }
+}
+
+private struct WindowOcclusionObserver: NSViewRepresentable {
+    var visibilityChanged: (Bool) -> Void
+
+    func makeNSView(context: Context) -> WindowOcclusionView {
+        let view = WindowOcclusionView()
+        view.visibilityChanged = visibilityChanged
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowOcclusionView, context: Context) {
+        nsView.visibilityChanged = visibilityChanged
+        nsView.reportVisibility()
+    }
+}
+
+private final class WindowOcclusionView: NSView {
+    var visibilityChanged: ((Bool) -> Void)?
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if let window {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSWindow.didChangeOcclusionStateNotification,
+                object: window
+            )
+        }
+        super.viewWillMove(toWindow: newWindow)
+        if let newWindow {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowOcclusionChanged),
+                name: NSWindow.didChangeOcclusionStateNotification,
+                object: newWindow
+            )
+        }
+    }
+
+    func reportVisibility() {
+        visibilityChanged?(window?.occlusionState.contains(.visible) == true)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        reportVisibility()
+    }
+
+    @objc private func windowOcclusionChanged() {
+        reportVisibility()
     }
 }
 
@@ -79,13 +152,11 @@ struct ContentBackdrop: View {
 
 // MARK: - Tone
 
-/// Calm, consistent status coloring across the whole app.
-enum Tone {
-    case healthy
-    case attention
-    case paused
-    case neutral
+/// Calm, consistent status coloring across the whole app. Derivation remains
+/// in AetherloomBridge; only concrete SwiftUI styling lives here.
+typealias Tone = StatusTone
 
+extension StatusTone {
     var color: Color {
         switch self {
         case .healthy: .green
@@ -108,6 +179,7 @@ enum Tone {
 // MARK: - Card
 
 struct CardBackground: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var padding: CGFloat = 18
     var hoverLift = true
 
@@ -135,22 +207,39 @@ struct CardBackground: ViewModifier {
                     )
             )
             .shadow(
-                color: .black.opacity(isHovering ? 0.10 : 0.05),
-                radius: isHovering ? 12 : 4,
-                y: isHovering ? 5 : 2
+                color: .black.opacity(isHovering && !reduceMotion ? 0.10 : 0.05),
+                radius: isHovering && !reduceMotion ? 12 : 4,
+                y: isHovering && !reduceMotion ? 5 : 2
             )
-            .scaleEffect(isHovering ? 1.008 : 1)
+            .scaleEffect(isHovering && !reduceMotion ? 1.008 : 1)
             .onHover { hovering in
-                guard hoverLift else { return }
+                guard hoverLift, !reduceMotion else { return }
                 isHovering = hovering
             }
-            .animation(.smooth(duration: 0.25), value: isHovering)
+            .animation(reduceMotion ? .easeOut(duration: 0.12) : .smooth(duration: 0.25), value: isHovering)
+            .onChange(of: reduceMotion) { _, shouldReduce in
+                if shouldReduce {
+                    isHovering = false
+                }
+            }
     }
 }
 
 extension View {
     func card(padding: CGFloat = 18, hoverLift: Bool = true) -> some View {
         modifier(CardBackground(padding: padding, hoverLift: hoverLift))
+    }
+
+    func liveNumericTransition() -> some View {
+        modifier(LiveNumericTransition())
+    }
+}
+
+private struct LiveNumericTransition: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.contentTransition(reduceMotion ? .opacity : .numericText())
     }
 }
 
@@ -182,6 +271,8 @@ struct StatusBadge: View {
         )
         .lineLimit(1)
         .fixedSize()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(text)
     }
 
     private var foreground: Color {
@@ -213,18 +304,66 @@ struct AppLogoMark: View {
 
 // MARK: - Cloud service marks
 
+// 🎭 placeholder: provider brand glyphs — see architecture/ui/11-functioning-vs-placeholder.md.
 struct ServiceMark: View {
-    var service: CloudService
+    private var symbolName: String
+    private var displayName: String
+    private var gradient: LinearGradient
+    private var baseColor: Color
     var size: CGFloat = 32
 
+    init(provider: ProviderPresentation, size: CGFloat = 32) {
+        self.symbolName = provider.symbolName
+        self.displayName = provider.displayName
+        self.gradient = provider.paletteToken.gradient
+        self.baseColor = provider.paletteToken.baseColor
+        self.size = size
+    }
+
     var body: some View {
-        Image(systemName: service.systemImage)
+        Image(systemName: symbolName)
             .font(.system(size: size * 0.46, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: size, height: size)
-            .background(service.gradient, in: RoundedRectangle(cornerRadius: size * 0.28))
-            .shadow(color: service.baseColor.opacity(0.4), radius: size * 0.12, y: size * 0.05)
-            .accessibilityLabel(service.displayName)
+            .background(gradient, in: RoundedRectangle(cornerRadius: size * 0.28))
+            .shadow(color: baseColor.opacity(0.4), radius: size * 0.12, y: size * 0.05)
+            .help("Placeholder mark — official \(displayName) artwork arrives with the real provider integrations")
+            .accessibilityLabel(displayName)
+            .accessibilityHint("Official provider artwork arrives with the real provider integrations")
+    }
+}
+
+private extension ProviderPalette {
+    var baseColor: Color {
+        switch self {
+        case .iCloud: .cyan
+        case .google: .green
+        case .oneDrive: .blue
+        case .dropbox: .indigo
+        case .local: Color(red: 0.48, green: 0.53, blue: 0.60)
+        case .nas: .purple
+        }
+    }
+
+    var gradient: LinearGradient {
+        switch self {
+        case .iCloud:
+            LinearGradient(colors: [.cyan, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .google:
+            LinearGradient(colors: [.green, .teal], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .oneDrive:
+            LinearGradient(colors: [.blue, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .dropbox:
+            LinearGradient(colors: [.indigo, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .local:
+            LinearGradient(
+                colors: [baseColor, Color(red: 0.28, green: 0.32, blue: 0.40)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .nas:
+            LinearGradient(colors: [.purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
     }
 }
 
@@ -286,6 +425,41 @@ struct EmptyStateView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 200)
         .card(hoverLift: false)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(message)")
+    }
+}
+
+// MARK: - Metrics
+
+struct MetricTile: View {
+    var value: String
+    var label: String
+    var onDark = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.title2.weight(.bold))
+                .monospacedDigit()
+                .liveNumericTransition()
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(onDark ? .white.opacity(0.72) : .secondary)
+        }
+        .foregroundStyle(onDark ? .white : .primary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            onDark ? Color.white.opacity(0.10) : Color.secondary.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(onDark ? Color.white.opacity(0.16) : Color.primary.opacity(0.06), lineWidth: 0.5)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label), \(value)")
     }
 }
 
@@ -294,8 +468,8 @@ struct EmptyStateView: View {
 struct SafetyBanner: View {
     var title: String
     var message: String
-    var actionTitle: String
-    var action: () -> Void
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
@@ -320,10 +494,12 @@ struct SafetyBanner: View {
 
             Spacer(minLength: 16)
 
-            Button(actionTitle, action: action)
-                .buttonStyle(.borderedProminent)
-                .tint(.orange)
-                .controlSize(.large)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .controlSize(.large)
+            }
         }
         .padding(18)
         .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
@@ -331,5 +507,68 @@ struct SafetyBanner: View {
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius)
                 .strokeBorder(.orange.opacity(0.3), lineWidth: 1)
         )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(title). \(message)")
+    }
+}
+
+// MARK: - Refusal banner
+
+struct InlineBanner: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var title: String
+    var message: String
+    var detail: String?
+
+    @State private var isShowingDetail = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "shield.lefthalf.filled")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(
+                    LinearGradient(colors: [.indigo, Theme.accent], startPoint: .top, endPoint: .bottom),
+                    in: RoundedRectangle(cornerRadius: 11)
+                )
+                .shadow(color: Theme.accent.opacity(0.25), radius: 4, y: 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if isShowingDetail, let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .transition(.opacity)
+                }
+            }
+
+            Spacer(minLength: 16)
+
+            if detail != nil {
+                Button(isShowingDetail ? "Hide Details" : "Details") {
+                    withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .smooth) {
+                        isShowingDetail.toggle()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(isShowingDetail ? "Hide refusal details" : "Show refusal details")
+            }
+        }
+        .padding(18)
+        .background(.indigo.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cardCornerRadius)
+                .strokeBorder(.indigo.opacity(0.20), lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(title). \(message)")
     }
 }

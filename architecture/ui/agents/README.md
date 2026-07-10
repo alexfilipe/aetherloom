@@ -18,8 +18,8 @@ Strictly serial by default. 07, 08, and 09 may run in parallel **only** in separ
 
 1. **Safety invariants** (`architecture/core/00-overview.md § Safety invariants`) **override everything**, including these prompts. UI corollaries (`architecture/ui/00-overview.md § Principles`): no force-sync affordance; no approval without shown counts; advice never preselected or auto-applied; refusals render calm.
 2. File boundaries: tasks 01–02 work only in `src/AetherloomCore/` (the `AetherloomBridge` target + its tests — **never** editing existing `AetherloomCore`/`AetherloomIntelligence` sources); tasks 03–10 work only in `src/AetherloomApp/` (plus bridge additions their spec explicitly names). Never touch `www/`, `README.md`, `CLAUDE.md`, `architecture/` except `architecture/ui/11-functioning-vs-placeholder.md` status updates.
-3. Zero third-party dependencies. `AetherloomBridge` imports `AetherloomCore`/Foundation/Observation only — no SwiftUI/AppKit (a test enforces this).
-4. Swift 6 strict concurrency; bridge values `Sendable + Hashable`; mutable state in actors or `@MainActor @Observable` models.
+3. Zero third-party dependencies. `AetherloomBridge` imports `AetherloomCore`/Foundation only — no SwiftUI/AppKit (a test enforces this).
+4. Swift 6 strict concurrency; bridge values `Sendable + Hashable`; mutable state in actors or the `@MainActor ObservableObject` app model.
 5. **The engine decides, the UI presents**: no verdict/gate/count/threshold logic outside `AetherloomCore`; `PlanApproval` is constructed only via `makeApproval` (`architecture/ui/04-display-models.md §4`).
 6. Canonical sentences render verbatim; engine-authored `message`/`detail`/`summary` strings are never rewritten.
 7. Placeholders follow the five conventions in `architecture/ui/11-functioning-vs-placeholder.md § Placeholder conventions`, and that matrix is updated in the same change.
@@ -27,6 +27,10 @@ Strictly serial by default. 07, 08, and 09 may run in parallel **only** in separ
 9. Tests: Swift Testing in `AetherloomBridgeTests`; deterministic (injected clock/IDs, zero fake latency); no real sleeps, network, or user folders.
 10. Exit bar, every task: `swift test --package-path src/AetherloomCore` green **and** `xcodebuild -project src/AetherloomApp/AetherloomApp.xcodeproj -scheme AetherloomApp -destination 'platform=macOS' build` succeeds, zero new warnings. Report test counts before/after. Commit nothing; leave changes in the working tree.
 11. Style: match existing sources — small focused types, clear names, comments only for non-obvious constraints, no `print`. New views get `#Preview`s for their principal states.
+
+## Startup guardrail
+
+Before changing `AetherloomAppApp`, `ContentView`, `AppModel`, scene declarations, or menu-bar behavior, read [../13-startup-bootstrap-lessons.md](../13-startup-bootstrap-lessons.md). The first UI PR proved that the demo engine was not the launch blocker; the fragile pieces were app-target main-actor isolation and the `MenuBarExtra` scene during startup. Do not reintroduce `MenuBarExtra` as part of routine polish. It belongs to the later background-sync/menu-bar phase and needs a launch smoke test that verifies the app leaves "Preparing your weave…" for Overview.
 
 ## Reporting format (end of every task)
 

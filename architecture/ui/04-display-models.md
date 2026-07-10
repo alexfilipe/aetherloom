@@ -69,7 +69,7 @@ public enum WorkspaceStatus: Sendable, Hashable {
 }
 ```
 
-Priority exactly in that order; drives the sidebar footer and the menu bar extra.
+Priority exactly in that order; drives the sidebar footer today and the future menu bar extra once background sync reintroduces that scene.
 
 ## 4. Preview display
 

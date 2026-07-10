@@ -18,6 +18,10 @@ let package = Package(
             name: "AetherloomIntelligence",
             targets: ["AetherloomIntelligence"]
         ),
+        .library(
+            name: "AetherloomBridge",
+            targets: ["AetherloomBridge"]
+        ),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -29,9 +33,17 @@ let package = Package(
             name: "AetherloomIntelligence",
             dependencies: ["AetherloomCore"]
         ),
+        .target(
+            name: "AetherloomBridge",
+            dependencies: ["AetherloomCore"]
+        ),
         .testTarget(
             name: "AetherloomCoreTests",
             dependencies: ["AetherloomCore", "AetherloomIntelligence"]
+        ),
+        .testTarget(
+            name: "AetherloomBridgeTests",
+            dependencies: ["AetherloomBridge", "AetherloomCore"]
         ),
     ],
     swiftLanguageModes: [.v6]

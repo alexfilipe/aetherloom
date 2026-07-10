@@ -9,7 +9,7 @@ Settings moves out of the sidebar into the standard macOS `Settings` scene (`⌘
 | Setting | Status |
 | --- | --- |
 | Launch at login | 🎭 disabled toggle, "arrives with background sync" |
-| Show in menu bar | ✅ toggles the `MenuBarExtra` placeholder's visibility (bridge/app preference, `@AppStorage`) |
+| Show in menu bar | 🎭 disabled toggle, "arrives with background sync"; no `MenuBarExtra` scene until background sync work reintroduces it safely |
 | Appearance follows system note | text only |
 
 ### Safety ✅ (defaults) / per-set overrides live in the sync set detail [06 §2]
@@ -41,7 +41,7 @@ One row per `ProviderKind`: mark, name, connection state.
 
 ## 2. Persistence
 
-UI preferences (`menu bar visibility`, advice toggle, demo dismissals) → `@AppStorage`. Engine-shaped defaults (thresholds) → bridge (`UserDefaults`-backed `BridgePreferences` actor, JSON-encoded core types, tested). Per-set settings live in the engine's `SyncSet.settings` via `updateSettings` — never duplicated app-side.
+UI preferences (`advice toggle`, demo dismissals) → `@AppStorage`. Engine-shaped defaults (thresholds) → bridge (`UserDefaults`-backed `BridgePreferences` actor, JSON-encoded core types, tested). Per-set settings live in the engine's `SyncSet.settings` via `updateSettings` — never duplicated app-side. Menu-bar visibility deliberately has no stored preference yet because the menu-bar scene is deferred; see [13-startup-bootstrap-lessons.md](13-startup-bootstrap-lessons.md).
 
 ## 3. Connect-provider sheet 🎭 (`activeSheet = .connectProvider(kind)`)
 

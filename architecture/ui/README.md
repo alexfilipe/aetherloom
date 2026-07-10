@@ -11,7 +11,7 @@ Two audiences:
 
 In scope now: the app shell, design system, navigation, all primary screens (Overview, Sync Sets, Preview & Approval, Conflicts, Activity, Settings), the `AetherloomBridge` layer that drives them from a real `SyncOrchestrator` running against `FakeStorageProvider`s, a scripted demo world exercising every safety behavior, and placeholder surfaces for provider connection.
 
-Out of scope now: OAuth and real cloud APIs, real filesystem/NAS providers, FSEvents watchers, background sync, menu-bar agent behavior (a placeholder item exists), App Store sandboxing, notifications, localization beyond English.
+Out of scope now: OAuth and real cloud APIs, real filesystem/NAS providers, FSEvents watchers, background sync, menu-bar agent behavior (the Settings toggle is a labeled placeholder; the scene is deferred), App Store sandboxing, notifications, localization beyond English.
 
 ## Document map
 
@@ -30,6 +30,7 @@ Out of scope now: OAuth and real cloud APIs, real filesystem/NAS providers, FSEv
 | [10-screen-settings-and-providers.md](10-screen-settings-and-providers.md) | Settings panes; provider connect placeholders |
 | [11-functioning-vs-placeholder.md](11-functioning-vs-placeholder.md) | **Authoritative matrix**: what is real, what is scaffold, what is visual-only |
 | [12-testing-strategy.md](12-testing-strategy.md) | Bridge tests, display-model tests, preview coverage, visual QA policy |
+| [13-startup-bootstrap-lessons.md](13-startup-bootstrap-lessons.md) | Launch hang investigation: what fixed startup, what did not, and what not to repeat |
 | [agents/](agents/) | Ten self-contained implementation work orders |
 
 ## Ground rules
@@ -39,7 +40,7 @@ Out of scope now: OAuth and real cloud APIs, real filesystem/NAS providers, FSEv
 - **Canonical language** from [../core/00-overview.md](../core/00-overview.md#canonical-language) is used verbatim; the UI adds detail beneath engine sentences, never rewrites them.
 - **Placeholders are honest.** Every placeholder interaction produces visible feedback labeled as a preview of a future capability (see [11-functioning-vs-placeholder.md](11-functioning-vs-placeholder.md#placeholder-conventions)); nothing pretends to have synced a real byte.
 - **Visual parity matters.** The current demo shell's look — cards, mesh hero, tone badges — is the approved product design and the source of the website's screenshots. Reshaping replaces data sources, not aesthetics, unless a screen doc says otherwise.
-- `AetherloomBridge` imports `AetherloomCore` and Foundation/Observation only — no SwiftUI, no AppKit — so `swift test` covers it. The app target holds SwiftUI and AppKit glue only.
+- `AetherloomBridge` imports `AetherloomCore` and Foundation only — no SwiftUI, no AppKit — so `swift test` covers it. The app target holds SwiftUI and AppKit glue only.
 
 ## Status legend
 
