@@ -10,6 +10,8 @@ Each `task-*.md` is a self-contained prompt for one implementation agent coverin
 
 Strictly serial. Task 02 is blocked on [../01-mutations-and-trash.md](../README.md) ⏭ being written; task 03 on [../02-nas-hardening.md](../README.md) ⏭. Do not dispatch against a missing spec.
 
+**Bundled alternative:** [task-00-initial-local-sync.md](task-00-initial-local-sync.md) covers M1–M3 plus an end-to-end local↔local proof as one work order for a single long-horizon agent. Its Phase 3 carries the mutations detail normatively until `../01-mutations-and-trash.md` is written (backfill that doc from the shipped behavior afterwards). Dispatch **either** the serial tasks **or** task-00 — never both concurrently.
+
 ## Local-specific rules
 
 1. All provider sources go in `src/AetherloomCore/Sources/AetherloomCore/Providers/Local/`; tests in `Tests/AetherloomCoreTests/` beside the existing provider tests.
@@ -22,6 +24,7 @@ Strictly serial. Task 02 is blocked on [../01-mutations-and-trash.md](../README.
 
 | Task | Milestone | Status |
 | --- | --- | --- |
+| [task-00-initial-local-sync.md](task-00-initial-local-sync.md) | M1–M3 bundled + end-to-end proof | Dispatchable (alternative to the serial tasks below) |
 | [task-01-read-side.md](task-01-read-side.md) | M2 — availability + scanning, zero mutations | Dispatchable after `../../agents/task-01` merges |
 | task-02-mutations-and-trash.md ⏭ | M3 — atomic store, relocate, trash/quarantine, full conformance | Blocked on spec 01 ⏭ |
 | task-03-nas-hardening.md ⏭ | M5 — timeouts, unreachable-mount fidelity, mtime tolerance | Blocked on spec 02 ⏭ |
