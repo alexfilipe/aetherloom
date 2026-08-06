@@ -5,6 +5,7 @@ enum ScriptedVolumeInspectionCall: Hashable, Sendable {
     case mount
     case responsiveness
     case properties
+    case volumeIdentity(String)
     case directory(String)
 }
 
@@ -110,7 +111,8 @@ actor ScriptedVolumeInspector: VolumeInspecting {
     }
 
     func volumeIdentity(for url: URL) async -> String? {
-        volumeIdentities[volumeIdentityKey(url)] ?? defaultVolumeIdentity
+        recordedCalls.append(.volumeIdentity(volumeIdentityKey(url)))
+        return volumeIdentities[volumeIdentityKey(url)] ?? defaultVolumeIdentity
     }
 
     private func volumeIdentityKey(_ url: URL) -> String {

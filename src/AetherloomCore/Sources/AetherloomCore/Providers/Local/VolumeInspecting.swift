@@ -45,10 +45,6 @@ public struct SystemVolumeInspector: VolumeInspecting {
     public init() {}
 
     public func mountState(for rootURL: URL) async -> VolumeMountState {
-        if (try? rootURL.resourceValues(forKeys: [.volumeURLKey]).volume) != nil {
-            return .mounted
-        }
-
         let mounted = FileManager.default.mountedVolumeURLs(
             includingResourceValuesForKeys: [.volumeURLKey],
             options: []
@@ -60,6 +56,10 @@ public struct SystemVolumeInspector: VolumeInspecting {
                 return .mounted
             }
             return .notMounted(detail: "Expected volume at \(expectedMountPath) is not mounted.")
+        }
+
+        if (try? rootURL.resourceValues(forKeys: [.volumeURLKey]).volume) != nil {
+            return .mounted
         }
 
         if mounted.contains(where: { Self.contains(rootPath, in: $0.standardizedFileURL.path) }) {

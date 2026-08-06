@@ -4,6 +4,15 @@ import Testing
 
 @Suite("LocalFolderStorageProvider")
 struct LocalFolderStorageProviderTests {
+    @Test func filesystemRootContainsDescendants() {
+        #expect(
+            LocalFolderStorageProvider.contains(
+                URL(fileURLWithPath: "/Volumes/Archive/Document.txt"),
+                in: URL(fileURLWithPath: "/", isDirectory: true)
+            )
+        )
+    }
+
     @Test func factoryFreezesProbedCapabilitiesAndDegradesNAS() async throws {
         let root = try makeRoot("capabilities")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -21,7 +30,12 @@ struct LocalFolderStorageProviderTests {
         #expect(!local.capabilities.hasContentHashes)
         #expect(!local.capabilities.hasChangeHints)
         #expect(!local.capabilities.supportsVersionCheckedStore)
-        #expect(await inspector.calls() == [.properties])
+        #expect(
+            await inspector.calls() == [
+                .properties,
+                .volumeIdentity(root.resolvingSymlinksInPath().standardizedFileURL.path),
+            ]
+        )
         await inspector.setProperties(
             VolumeProperties(
                 isCaseSensitive: false,
@@ -64,7 +78,12 @@ struct LocalFolderStorageProviderTests {
         #expect(await provider.checkAvailability() == .available)
         #expect(
             await inspector.calls()
-                == [.mount, .responsiveness, .directory(root.standardizedFileURL.path)]
+                == [
+                    .mount,
+                    .volumeIdentity(root.resolvingSymlinksInPath().standardizedFileURL.path),
+                    .responsiveness,
+                    .directory(root.standardizedFileURL.path),
+                ]
         )
 
         await inspector.setMountState(.notMounted(detail: "unplugged"))
@@ -76,6 +95,24 @@ struct LocalFolderStorageProviderTests {
         #expect(await inspector.calls() == [.mount])
 
         await inspector.setMountState(.mounted)
+        await inspector.setVolumeIdentity("replacement-volume")
+        await inspector.clearCalls()
+        #expect(
+            await provider.checkAvailability()
+                == .unavailable(
+                    .volumeNotMounted(
+                        detail: "The selected volume was replaced by a different volume."
+                    )
+                )
+        )
+        #expect(
+            await inspector.calls() == [
+                .mount,
+                .volumeIdentity(root.resolvingSymlinksInPath().standardizedFileURL.path),
+            ]
+        )
+        await inspector.setVolumeIdentity("scripted-volume")
+
         await inspector.setResponsiveness(.unreachable(detail: "sleeping"))
         #expect(
             await provider.checkAvailability()
@@ -152,6 +189,39 @@ struct LocalFolderStorageProviderTests {
         let staging = root.appendingPathComponent("staging-copy")
         try await provider.fetch(observed, to: staging)
         #expect(try Data(contentsOf: staging) == Data("payload".utf8))
+    }
+
+    @Test func equalSizeAndMtimeWithDifferentBytesIsARealEdit() async throws {
+        let root = try makeRoot("strong-version-evidence")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("Budget.xlsx")
+        let fixedModifiedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        try Data("first version".utf8).write(to: file)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixedModifiedAt],
+            ofItemAtPath: file.path
+        )
+        let provider = await makeProvider(
+            root: root,
+            inspector: ScriptedVolumeInspector()
+        )
+        let first = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath["/Budget.xlsx"]
+        )
+
+        try Data("other version".utf8).write(to: file)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixedModifiedAt],
+            ofItemAtPath: file.path
+        )
+        let second = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath["/Budget.xlsx"]
+        )
+
+        #expect(first.version.size == second.version.size)
+        #expect(first.version.modifiedAt == second.version.modifiedAt)
+        #expect(first.version.revisionToken != second.version.revisionToken)
+        #expect(first.version.comparison(to: second.version) == .different)
     }
 
     @Test func scanPreservesNFCAndNFDNamesSeparately() async throws {
@@ -730,6 +800,123 @@ struct LocalFolderStorageProviderTests {
         #expect(try Data(contentsOf: secondRecovery) == repeatedContents)
     }
 
+    @Test func quarantineReceiptSurvivesProviderReconstruction() async throws {
+        let root = try makeRoot("persistent-trash-receipt")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let location = SyncLocation(kind: .localFolder)
+        let sourceURL = root.appendingPathComponent("Recoverable.txt")
+        let contents = Data("recover after provider restart".utf8)
+        try contents.write(to: sourceURL)
+        let firstProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector()
+        )
+        let original = try #require(
+            (await firstProvider.scan(.entireDrive))
+                .observations.byPath["/Recoverable.txt"]
+        )
+        try await firstProvider.trash(original)
+        let recoveryURL = try #require(
+            await firstProvider.recoveryURL(for: original.path)
+        )
+
+        let restartedProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector()
+        )
+        let recovered = try await restartedProvider.currentState(of: original)
+        #expect(recovered.isTrashed)
+        #expect(recovered.path == original.path)
+        #expect(recovered.version.isSameVersion(as: original.version))
+        try await restartedProvider.trash(original)
+        #expect(try Data(contentsOf: recoveryURL) == contents)
+    }
+
+    @Test func pendingTrashIntentRecoversAfterProviderReconstruction() async throws {
+        let root = try makeRoot("persistent-trash-journal-recovery")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let location = SyncLocation(
+            id: LocationID(rawValue: UUID(uuidString: "aa000000-0000-0000-0000-000000000001")!),
+            kind: .localFolder
+        )
+        let sourceURL = root.appendingPathComponent("Journaled.txt")
+        try Data("journal recovery".utf8).write(to: sourceURL)
+        let firstProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector()
+        )
+        let original = try #require(
+            (await firstProvider.scan(.entireDrive))
+                .observations.byPath["/Journaled.txt"]
+        )
+        let operationID = OperationID(
+            UUID(uuidString: "aa000000-0000-0000-0000-000000000002")!
+        )
+        let operation = AetherloomCore.Operation(
+            id: operationID,
+            location: location.id,
+            kind: .trash(itemRef: ItemRef(original)),
+            precondition: .versionMatches(original.version)
+        )
+        let syncSetID = UUID(uuidString: "aa000000-0000-0000-0000-000000000003")!
+        let runID = UUID(uuidString: "aa000000-0000-0000-0000-000000000004")!
+        let engineRoot = root
+            .appendingPathComponent(".aetherloom", isDirectory: true)
+            .appendingPathComponent("recovery-test", isDirectory: true)
+        let firstStores = EngineStores(
+            baseRecords: try FileBaseRecordStore(rootURL: engineRoot.appendingPathComponent("records")),
+            journal: try FileRunJournalStore(rootURL: engineRoot.appendingPathComponent("journal")),
+            conflicts: InMemoryConflictStore(),
+            adviceCache: InMemoryAdviceCacheStore(),
+            activity: InMemoryActivityStore(),
+            locations: InMemoryLocationRegistry()
+        )
+        try await firstStores.journal.begin(
+            runID: runID,
+            syncSetID: syncSetID,
+            fingerprint: PlanFingerprint(rawValue: "pending-local-trash")
+        )
+        try await firstStores.journal.append(.intent(operation), runID: runID)
+
+        try await firstProvider.trash(original)
+        let restartedProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector()
+        )
+        let restartedStores = EngineStores(
+            baseRecords: try FileBaseRecordStore(rootURL: engineRoot.appendingPathComponent("records")),
+            journal: try FileRunJournalStore(rootURL: engineRoot.appendingPathComponent("journal")),
+            conflicts: InMemoryConflictStore(),
+            adviceCache: InMemoryAdviceCacheStore(),
+            activity: InMemoryActivityStore(),
+            locations: InMemoryLocationRegistry()
+        )
+        let replay = try #require(
+            try await restartedStores.journal.unfinishedRun(for: syncSetID)
+        )
+        let recoveredAt = Date(timeIntervalSince1970: 1_800_000_100)
+        let report = try await RunRecovery(
+            providers: [location.id: restartedProvider],
+            stores: restartedStores,
+            environment: ExecutionEnvironment(
+                now: { recoveredAt },
+                makeID: {
+                    UUID(uuidString: "aa000000-0000-0000-0000-000000000005")!
+                }
+            )
+        ).recover(replay)
+
+        #expect(report.reconciledOperations == [operationID])
+        let records = try await restartedStores.baseRecords.records(for: syncSetID)
+        #expect(records.count == 1)
+        #expect(records.first?.path == original.path)
+        #expect(records.first?.tombstone != nil)
+    }
+
     @Test func quarantineRejectsInternalSymlinkEscape() async throws {
         let world = try makeRoot("quarantine-containment")
         defer { try? FileManager.default.removeItem(at: world) }
@@ -806,8 +993,9 @@ struct LocalFolderStorageProviderTests {
         let movedURL = world.appendingPathComponent("NativeRecovery.txt")
         let contents = Data("moved before error".utf8)
         try contents.write(to: sourceURL)
+        let location = SyncLocation(kind: .localFolder)
         let provider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: location,
             rootURL: root,
             volumes: ScriptedVolumeInspector(
                 properties: VolumeProperties(
@@ -825,11 +1013,29 @@ struct LocalFolderStorageProviderTests {
 
         try await provider.trash(observation)
         try await provider.trash(observation)
+        let restartedProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(
+                properties: VolumeProperties(
+                    isCaseSensitive: false,
+                    supportsNativeTrash: true,
+                    isNetwork: false
+                )
+            )
+        )
+        #expect(try await restartedProvider.currentState(of: observation).isTrashed)
+        try await restartedProvider.trash(observation)
         #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
         #expect(try Data(contentsOf: movedURL) == contents)
         #expect(
             !FileManager.default.fileExists(
-                atPath: root.appendingPathComponent(".aetherloom").path
+                atPath: root.appendingPathComponent(".aetherloom/trash").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent(".aetherloom/trash-receipts").path
             )
         )
     }

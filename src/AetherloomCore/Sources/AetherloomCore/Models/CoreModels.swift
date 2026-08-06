@@ -242,6 +242,12 @@ public struct ItemVersion: Codable, Hashable, Sendable {
         if let contentHash, let otherHash = other.contentHash {
             return contentHash == otherHash ? .same : .different
         }
+        if let revisionToken,
+           let otherRevisionToken = other.revisionToken,
+           revisionToken.hasPrefix("sha256-"),
+           otherRevisionToken.hasPrefix("sha256-") {
+            return revisionToken == otherRevisionToken ? .same : .different
+        }
         if let size, let modifiedAt, let otherSize = other.size, let otherModifiedAt = other.modifiedAt {
             return size == otherSize && modifiedAt == otherModifiedAt ? .same : .different
         }

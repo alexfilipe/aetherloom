@@ -6,6 +6,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
 
     private let rootURL: URL
     private let volumes: any VolumeInspecting
+    private let expectedVolumeIdentity: String?
     private let deadlines: ProviderDeadlines
     private let nativeTrash: any LocalNativeTrashPerforming
     private let relocation: any LocalRelocationPerforming
@@ -32,6 +33,19 @@ public actor LocalFolderStorageProvider: StorageProvider {
         case .timedOut:
             properties = nil
         }
+        let identityResult = await withProviderDeadline(
+            nanoseconds: deadlines.probeNanoseconds,
+            clock: deadlines.clock
+        ) {
+            await volumes.volumeIdentity(for: rootURL)
+        }
+        let expectedVolumeIdentity: String?
+        switch identityResult {
+        case let .value(identity):
+            expectedVolumeIdentity = identity
+        case .timedOut:
+            expectedVolumeIdentity = nil
+        }
 
         let isNAS = location.kind == .nasFolder
         let capabilities = ProviderCapabilities(
@@ -46,6 +60,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
             location: location,
             rootURL: rootURL,
             volumes: volumes,
+            expectedVolumeIdentity: expectedVolumeIdentity,
             deadlines: deadlines,
             capabilities: capabilities,
             nativeTrash: SystemLocalNativeTrashPerformer(),
@@ -74,11 +89,25 @@ public actor LocalFolderStorageProvider: StorageProvider {
         case .timedOut:
             properties = nil
         }
+        let identityResult = await withProviderDeadline(
+            nanoseconds: deadlines.probeNanoseconds,
+            clock: deadlines.clock
+        ) {
+            await volumes.volumeIdentity(for: rootURL)
+        }
+        let expectedVolumeIdentity: String?
+        switch identityResult {
+        case let .value(identity):
+            expectedVolumeIdentity = identity
+        case .timedOut:
+            expectedVolumeIdentity = nil
+        }
         let isNAS = location.kind == .nasFolder
         return LocalFolderStorageProvider(
             location: location,
             rootURL: rootURL,
             volumes: volumes,
+            expectedVolumeIdentity: expectedVolumeIdentity,
             deadlines: deadlines,
             capabilities: ProviderCapabilities(
                 hasNativeTrash: isNAS ? false : properties?.supportsNativeTrash ?? false,
@@ -97,6 +126,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
         location: SyncLocation,
         rootURL: URL,
         volumes: any VolumeInspecting,
+        expectedVolumeIdentity: String?,
         deadlines: ProviderDeadlines,
         capabilities: ProviderCapabilities,
         nativeTrash: any LocalNativeTrashPerforming,
@@ -106,6 +136,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
         self.capabilities = capabilities
         self.rootURL = rootURL
         self.volumes = volumes
+        self.expectedVolumeIdentity = expectedVolumeIdentity
         self.deadlines = deadlines
         self.nativeTrash = nativeTrash
         self.relocation = relocation
@@ -124,6 +155,10 @@ public actor LocalFolderStorageProvider: StorageProvider {
             return .unavailable(.unknown(detail: detail))
         case .value(.mounted):
             break
+        }
+
+        if let unavailable = await volumeIdentityUnavailability() {
+            return .unavailable(unavailable)
         }
 
         switch await probe({ await self.volumes.responsiveness(for: self.rootURL) }) {
@@ -290,6 +325,16 @@ public actor LocalFolderStorageProvider: StorageProvider {
                 ? true
                 : await confirmsAbsence(of: url)
             if isAbsent {
+                do {
+                    if let trashed = try trashedObservation(from: observation) {
+                        return trashed
+                    }
+                } catch {
+                    throw ProviderError.itemUnavailable(
+                        provider: locationID,
+                        path: observation.path
+                    )
+                }
                 throw ProviderError.notFound(provider: locationID, path: observation.path)
             }
             throw ProviderError.itemUnavailable(provider: locationID, path: observation.path)
@@ -515,6 +560,10 @@ public actor LocalFolderStorageProvider: StorageProvider {
             }
         }
         let current = try await matchingCurrentState(of: observation)
+        if current.isTrashed {
+            completedTrashVersions[observation.path] = observation.version
+            return
+        }
         guard let source = resolvedURL(
             for: current.path,
             followingFinalSymlink: false
@@ -567,11 +616,20 @@ public actor LocalFolderStorageProvider: StorageProvider {
         }
 
         if capabilities.hasNativeTrash {
+            var receipt = LocalTrashReceipt(
+                observation: immediatelyCurrent,
+                method: .nativeTrash,
+                recoveryPath: nil,
+                startedAt: deadlines.now()
+            )
+            try persistTrashReceipt(receipt)
             do {
                 let resultingURL = try nativeTrash.trashItem(at: source)
                 if let resultingURL {
                     recoveryURLsByPath[current.path] = resultingURL
+                    receipt.recoveryPath = resultingURL.path
                 }
+                try persistTrashReceipt(receipt)
                 completedTrashVersions[current.path] = current.version
                 return
             } catch {
@@ -597,12 +655,102 @@ public actor LocalFolderStorageProvider: StorageProvider {
             }
         }
 
-        let recoveryURL = try quarantineURL(
-            source,
+        let recoveryURL = try quarantineDestinationURL(
             originalPath: current.path
         )
+        try persistTrashReceipt(
+            LocalTrashReceipt(
+                observation: immediatelyCurrent,
+                method: .quarantine,
+                recoveryPath: recoveryURL.path,
+                startedAt: deadlines.now()
+            )
+        )
+        try FileManager.default.moveItem(at: source, to: recoveryURL)
         recoveryURLsByPath[current.path] = recoveryURL
         completedTrashVersions[current.path] = current.version
+    }
+
+    private func trashedObservation(
+        from expected: ItemObservation
+    ) throws -> ItemObservation? {
+        guard let receipt = try loadTrashReceipt(for: expected),
+              receipt.observation.location == locationID,
+              receipt.observation.path == expected.path,
+              receipt.observation.kind == expected.kind,
+              receipt.observation.version.isSameVersion(as: expected.version) else {
+            return nil
+        }
+        if receipt.method == .quarantine {
+            guard let recoveryPath = receipt.recoveryPath,
+                  filesystemEntryExists(at: URL(fileURLWithPath: recoveryPath)) else {
+                return nil
+            }
+        } else if let recoveryPath = receipt.recoveryPath,
+                  !filesystemEntryExists(at: URL(fileURLWithPath: recoveryPath)) {
+            return nil
+        }
+        var observation = receipt.observation
+        observation.isTrashed = true
+        return observation
+    }
+
+    private func persistTrashReceipt(_ receipt: LocalTrashReceipt) throws {
+        let directory = try trashReceiptDirectory(create: true)
+        let receiptURL = directory.appendingPathComponent(
+            try trashReceiptFilename(for: receipt.observation),
+            isDirectory: false
+        )
+        try CanonicalCoding.encoder().encode(receipt).write(
+            to: receiptURL,
+            options: .atomic
+        )
+    }
+
+    private func loadTrashReceipt(
+        for observation: ItemObservation
+    ) throws -> LocalTrashReceipt? {
+        let directory = try trashReceiptDirectory(create: false)
+        let receiptURL = directory.appendingPathComponent(
+            try trashReceiptFilename(for: observation),
+            isDirectory: false
+        )
+        guard filesystemEntryExists(at: receiptURL) else { return nil }
+        return try CanonicalCoding.decoder().decode(
+            LocalTrashReceipt.self,
+            from: Data(contentsOf: receiptURL)
+        )
+    }
+
+    private func trashReceiptFilename(
+        for observation: ItemObservation
+    ) throws -> String {
+        let encoded = try CanonicalCoding.encoder().encode(observation)
+        return CanonicalCoding.sha256Hex(encoded) + ".json"
+    }
+
+    private func trashReceiptDirectory(create: Bool) throws -> URL {
+        guard let canonicalRoot = Self.canonicalizingExistingAncestors(rootURL) else {
+            throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+        }
+        let directory = canonicalRoot
+            .appendingPathComponent(".aetherloom", isDirectory: true)
+            .appendingPathComponent("trash-receipts", isDirectory: true)
+        guard let checkedBeforeCreate = Self.canonicalizingExistingAncestors(directory),
+              Self.contains(checkedBeforeCreate, in: canonicalRoot) else {
+            throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+        }
+        if create {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        guard let checked = Self.canonicalizingExistingAncestors(directory),
+              Self.contains(checked, in: canonicalRoot) else {
+            throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+        }
+        return checked
     }
 
     private func filesystemEntryExists(at url: URL) -> Bool {
@@ -794,6 +942,14 @@ public actor LocalFolderStorageProvider: StorageProvider {
         _ source: URL,
         originalPath: SyncPath
     ) throws -> URL {
+        let destination = try quarantineDestinationURL(originalPath: originalPath)
+        try FileManager.default.moveItem(at: source, to: destination)
+        return destination
+    }
+
+    private func quarantineDestinationURL(
+        originalPath: SyncPath
+    ) throws -> URL {
         guard let canonicalRoot = Self.canonicalizingExistingAncestors(rootURL) else {
             throw ProviderError.itemUnavailable(
                 provider: locationID,
@@ -833,7 +989,6 @@ public actor LocalFolderStorageProvider: StorageProvider {
             in: checkedParent,
             originalName: originalPath.name
         )
-        try FileManager.default.moveItem(at: source, to: destination)
         return destination
     }
 
@@ -898,6 +1053,10 @@ public actor LocalFolderStorageProvider: StorageProvider {
             break
         }
 
+        if let unavailable = await volumeIdentityUnavailability() {
+            return .unavailable(unavailable)
+        }
+
         switch await probe({ await self.volumes.responsiveness(for: self.rootURL) }) {
         case .timedOut:
             return .unavailable(.volumeUnreachable(detail: "Volume responsiveness probe timed out."))
@@ -907,6 +1066,26 @@ public actor LocalFolderStorageProvider: StorageProvider {
             return .unavailable(
                 .scopeMissing(detail: "The selected folder is missing.")
             )
+        }
+    }
+
+    private func volumeIdentityUnavailability() async -> LocationUnavailabilityReason? {
+        guard let expectedVolumeIdentity else {
+            return .unknown(
+                detail: "The selected volume identity could not be recorded safely."
+            )
+        }
+        switch await probe({ await self.volumes.volumeIdentity(for: self.rootURL) }) {
+        case .timedOut:
+            return .volumeUnreachable(detail: "Volume identity inspection timed out.")
+        case .value(nil):
+            return .volumeNotMounted(detail: "The selected volume is no longer mounted.")
+        case let .value(currentIdentity?) where currentIdentity != expectedVolumeIdentity:
+            return .volumeNotMounted(
+                detail: "The selected volume was replaced by a different volume."
+            )
+        case .value:
+            return nil
         }
     }
 
@@ -1071,6 +1250,17 @@ public actor LocalFolderStorageProvider: StorageProvider {
         }
         let isPlaceholder = values.isUbiquitousItem == true
             && values.ubiquitousItemDownloadingStatus == .notDownloaded
+        let revisionToken: String?
+        switch kind {
+        case .file where !isPlaceholder:
+            revisionToken = ContentHashing.hash(
+                try Data(contentsOf: url, options: .mappedIfSafe)
+            )
+        case let .symlink(target):
+            revisionToken = "local-symlink-" + ContentHashing.hash(Data(target.utf8))
+        case .file, .folder:
+            revisionToken = nil
+        }
         return ItemObservation(
             location: locationID,
             itemID: nil,
@@ -1078,7 +1268,8 @@ public actor LocalFolderStorageProvider: StorageProvider {
             kind: kind,
             version: ItemVersion(
                 size: values.fileSize.map(Int64.init),
-                modifiedAt: values.contentModificationDate
+                modifiedAt: values.contentModificationDate,
+                revisionToken: revisionToken
             ),
             isPlaceholder: isPlaceholder,
             isTrashed: false
@@ -1125,9 +1316,12 @@ public actor LocalFolderStorageProvider: StorageProvider {
         }
     }
 
-    private static func contains(_ url: URL, in root: URL) -> Bool {
+    static func contains(_ url: URL, in root: URL) -> Bool {
         let rootPath = root.standardizedFileURL.path
         let path = url.standardizedFileURL.path
+        if rootPath == "/" {
+            return path.hasPrefix("/")
+        }
         return path == rootPath || path.hasPrefix(rootPath + "/")
     }
 
@@ -1149,6 +1343,18 @@ private struct LocalScanResult: Sendable {
 private struct LocalExistingEntry: Sendable {
     var url: URL
     var observation: ItemObservation
+}
+
+private struct LocalTrashReceipt: Codable, Hashable, Sendable {
+    enum Method: String, Codable, Hashable, Sendable {
+        case nativeTrash
+        case quarantine
+    }
+
+    var observation: ItemObservation
+    var method: Method
+    var recoveryPath: String?
+    var startedAt: Date
 }
 
 private enum LocalObservationReadResult: Sendable {
