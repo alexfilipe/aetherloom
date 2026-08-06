@@ -17,6 +17,8 @@ actor ScriptedVolumeInspector: VolumeInspecting {
     private var directoryStates: [String: InspectedDirectoryState]
     private var recordedCalls: [ScriptedVolumeInspectionCall]
     private var queuedMountStates: [VolumeMountState]
+    private var queuedVolumeIdentities: [String?]
+    private var queuedDirectoryStates: [InspectedDirectoryState]
     private var volumeIdentities: [String: String]
     private var defaultVolumeIdentity: String?
     private let lease: TestDirectoryLease?
@@ -39,6 +41,8 @@ actor ScriptedVolumeInspector: VolumeInspecting {
         self.directoryStates = [:]
         self.recordedCalls = []
         self.queuedMountStates = []
+        self.queuedVolumeIdentities = []
+        self.queuedDirectoryStates = []
         self.volumeIdentities = [:]
         self.defaultVolumeIdentity = "scripted-volume"
         self.lease = lease
@@ -68,6 +72,14 @@ actor ScriptedVolumeInspector: VolumeInspecting {
         } else {
             defaultVolumeIdentity = identity
         }
+    }
+
+    func enqueueVolumeIdentities(_ identities: [String?]) {
+        queuedVolumeIdentities.append(contentsOf: identities)
+    }
+
+    func enqueueDirectoryStates(_ states: [InspectedDirectoryState]) {
+        queuedDirectoryStates.append(contentsOf: states)
     }
 
     func setDirectoryState(_ state: InspectedDirectoryState, at url: URL? = nil) {
@@ -107,11 +119,17 @@ actor ScriptedVolumeInspector: VolumeInspecting {
     func directoryState(at url: URL) async -> InspectedDirectoryState {
         let path = url.standardizedFileURL.path
         recordedCalls.append(.directory(path))
+        if !queuedDirectoryStates.isEmpty {
+            return queuedDirectoryStates.removeFirst()
+        }
         return directoryStates[path] ?? defaultDirectoryState
     }
 
     func volumeIdentity(for url: URL) async -> String? {
         recordedCalls.append(.volumeIdentity(volumeIdentityKey(url)))
+        if !queuedVolumeIdentities.isEmpty {
+            return queuedVolumeIdentities.removeFirst()
+        }
         return volumeIdentities[volumeIdentityKey(url)] ?? defaultVolumeIdentity
     }
 

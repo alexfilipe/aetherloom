@@ -1,6 +1,44 @@
 import Foundation
 
 public actor LocalFolderStorageProvider: StorageProvider {
+    public static let expectedVolumeIdentityConfigurationKey = "expectedVolumeIdentity"
+
+    /// Records the persistent volume UUID at enrollment time. The returned
+    /// location must be saved by the caller before constructing a provider;
+    /// `make` never adopts an identity from whichever volume happens to be
+    /// mounted later at the same path.
+    public static func locationByRecordingVolumeIdentity(
+        _ location: SyncLocation,
+        rootURL: URL,
+        volumes: any VolumeInspecting = SystemVolumeInspector(),
+        deadlines: ProviderDeadlines = ProviderDeadlines()
+    ) async throws -> SyncLocation {
+        let identityResult = await withProviderDeadline(
+            nanoseconds: deadlines.probeNanoseconds,
+            clock: deadlines.clock
+        ) {
+            await volumes.volumeIdentity(for: rootURL)
+        }
+        let identity: String
+        switch identityResult {
+        case let .value(value?):
+            identity = value
+        case .value(nil):
+            throw ProviderError.unavailable(
+                provider: location.id,
+                reason: "The selected volume identity could not be recorded safely."
+            )
+        case .timedOut:
+            throw ProviderError.unavailable(
+                provider: location.id,
+                reason: "Volume identity inspection timed out."
+            )
+        }
+        var configured = location
+        configured.configuration[expectedVolumeIdentityConfigurationKey] = identity
+        return configured
+    }
+
     public nonisolated let locationID: LocationID
     public nonisolated let capabilities: ProviderCapabilities
 
@@ -8,6 +46,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
     private let volumes: any VolumeInspecting
     private let expectedVolumeIdentity: String?
     private let deadlines: ProviderDeadlines
+    private let fetching: any LocalFetchPerforming
     private let nativeTrash: any LocalNativeTrashPerforming
     private let relocation: any LocalRelocationPerforming
     private let quarantineTimestamp: String
@@ -33,20 +72,6 @@ public actor LocalFolderStorageProvider: StorageProvider {
         case .timedOut:
             properties = nil
         }
-        let identityResult = await withProviderDeadline(
-            nanoseconds: deadlines.probeNanoseconds,
-            clock: deadlines.clock
-        ) {
-            await volumes.volumeIdentity(for: rootURL)
-        }
-        let expectedVolumeIdentity: String?
-        switch identityResult {
-        case let .value(identity):
-            expectedVolumeIdentity = identity
-        case .timedOut:
-            expectedVolumeIdentity = nil
-        }
-
         let isNAS = location.kind == .nasFolder
         let capabilities = ProviderCapabilities(
             hasNativeTrash: isNAS ? false : properties?.supportsNativeTrash ?? false,
@@ -60,9 +85,12 @@ public actor LocalFolderStorageProvider: StorageProvider {
             location: location,
             rootURL: rootURL,
             volumes: volumes,
-            expectedVolumeIdentity: expectedVolumeIdentity,
+            expectedVolumeIdentity: location.configuration[
+                expectedVolumeIdentityConfigurationKey
+            ],
             deadlines: deadlines,
             capabilities: capabilities,
+            fetching: SystemLocalFetchPerformer(),
             nativeTrash: SystemLocalNativeTrashPerformer(),
             relocation: SystemLocalRelocationPerformer()
         )
@@ -73,6 +101,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
         rootURL: URL,
         volumes: any VolumeInspecting,
         deadlines: ProviderDeadlines = ProviderDeadlines(),
+        fetching: any LocalFetchPerforming = SystemLocalFetchPerformer(),
         nativeTrash: any LocalNativeTrashPerforming = SystemLocalNativeTrashPerformer(),
         relocation: any LocalRelocationPerforming = SystemLocalRelocationPerformer()
     ) async -> LocalFolderStorageProvider {
@@ -89,25 +118,14 @@ public actor LocalFolderStorageProvider: StorageProvider {
         case .timedOut:
             properties = nil
         }
-        let identityResult = await withProviderDeadline(
-            nanoseconds: deadlines.probeNanoseconds,
-            clock: deadlines.clock
-        ) {
-            await volumes.volumeIdentity(for: rootURL)
-        }
-        let expectedVolumeIdentity: String?
-        switch identityResult {
-        case let .value(identity):
-            expectedVolumeIdentity = identity
-        case .timedOut:
-            expectedVolumeIdentity = nil
-        }
         let isNAS = location.kind == .nasFolder
         return LocalFolderStorageProvider(
             location: location,
             rootURL: rootURL,
             volumes: volumes,
-            expectedVolumeIdentity: expectedVolumeIdentity,
+            expectedVolumeIdentity: location.configuration[
+                expectedVolumeIdentityConfigurationKey
+            ],
             deadlines: deadlines,
             capabilities: ProviderCapabilities(
                 hasNativeTrash: isNAS ? false : properties?.supportsNativeTrash ?? false,
@@ -117,6 +135,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
                 supportsVersionCheckedStore: false,
                 isCaseSensitive: isNAS ? nil : properties?.isCaseSensitive
             ),
+            fetching: fetching,
             nativeTrash: nativeTrash,
             relocation: relocation
         )
@@ -129,6 +148,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
         expectedVolumeIdentity: String?,
         deadlines: ProviderDeadlines,
         capabilities: ProviderCapabilities,
+        fetching: any LocalFetchPerforming,
         nativeTrash: any LocalNativeTrashPerforming,
         relocation: any LocalRelocationPerforming
     ) {
@@ -138,6 +158,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
         self.volumes = volumes
         self.expectedVolumeIdentity = expectedVolumeIdentity
         self.deadlines = deadlines
+        self.fetching = fetching
         self.nativeTrash = nativeTrash
         self.relocation = relocation
         self.quarantineTimestamp = Self.timestampString(for: deadlines.now())
@@ -214,6 +235,13 @@ public actor LocalFolderStorageProvider: StorageProvider {
                 status: .incomplete(reason: "Filesystem scan timed out.")
             )
         case let .value(scan):
+            if case let .unavailable(reason) = await checkAvailability() {
+                return snapshot(scope: scope, status: .unavailable(reason: reason))
+            }
+            if scope.rootPath != .root,
+               case let .unavailable(reason) = await availabilityForDirectory(scopeURL) {
+                return snapshot(scope: scope, status: .unavailable(reason: reason))
+            }
             return LocationSnapshot(
                 location: locationID,
                 scope: scope,
@@ -236,7 +264,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
         if observation.isPlaceholder {
             throw ProviderError.placeholderOnly(provider: locationID, path: observation.path)
         }
-        let current = try await currentState(of: observation)
+        let current = try await matchingCurrentState(of: observation)
         if current.isPlaceholder {
             throw ProviderError.placeholderOnly(provider: locationID, path: observation.path)
         }
@@ -247,12 +275,13 @@ public actor LocalFolderStorageProvider: StorageProvider {
               ) else {
             throw ProviderError.itemUnavailable(provider: locationID, path: observation.path)
         }
+        let fetching = self.fetching
         let copyResult = await withProviderDeadline(
             nanoseconds: deadlines.ioNanoseconds,
             clock: deadlines.clock
         ) {
             do {
-                try FileManager.default.copyItem(at: sourceURL, to: stagingURL)
+                try fetching.copyItem(at: sourceURL, to: stagingURL)
                 return LocalFileOperationResult.succeeded
             } catch {
                 return .failed(LocalFileFailure(error))
@@ -265,6 +294,40 @@ public actor LocalFolderStorageProvider: StorageProvider {
                 reason: "Filesystem fetch timed out."
             )
         case .value(.succeeded):
+            let afterCopy = try await matchingCurrentState(of: observation)
+            guard afterCopy.version.isSameVersion(as: observation.version) else {
+                throw ProviderError.preconditionFailed(
+                    provider: locationID,
+                    path: observation.path
+                )
+            }
+            let verification = await withProviderDeadline(
+                nanoseconds: deadlines.ioNanoseconds,
+                clock: deadlines.clock
+            ) {
+                do {
+                    return LocalByteComparisonResult.equal(
+                        try Self.filesHaveEqualBytes(sourceURL, stagingURL)
+                    )
+                } catch {
+                    return .failed
+                }
+            }
+            switch verification {
+            case .timedOut:
+                throw ProviderError.unavailable(
+                    provider: locationID,
+                    reason: "Filesystem fetch verification timed out."
+                )
+            case .value(.equal(true)):
+                break
+            case .value(.equal(false)), .value(.failed):
+                throw ProviderError.preconditionFailed(
+                    provider: locationID,
+                    path: observation.path
+                )
+            }
+            _ = try await matchingCurrentState(of: observation)
             return
         case .value(.failed):
             if case let .unavailable(reason) = await checkAvailability() {
@@ -366,7 +429,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
                         path: path
                     )
                 }
-                if try filesHaveEqualBytes(stagingURL, existing.url) {
+                if try Self.filesHaveEqualBytes(stagingURL, existing.url) {
                     return existing.observation
                 }
                 throw ProviderError.itemAlreadyExists(
@@ -725,7 +788,13 @@ public actor LocalFolderStorageProvider: StorageProvider {
     private func trashReceiptFilename(
         for observation: ItemObservation
     ) throws -> String {
-        let encoded = try CanonicalCoding.encoder().encode(observation)
+        let encoded = try CanonicalCoding.encoder().encode(
+            LocalTrashReceiptKey(
+                location: observation.location,
+                path: observation.path,
+                kind: observation.kind
+            )
+        )
         return CanonicalCoding.sha256Hex(encoded) + ".json"
     }
 
@@ -842,7 +911,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
         }
     }
 
-    private func filesHaveEqualBytes(_ first: URL, _ second: URL) throws -> Bool {
+    private static func filesHaveEqualBytes(_ first: URL, _ second: URL) throws -> Bool {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey]
         let firstValues = try first.resourceValues(forKeys: keys)
         let secondValues = try second.resourceValues(forKeys: keys)
@@ -851,7 +920,28 @@ public actor LocalFolderStorageProvider: StorageProvider {
               firstValues.fileSize == secondValues.fileSize else {
             return false
         }
-        return try Data(contentsOf: first) == Data(contentsOf: second)
+        let firstHandle = try FileHandle(forReadingFrom: first)
+        let secondHandle = try FileHandle(forReadingFrom: second)
+        defer {
+            try? firstHandle.close()
+            try? secondHandle.close()
+        }
+        let chunkSize = 1_048_576
+        while true {
+            let firstChunk: Data
+            let secondChunk: Data
+            if #available(macOS 10.15.4, *) {
+                firstChunk = try firstHandle.read(upToCount: chunkSize) ?? Data()
+                secondChunk = try secondHandle.read(upToCount: chunkSize) ?? Data()
+            } else {
+                firstChunk = firstHandle.readData(ofLength: chunkSize)
+                secondChunk = secondHandle.readData(ofLength: chunkSize)
+            }
+            guard firstChunk == secondChunk else { return false }
+            if firstChunk.isEmpty {
+                return true
+            }
+        }
     }
 
     private func sameVolume(_ source: URL, _ destinationParent: URL) async throws -> Bool {
@@ -1228,7 +1318,9 @@ public actor LocalFolderStorageProvider: StorageProvider {
         url: URL,
         path: SyncPath
     ) throws -> ItemObservation {
-        let values = try url.resourceValues(
+        var freshURL = url
+        freshURL.removeAllCachedResourceValues()
+        let values = try freshURL.resourceValues(
             forKeys: [
                 .isDirectoryKey,
                 .fileSizeKey,
@@ -1252,12 +1344,8 @@ public actor LocalFolderStorageProvider: StorageProvider {
             && values.ubiquitousItemDownloadingStatus == .notDownloaded
         let revisionToken: String?
         switch kind {
-        case .file where !isPlaceholder:
-            revisionToken = ContentHashing.hash(
-                try Data(contentsOf: url, options: .mappedIfSafe)
-            )
         case let .symlink(target):
-            revisionToken = "local-symlink-" + ContentHashing.hash(Data(target.utf8))
+            revisionToken = "local-symlink-" + CanonicalCoding.sha256Hex(target)
         case .file, .folder:
             revisionToken = nil
         }
@@ -1268,12 +1356,18 @@ public actor LocalFolderStorageProvider: StorageProvider {
             kind: kind,
             version: ItemVersion(
                 size: values.fileSize.map(Int64.init),
-                modifiedAt: values.contentModificationDate,
+                modifiedAt: canonicalModifiedAt(values.contentModificationDate),
                 revisionToken: revisionToken
             ),
             isPlaceholder: isPlaceholder,
             isTrashed: false
         )
+    }
+
+    private static func canonicalModifiedAt(_ date: Date?) -> Date? {
+        guard let date else { return nil }
+        let milliseconds = (date.timeIntervalSince1970 * 1_000).rounded()
+        return Date(timeIntervalSince1970: milliseconds / 1_000)
     }
 
     private static func observedPath(
@@ -1357,6 +1451,12 @@ private struct LocalTrashReceipt: Codable, Hashable, Sendable {
     var startedAt: Date
 }
 
+private struct LocalTrashReceiptKey: Codable, Hashable, Sendable {
+    var location: LocationID
+    var path: SyncPath
+    var kind: ItemKind
+}
+
 private enum LocalObservationReadResult: Sendable {
     case observation(ItemObservation)
     case failed(LocalFileFailure)
@@ -1365,6 +1465,11 @@ private enum LocalObservationReadResult: Sendable {
 private enum LocalFileOperationResult: Sendable {
     case succeeded
     case failed(LocalFileFailure)
+}
+
+private enum LocalByteComparisonResult: Sendable {
+    case equal(Bool)
+    case failed
 }
 
 private enum LocalDirectoryMembershipResult: Sendable {
@@ -1387,6 +1492,16 @@ private struct LocalFileFailure: Sendable {
     var isMissingFile: Bool {
         domain == NSCocoaErrorDomain
             && (code == NSFileNoSuchFileError || code == NSFileReadNoSuchFileError)
+    }
+}
+
+protocol LocalFetchPerforming: Sendable {
+    func copyItem(at source: URL, to destination: URL) throws
+}
+
+struct SystemLocalFetchPerformer: LocalFetchPerforming {
+    func copyItem(at source: URL, to destination: URL) throws {
+        try FileManager.default.copyItem(at: source, to: destination)
     }
 }
 

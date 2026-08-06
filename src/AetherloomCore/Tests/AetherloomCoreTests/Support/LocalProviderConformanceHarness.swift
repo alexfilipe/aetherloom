@@ -115,7 +115,11 @@ struct LocalProviderConformanceHarness: ProviderConformanceHarness {
         SyncLocation(
             id: LocationID(),
             kind: .localFolder,
-            scope: .entireDrive
+            scope: .entireDrive,
+            configuration: [
+                LocalFolderStorageProvider.expectedVolumeIdentityConfigurationKey:
+                    "scripted-volume",
+            ]
         )
     }
 

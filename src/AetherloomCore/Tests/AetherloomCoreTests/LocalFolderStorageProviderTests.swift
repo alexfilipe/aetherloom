@@ -31,10 +31,7 @@ struct LocalFolderStorageProviderTests {
         #expect(!local.capabilities.hasChangeHints)
         #expect(!local.capabilities.supportsVersionCheckedStore)
         #expect(
-            await inspector.calls() == [
-                .properties,
-                .volumeIdentity(root.resolvingSymlinksInPath().standardizedFileURL.path),
-            ]
+            await inspector.calls() == [.properties]
         )
         await inspector.setProperties(
             VolumeProperties(
@@ -47,7 +44,7 @@ struct LocalFolderStorageProviderTests {
         #expect(local.capabilities.isCaseSensitive == true)
 
         let nas = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .nasFolder),
+            location: localLocation(kind: .nasFolder),
             rootURL: root,
             volumes: inspector
         )
@@ -59,7 +56,7 @@ struct LocalFolderStorageProviderTests {
         let root = try makeRoot("capability-timeout")
         defer { try? FileManager.default.removeItem(at: root) }
         let provider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: localLocation(),
             rootURL: root,
             volumes: ScriptedVolumeInspector(),
             deadlines: ProviderDeadlines(probeNanoseconds: 0)
@@ -145,6 +142,140 @@ struct LocalFolderStorageProviderTests {
         )
     }
 
+    @Test func durableVolumeIdentityIsRequiredAndRevalidatedAfterScan() async throws {
+        let root = try makeRoot("durable-volume-identity")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("preserve".utf8).write(to: root.appendingPathComponent("Present.txt"))
+
+        let missingIdentityProvider = await LocalFolderStorageProvider.make(
+            location: SyncLocation(kind: .localFolder),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector()
+        )
+        #expect(
+            await missingIdentityProvider.checkAvailability()
+                == .unavailable(
+                    .unknown(
+                        detail: "The selected volume identity could not be recorded safely."
+                    )
+                )
+        )
+
+        let replacementInspector = ScriptedVolumeInspector()
+        await replacementInspector.setVolumeIdentity("replacement-volume")
+        let reconstructed = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: replacementInspector
+        )
+        #expect(
+            await reconstructed.checkAvailability()
+                == .unavailable(
+                    .volumeNotMounted(
+                        detail: "The selected volume was replaced by a different volume."
+                    )
+                )
+        )
+
+        let swappedDuringScan = ScriptedVolumeInspector()
+        await swappedDuringScan.enqueueVolumeIdentities([
+            "scripted-volume",
+            "replacement-volume",
+        ])
+        let provider = await makeProvider(root: root, inspector: swappedDuringScan)
+        let snapshot = await provider.scan(.entireDrive)
+        #expect(
+            snapshot.status
+                == .unavailable(
+                    reason: .volumeNotMounted(
+                        detail: "The selected volume was replaced by a different volume."
+                    )
+                )
+        )
+        #expect(snapshot.observations.all.isEmpty)
+    }
+
+    @Test func enrollmentPersistsVolumeIdentityAcrossLocationRoundTrip() async throws {
+        let root = try makeRoot("volume-enrollment")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inspector = ScriptedVolumeInspector()
+        let original = SyncLocation(kind: .localFolder)
+        let enrolled = try await LocalFolderStorageProvider
+            .locationByRecordingVolumeIdentity(
+                original,
+                rootURL: root,
+                volumes: inspector
+            )
+        let encoded = try JSONEncoder().encode(enrolled)
+        let restored = try JSONDecoder().decode(SyncLocation.self, from: encoded)
+        let registry = InMemoryLocationRegistry()
+        try await registry.upsert(restored)
+        let persisted = try #require(
+            try await registry.allLocations().first
+        )
+
+        #expect(
+            persisted.configuration[
+                LocalFolderStorageProvider.expectedVolumeIdentityConfigurationKey
+            ] == "scripted-volume"
+        )
+        let provider = await LocalFolderStorageProvider.make(
+            location: persisted,
+            rootURL: root,
+            volumes: inspector
+        )
+        #expect(await provider.checkAvailability() == .available)
+
+        await inspector.setVolumeIdentity("replacement-volume")
+        let reconstructed = await LocalFolderStorageProvider.make(
+            location: persisted,
+            rootURL: root,
+            volumes: inspector
+        )
+        #expect(
+            await reconstructed.checkAvailability()
+                == .unavailable(
+                    .volumeNotMounted(
+                        detail: "The selected volume was replaced by a different volume."
+                    )
+                )
+        )
+    }
+
+    @Test func systemVolumeIdentityUsesPersistentVolumeUUID() async throws {
+        let root = try makeRoot("system-volume-uuid")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inspector = SystemVolumeInspector()
+        let first = try #require(await inspector.volumeIdentity(for: root))
+        let second = try #require(await inspector.volumeIdentity(for: root))
+
+        #expect(UUID(uuidString: first) != nil)
+        #expect(second == first)
+    }
+
+    @Test func scanDiscardsObservationsWhenRootDisappearsAfterEnumeration() async throws {
+        let root = try makeRoot("root-disappears-during-scan")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("must not look deleted".utf8).write(
+            to: root.appendingPathComponent("Present.txt")
+        )
+        let inspector = ScriptedVolumeInspector()
+        await inspector.enqueueDirectoryStates([
+            .present(isReadable: true),
+            .missing,
+        ])
+        let provider = await makeProvider(root: root, inspector: inspector)
+        let snapshot = await provider.scan(.entireDrive)
+
+        #expect(
+            snapshot.status
+                == .unavailable(
+                    reason: .scopeMissing(detail: "The selected folder is missing.")
+                )
+        )
+        #expect(snapshot.observations.all.isEmpty)
+    }
+
     @Test func scanObservesRealFixturesAndSuppressesInternalSpace() async throws {
         let root = try makeRoot("scan")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -191,37 +322,127 @@ struct LocalFolderStorageProviderTests {
         #expect(try Data(contentsOf: staging) == Data("payload".utf8))
     }
 
-    @Test func equalSizeAndMtimeWithDifferentBytesIsARealEdit() async throws {
-        let root = try makeRoot("strong-version-evidence")
+    @Test func scanDoesNotReadRegularFileContents() async throws {
+        let root = try makeRoot("unreadable-file-scan")
         defer { try? FileManager.default.removeItem(at: root) }
-        let file = root.appendingPathComponent("Budget.xlsx")
+        let file = root.appendingPathComponent("MetadataOnly.txt")
+        try Data("content must not be opened".utf8).write(to: file)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0],
+            ofItemAtPath: file.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: file.path
+            )
+        }
+        let provider = await makeProvider(
+            root: root,
+            inspector: ScriptedVolumeInspector()
+        )
+        let snapshot = await provider.scan(.entireDrive)
+
+        #expect(snapshot.status == .complete)
+        #expect(snapshot.observations.byPath["/MetadataOnly.txt"]?.kind == .file)
+        #expect(snapshot.observations.byPath["/MetadataOnly.txt"]?.version.contentHash == nil)
+    }
+
+    @Test func fetchRejectsSourceDriftBeforeCopy() async throws {
+        let root = try makeRoot("fetch-source-drift")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Source.txt")
         let fixedModifiedAt = Date(timeIntervalSince1970: 1_800_000_000)
-        try Data("first version".utf8).write(to: file)
+        try Data("first bytes".utf8).write(to: source)
         try FileManager.default.setAttributes(
             [.modificationDate: fixedModifiedAt],
-            ofItemAtPath: file.path
+            ofItemAtPath: source.path
         )
         let provider = await makeProvider(
             root: root,
             inspector: ScriptedVolumeInspector()
         )
-        let first = try #require(
-            (await provider.scan(.entireDrive)).observations.byPath["/Budget.xlsx"]
+        let planned = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
         )
 
-        try Data("other version".utf8).write(to: file)
+        try Data("other bytes".utf8).write(to: source)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixedModifiedAt.addingTimeInterval(10)],
+            ofItemAtPath: source.path
+        )
+        let staging = root.appendingPathComponent("staging")
+        await #expect(
+            throws: ProviderError.preconditionFailed(
+                provider: provider.locationID,
+                path: planned.path
+            )
+        ) {
+            try await provider.fetch(planned, to: staging)
+        }
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    @Test func fetchRejectsSourceMutationAfterCopy() async throws {
+        let root = try makeRoot("fetch-drift-after-copy")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Source.txt")
+        let fixedModifiedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        try Data("first bytes".utf8).write(to: source)
         try FileManager.default.setAttributes(
             [.modificationDate: fixedModifiedAt],
-            ofItemAtPath: file.path
+            ofItemAtPath: source.path
         )
-        let second = try #require(
-            (await provider.scan(.entireDrive)).observations.byPath["/Budget.xlsx"]
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            fetching: SourceMutatingFetchPerformer(
+                replacement: Data("other bytes".utf8),
+                modifiedAt: fixedModifiedAt.addingTimeInterval(10)
+            )
         )
+        let planned = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
+        )
+        let staging = root.appendingPathComponent("staging")
 
-        #expect(first.version.size == second.version.size)
-        #expect(first.version.modifiedAt == second.version.modifiedAt)
-        #expect(first.version.revisionToken != second.version.revisionToken)
-        #expect(first.version.comparison(to: second.version) == .different)
+        await #expect(
+            throws: ProviderError.preconditionFailed(
+                provider: provider.locationID,
+                path: planned.path
+            )
+        ) {
+            try await provider.fetch(planned, to: staging)
+        }
+    }
+
+    @Test func fetchRejectsCorruptedStagingCopy() async throws {
+        let root = try makeRoot("fetch-corrupted-staging")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Source.txt")
+        try Data("first bytes".utf8).write(to: source)
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            fetching: CorruptingFetchPerformer(
+                replacement: Data("other bytes".utf8)
+            )
+        )
+        let planned = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
+        )
+        let staging = root.appendingPathComponent("staging")
+
+        await #expect(
+            throws: ProviderError.preconditionFailed(
+                provider: provider.locationID,
+                path: planned.path
+            )
+        ) {
+            try await provider.fetch(planned, to: staging)
+        }
     }
 
     @Test func scanPreservesNFCAndNFDNamesSeparately() async throws {
@@ -253,7 +474,7 @@ struct LocalFolderStorageProviderTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("present".utf8).write(to: root.appendingPathComponent("Present.txt"))
         let provider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: localLocation(),
             rootURL: root,
             volumes: ScriptedVolumeInspector(),
             deadlines: ProviderDeadlines(scanNanoseconds: 0)
@@ -380,7 +601,7 @@ struct LocalFolderStorageProviderTests {
         try Data("source".utf8).write(to: source)
         let inspector = ScriptedVolumeInspector()
         let timedProvider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: localLocation(),
             rootURL: root,
             volumes: inspector,
             deadlines: ProviderDeadlines(ioNanoseconds: 0)
@@ -405,10 +626,9 @@ struct LocalFolderStorageProviderTests {
             root: root,
             inspector: failureInspector
         )
-        let failureObservation = ItemObservation(
-            location: failureProvider.locationID,
-            path: "/Source.txt",
-            kind: .file
+        let failureObservation = try #require(
+            (await failureProvider.scan(.entireDrive))
+                .observations.byPath["/Source.txt"]
         )
         await failureInspector.enqueueMountStates([
             .mounted,
@@ -660,7 +880,7 @@ struct LocalFolderStorageProviderTests {
         await inspector.setVolumeIdentity("destination-volume", at: destinationFolder)
         let relocation = PartialCopyOnceRelocationPerformer()
         let provider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: localLocation(),
             rootURL: root,
             volumes: inspector,
             relocation: relocation
@@ -716,7 +936,7 @@ struct LocalFolderStorageProviderTests {
         await inspector.setVolumeIdentity("destination-volume", at: destinationFolder)
         let relocation = TrashFailureOnceRelocationPerformer()
         let provider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: localLocation(),
             rootURL: root,
             volumes: inspector,
             relocation: relocation
@@ -757,7 +977,7 @@ struct LocalFolderStorageProviderTests {
         let sourceURL = root.appendingPathComponent("Document.txt")
         let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
         let provider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: localLocation(),
             rootURL: root,
             volumes: ScriptedVolumeInspector(),
             deadlines: ProviderDeadlines(now: { fixedDate })
@@ -787,7 +1007,6 @@ struct LocalFolderStorageProviderTests {
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Document.txt"]
         )
-        #expect(second.version.isSameVersion(as: first.version))
         try await provider.trash(second)
         let secondRecovery = try #require(
             await provider.recoveryURL(for: second.path)
@@ -803,7 +1022,7 @@ struct LocalFolderStorageProviderTests {
     @Test func quarantineReceiptSurvivesProviderReconstruction() async throws {
         let root = try makeRoot("persistent-trash-receipt")
         defer { try? FileManager.default.removeItem(at: root) }
-        let location = SyncLocation(kind: .localFolder)
+        let location = localLocation()
         let sourceURL = root.appendingPathComponent("Recoverable.txt")
         let contents = Data("recover after provider restart".utf8)
         try contents.write(to: sourceURL)
@@ -829,7 +1048,7 @@ struct LocalFolderStorageProviderTests {
         let recovered = try await restartedProvider.currentState(of: original)
         #expect(recovered.isTrashed)
         #expect(recovered.path == original.path)
-        #expect(recovered.version.isSameVersion(as: original.version))
+        #expect(recovered.version.revisionToken == original.version.revisionToken)
         try await restartedProvider.trash(original)
         #expect(try Data(contentsOf: recoveryURL) == contents)
     }
@@ -839,7 +1058,11 @@ struct LocalFolderStorageProviderTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let location = SyncLocation(
             id: LocationID(rawValue: UUID(uuidString: "aa000000-0000-0000-0000-000000000001")!),
-            kind: .localFolder
+            kind: .localFolder,
+            configuration: [
+                LocalFolderStorageProvider.expectedVolumeIdentityConfigurationKey:
+                    "scripted-volume",
+            ]
         )
         let sourceURL = root.appendingPathComponent("Journaled.txt")
         try Data("journal recovery".utf8).write(to: sourceURL)
@@ -958,7 +1181,7 @@ struct LocalFolderStorageProviderTests {
         let contents = Data("fallback recovery".utf8)
         try contents.write(to: sourceURL)
         let provider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: localLocation(),
             rootURL: root,
             volumes: ScriptedVolumeInspector(
                 properties: VolumeProperties(
@@ -993,7 +1216,7 @@ struct LocalFolderStorageProviderTests {
         let movedURL = world.appendingPathComponent("NativeRecovery.txt")
         let contents = Data("moved before error".utf8)
         try contents.write(to: sourceURL)
-        let location = SyncLocation(kind: .localFolder)
+        let location = localLocation()
         let provider = await LocalFolderStorageProvider.make(
             location: location,
             rootURL: root,
@@ -1046,8 +1269,16 @@ struct LocalFolderStorageProviderTests {
         let sourceURL = root.appendingPathComponent("Native.txt")
         let contents = Data("native recovery".utf8)
         try contents.write(to: sourceURL)
+        let systemVolumes = SystemVolumeInspector()
+        let location = SyncLocation(
+            kind: .localFolder,
+            configuration: [
+                LocalFolderStorageProvider.expectedVolumeIdentityConfigurationKey:
+                    await systemVolumes.volumeIdentity(for: root) ?? "",
+            ]
+        )
         let provider = await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: location,
             rootURL: root
         )
         guard provider.capabilities.hasNativeTrash else {
@@ -1085,10 +1316,47 @@ struct LocalFolderStorageProviderTests {
         inspector: ScriptedVolumeInspector
     ) async -> LocalFolderStorageProvider {
         await LocalFolderStorageProvider.make(
-            location: SyncLocation(kind: .localFolder),
+            location: localLocation(),
             rootURL: root,
             volumes: inspector
         )
+    }
+
+    private func localLocation(
+        id: LocationID = LocationID(),
+        kind: ProviderKind = .localFolder
+    ) -> SyncLocation {
+        SyncLocation(
+            id: id,
+            kind: kind,
+            configuration: [
+                LocalFolderStorageProvider.expectedVolumeIdentityConfigurationKey:
+                    "scripted-volume",
+            ]
+        )
+    }
+}
+
+private struct SourceMutatingFetchPerformer: LocalFetchPerforming {
+    let replacement: Data
+    let modifiedAt: Date
+
+    func copyItem(at source: URL, to destination: URL) throws {
+        try FileManager.default.copyItem(at: source, to: destination)
+        try replacement.write(to: source)
+        try FileManager.default.setAttributes(
+            [.modificationDate: modifiedAt],
+            ofItemAtPath: source.path
+        )
+    }
+}
+
+private struct CorruptingFetchPerformer: LocalFetchPerforming {
+    let replacement: Data
+
+    func copyItem(at source: URL, to destination: URL) throws {
+        try FileManager.default.copyItem(at: source, to: destination)
+        try replacement.write(to: destination)
     }
 }
 

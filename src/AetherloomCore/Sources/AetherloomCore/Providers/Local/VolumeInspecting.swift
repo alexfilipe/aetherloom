@@ -123,12 +123,9 @@ public struct SystemVolumeInspector: VolumeInspecting {
     }
 
     public func volumeIdentity(for url: URL) async -> String? {
-        guard let identifier = try? url.resourceValues(
-            forKeys: [.volumeIdentifierKey]
-        ).volumeIdentifier else {
-            return nil
-        }
-        return String(describing: identifier)
+        try? url.resourceValues(
+            forKeys: [.volumeUUIDStringKey]
+        ).volumeUUIDString
     }
 
     private static func probeURL(for rootURL: URL) -> URL {
