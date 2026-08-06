@@ -276,7 +276,9 @@ public actor FakeStorageProvider: StorageProvider {
         if let existing = existingItem(at: path) {
             switch options.overwrite {
             case .neverOverwrite:
-                if existing.contentHash == Self.hash(data) {
+                if existing.kind == .file,
+                   let itemID = existing.itemID,
+                   contentsByID[itemID] == data {
                     return existing
                 }
                 throw ProviderError.itemAlreadyExists(provider: locationID, path: path)
