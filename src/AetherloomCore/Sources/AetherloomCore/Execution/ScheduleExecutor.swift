@@ -471,6 +471,23 @@ public struct ScheduleExecutor: Sendable {
                 continue
             }
 
+            // Conflict-copy transfers preserve divergent user data, but they do
+            // not establish a new canonical path or version. Keep the last
+            // genuinely converged base record until the user chooses a
+            // resolution; otherwise conflict-copy observations can overwrite
+            // canonical bookkeeping and make the resolution plan self-conflict.
+            if decision.verdict.containsConflictPreservation {
+                state.convergedDecisions.insert(decision.id)
+                state.itemResults.append(
+                    ItemExecutionResult(
+                        id: decision.id,
+                        path: decision.path,
+                        status: .converged
+                    )
+                )
+                continue
+            }
+
             let record = makeBaseRecord(for: decision, plan: plan, state: state, baseRecords: baseRecords)
             try await stores.journal.append(.itemConverged(decisionID: decision.id, record: record), runID: runID)
             if decision.isFullyTrashed {
@@ -731,6 +748,20 @@ public struct ScheduleExecutor: Sendable {
                 detail: detail
             )
         )
+    }
+}
+
+private extension ItemVerdict {
+    var containsConflictPreservation: Bool {
+        switch self {
+        case .conflict:
+            return true
+        case let .compound(verdicts):
+            return verdicts.contains { $0.containsConflictPreservation }
+        case .inSync, .propagateContent, .propagateCreation, .propagatePath,
+             .propagateDeletion, .waiting:
+            return false
+        }
     }
 }
 

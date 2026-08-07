@@ -6,14 +6,20 @@
 
 ```swift
 public actor LocalFolderStorageProvider: StorageProvider {
-    public init(
+    /// Probes volume properties once through the seam (bounded by deadlines)
+    /// and freezes the resulting capabilities for the instance's lifetime —
+    /// `capabilities` is a synchronous protocol property, so all async
+    /// probing happens here, never on the property.
+    public static func make(
         location: SyncLocation,          // kind == .localFolder or .nasFolder
         rootURL: URL,                    // the selected folder; scopes resolve beneath it
         volumes: any VolumeInspecting,   // seam: mount state, reachability probes, volume properties
         deadlines: ProviderDeadlines     // injected timeouts; tests use synthetic clocks
-    )
+    ) async -> LocalFolderStorageProvider
 }
 ```
+
+A failed or timed-out probe freezes the conservative value (`false`/`nil`), never blocks construction. Frozen capabilities can go stale (a different volume mounted beneath the same path); that is safe: availability checks gate every run, and a stale `hasNativeTrash == true` degrades at runtime by falling back to quarantine (§5) — the degradation direction is always preservation. Sessions construct a fresh provider per composition rather than mutating capabilities in place.
 
 `VolumeInspecting` 🆕 is the testability seam — small by design, covering exactly the dangerous questions: *is the volume containing this URL mounted? does a bounded probe of it respond? what are its properties (case sensitivity, trash support, network-ness)? does this directory exist on it?* The real implementation answers via `URL.resourceValues` volume keys and bounded filesystem probes; test doubles script every answer. Everything else — enumeration, attribute reads, content I/O — uses `FileManager` directly.
 
@@ -23,7 +29,7 @@ Per [../00-overview.md §2](../00-overview.md) rule 5, every `true` needs a conf
 
 | Capability | `.localFolder` | `.nasFolder` | Rationale |
 | --- | --- | --- | --- |
-| `hasNativeTrash` | probed per volume | `false` | `FileManager.trashItem` works on local volumes that support it; network mounts quarantine ([../../core/02-provider-abstraction.md §4](../../core/02-provider-abstraction.md)) |
+| `hasNativeTrash` | probed at construction | `false` | Side-effect-free probe via the seam: `FileManager.url(for: .trashDirectory, in: .userDomainMask, appropriateFor: rootURL, create: false)` throwing ⇒ no native trash. Network mounts quarantine ([../../core/02-provider-abstraction.md §4](../../core/02-provider-abstraction.md)); a stale `true` falls back to quarantine at runtime |
 | `hasStableItemIDs` | `false` initially | `false` | File IDs exist (`fileResourceIdentifier`) but their persistence across remounts/reboots is unproven; path identity degrades renames safely. Upgrading later is a flag flip plus conformance cases — see open questions |
 | `hasContentHashes` | `false` | `false` | No cheap hash at scan time; hashes are computed during staging for transfer verification only. Same-size/same-mtime independent edits route to preservation, as designed |
 | `hasChangeHints` | `false` | `false` | Full scans; FSEvents is a later optimization ([../00-overview.md §6](../00-overview.md)). `changedSubtrees` returns a hint marked not complete |
@@ -56,9 +62,9 @@ The ordering matters: a missing root must be classified as *volume gone* before 
 
 ## 5. Mutations and trash (sketch — normative spec in 01 ⏭)
 
-- `store` writes to a temporary URL **on the destination volume**, then `replaceItemAt` — an interrupted store never leaves a torn destination file. `OverwritePolicy` is enforced by probe-compare inside the provider's actor before the replace.
+- `store` writes to a temporary URL **on the destination volume**, then `replaceItemAt` — an interrupted store never leaves a torn destination file. `OverwritePolicy` is enforced by probe-compare inside the provider's actor before the replace. Idempotent re-application per the conformance contract ([../00-overview.md §3](../00-overview.md)): `.neverOverwrite` against a destination holding byte-identical content (compare staged vs destination bytes) succeeds without writing and returns the current observation.
 - `relocate` uses `moveItem` after confirming the destination path is absent; cross-device relocates are copy-verify-trash, never copy-delete.
-- `trash`: native trash where `hasNativeTrash`, else quarantine to `/.aetherloom/trash/<ISO-8601 run date>/<relative path>` at the location root.
+- `trash`: native trash where `hasNativeTrash`, else quarantine to `/.aetherloom/trash/<ISO-8601 run date>/<relative path>` at the location root. If a native `trashItem` fails at runtime despite the frozen capability, fall back to quarantine — never fail into leaving content unpreserved when quarantine is possible.
 - `fetch` copies content to the executor's staging URL; on a placeholder it throws `placeholderOnly` ✅ rather than triggering a download (materialization policy belongs to the iCloud variant).
 - `currentState` re-reads one item's resource values; missing item at a healthy volume ⇒ `notFound`, anything doubtful ⇒ `unavailable` ([../../core/02-provider-abstraction.md §6](../../core/02-provider-abstraction.md)).
 
