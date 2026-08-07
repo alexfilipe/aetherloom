@@ -24,9 +24,9 @@ public actor LocalFolderStorageProvider: StorageProvider {
         case let .value(value?):
             identity = value
         case .value(nil):
-            throw ProviderError.unavailable(
+            throw ProviderError.unsupported(
                 provider: location.id,
-                reason: "The selected volume identity could not be recorded safely."
+                reason: "The selected volume does not provide a persistent identity and cannot be enrolled safely."
             )
         case .timedOut:
             throw ProviderError.unavailable(

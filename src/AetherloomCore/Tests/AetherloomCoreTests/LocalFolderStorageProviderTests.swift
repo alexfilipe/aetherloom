@@ -242,6 +242,27 @@ struct LocalFolderStorageProviderTests {
         )
     }
 
+    @Test func enrollmentRejectsVolumeWithoutPersistentIdentityAsUnsupported() async throws {
+        let root = try makeRoot("volume-enrollment-without-identity")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inspector = ScriptedVolumeInspector()
+        await inspector.setVolumeIdentity(nil)
+        let location = SyncLocation(kind: .nasFolder)
+
+        await #expect(
+            throws: ProviderError.unsupported(
+                provider: location.id,
+                reason: "The selected volume does not provide a persistent identity and cannot be enrolled safely."
+            )
+        ) {
+            _ = try await LocalFolderStorageProvider.locationByRecordingVolumeIdentity(
+                location,
+                rootURL: root,
+                volumes: inspector
+            )
+        }
+    }
+
     @Test func systemVolumeIdentityUsesPersistentVolumeUUID() async throws {
         let root = try makeRoot("system-volume-uuid")
         defer { try? FileManager.default.removeItem(at: root) }
