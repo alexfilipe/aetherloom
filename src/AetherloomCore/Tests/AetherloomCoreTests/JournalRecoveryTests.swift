@@ -51,6 +51,233 @@ import Testing
     #expect(record.tombstone?.deletedAt == journalDate)
 }
 
+@Test func recoveryKeepsJournalUnfinishedWhileIndeterminateMutationRuns() async throws {
+    let journal = InMemoryRunJournalStore()
+    let stores = recoveryStores(journal: journal)
+    let provider = ScriptedIndeterminateRecoveryProvider(
+        locationID: .oneDrive,
+        state: .inFlight,
+        recoveryResult: .failure(
+            .unavailable(provider: .oneDrive, reason: "still running")
+        )
+    )
+    let operation = Operation(
+        id: OperationID(journalUUID("000000000201")),
+        location: .oneDrive,
+        kind: .makeFolder(at: "/Pending"),
+        precondition: .pathAbsent
+    )
+    let receipt = ProviderMutationReceipt(
+        id: journalUUID("000000000202"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/Pending"],
+        startedAt: journalDate
+    )
+    let runID = journalUUID("000000000203")
+    let syncSetID = journalUUID("000000000204")
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "indeterminate")
+    )
+    try await journal.append(.intent(operation), runID: runID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: journalDate
+        ),
+        runID: runID
+    )
+    let replay = try #require(try await journal.unfinishedRun(for: syncSetID))
+
+    await #expect(
+        throws: RunRecoveryError.indeterminateMutationStillRunning(
+            operationID: operation.id,
+            receiptID: receipt.id
+        )
+    ) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores
+        ).recover(replay)
+    }
+
+    #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
+    #expect(await provider.recoveryProbeCount() == 0)
+    #expect(await provider.finishCount() == 0)
+}
+
+@Test func recoveryDoesNotClearIndeterminateStateWhenTruthProbeFails() async throws {
+    let journal = InMemoryRunJournalStore()
+    let stores = recoveryStores(journal: journal)
+    let providerError = ProviderError.unavailable(
+        provider: .oneDrive,
+        reason: "provider offline"
+    )
+    let provider = ScriptedIndeterminateRecoveryProvider(
+        locationID: .oneDrive,
+        state: .quiescent(.succeeded),
+        recoveryResult: .failure(providerError)
+    )
+    let operation = Operation(
+        id: OperationID(journalUUID("000000000205")),
+        location: .oneDrive,
+        kind: .makeFolder(at: "/Uncertain"),
+        precondition: .pathAbsent
+    )
+    let receipt = ProviderMutationReceipt(
+        id: journalUUID("000000000206"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/Uncertain"],
+        startedAt: journalDate
+    )
+    let runID = journalUUID("000000000207")
+    let syncSetID = journalUUID("000000000208")
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "unavailable-recovery")
+    )
+    try await journal.append(.intent(operation), runID: runID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: journalDate
+        ),
+        runID: runID
+    )
+    let replay = try #require(try await journal.unfinishedRun(for: syncSetID))
+
+    await #expect(
+        throws: RunRecoveryError.providerTruthUnavailable(
+            operationID: operation.id,
+            detail: String(describing: providerError)
+        )
+    ) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores
+        ).recover(replay)
+    }
+
+    #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
+    #expect(await provider.recoveryProbeCount() == 1)
+    #expect(await provider.finishCount() == 0)
+}
+
+@Test func recoveryDoesNotClearPendingIntentWhenProviderTruthIsUnavailable() async throws {
+    let journal = InMemoryRunJournalStore()
+    let stores = recoveryStores(journal: journal)
+    let provider = FakeStorageProvider(locationID: .oneDrive)
+    await provider.setAvailability(
+        .unavailable(.volumeUnreachable(detail: "provider offline"))
+    )
+    let operation = Operation(
+        id: OperationID(journalUUID("000000000209")),
+        location: .oneDrive,
+        kind: .makeFolder(at: "/Unknown"),
+        precondition: .pathAbsent
+    )
+    let runID = journalUUID("000000000210")
+    let syncSetID = journalUUID("000000000211")
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "pending-unavailable")
+    )
+    try await journal.append(.intent(operation), runID: runID)
+    let replay = try #require(try await journal.unfinishedRun(for: syncSetID))
+
+    await #expect(throws: RunRecoveryError.self) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores
+        ).recover(replay)
+    }
+
+    #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
+}
+
+private func recoveryStores(journal: any RunJournalStore) -> EngineStores {
+    EngineStores(
+        baseRecords: InMemoryBaseRecordStore(),
+        journal: journal,
+        conflicts: InMemoryConflictStore(),
+        adviceCache: InMemoryAdviceCacheStore(),
+        activity: InMemoryActivityStore(),
+        locations: InMemoryLocationRegistry()
+    )
+}
+
+private actor ScriptedIndeterminateRecoveryProvider:
+    IndeterminateMutationRecovering
+{
+    nonisolated let locationID: LocationID
+    nonisolated let capabilities = ProviderCapabilities.fullFidelity
+
+    private let scriptedState: ProviderIndeterminateMutationState
+    private let recoveryResult: Result<ItemObservation, ProviderError>
+    private var probes = 0
+    private var finishes = 0
+
+    init(
+        locationID: LocationID,
+        state: ProviderIndeterminateMutationState,
+        recoveryResult: Result<ItemObservation, ProviderError>
+    ) {
+        self.locationID = locationID
+        self.scriptedState = state
+        self.recoveryResult = recoveryResult
+    }
+
+    func checkAvailability() async -> LocationAvailability { .available }
+    func scan(_ scope: SyncScope) async -> LocationSnapshot {
+        LocationSnapshot(location: locationID, scope: scope, observations: [], status: .complete)
+    }
+    func changedSubtrees(in _: SyncScope, since _: ChangeCursor?) async throws -> ChangeHint {
+        ChangeHint(changedRoots: [], isComplete: false)
+    }
+    func fetch(_: ItemObservation, to _: URL) async throws {
+        throw ProviderError.unsupported(provider: locationID, reason: "test")
+    }
+    func store(from _: URL, at path: SyncPath, options _: StoreOptions) async throws -> ItemObservation {
+        throw ProviderError.unsupported(provider: locationID, reason: path.rawValue)
+    }
+    func makeFolder(at path: SyncPath) async throws -> ItemObservation {
+        throw ProviderError.unsupported(provider: locationID, reason: path.rawValue)
+    }
+    func relocate(_ observation: ItemObservation, to _: SyncPath) async throws -> ItemObservation {
+        throw ProviderError.unsupported(provider: locationID, reason: observation.path.rawValue)
+    }
+    func trash(_ observation: ItemObservation) async throws {
+        throw ProviderError.unsupported(provider: locationID, reason: observation.path.rawValue)
+    }
+    func currentState(of observation: ItemObservation) async throws -> ItemObservation {
+        throw ProviderError.unavailable(provider: locationID, reason: observation.path.rawValue)
+    }
+    func indeterminateMutationState(
+        for _: ProviderMutationReceipt
+    ) async -> ProviderIndeterminateMutationState {
+        scriptedState
+    }
+    func currentStateForRecovery(
+        of _: ItemObservation,
+        receipt _: ProviderMutationReceipt
+    ) async throws -> ItemObservation {
+        probes += 1
+        return try recoveryResult.get()
+    }
+    func finishIndeterminateMutationRecovery(for _: ProviderMutationReceipt) async {
+        finishes += 1
+    }
+    func recoveryProbeCount() -> Int { probes }
+    func finishCount() -> Int { finishes }
+}
+
 private func journalUUID(_ suffix: String) -> UUID {
     UUID(uuidString: "93000000-0000-0000-0000-\(suffix)")!
 }

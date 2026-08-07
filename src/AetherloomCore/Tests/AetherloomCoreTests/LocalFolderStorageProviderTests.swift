@@ -633,9 +633,9 @@ struct LocalFolderStorageProviderTests {
         )
         let timedStaging = root.appendingPathComponent("timed-staging")
         await #expect(
-            throws: ProviderError.unavailable(
+            throws: ProviderError.mutationDeadlineExpiredBeforeStart(
                 provider: timedProvider.locationID,
-                reason: "Filesystem fetch timed out."
+                path: observation.path
             )
         ) {
             try await timedProvider.fetch(observation, to: timedStaging)
@@ -668,6 +668,59 @@ struct LocalFolderStorageProviderTests {
                 failureObservation,
                 to: invalidStaging
             )
+        }
+    }
+
+    @Test func postStartFetchTimeoutRetainsLateStagingWrite() async throws {
+        let root = try makeRoot("fetch-late-success")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Source.txt")
+        let contents = Data("owned late fetch".utf8)
+        try contents.write(to: source)
+        let clock = ProviderMutationManualClock()
+        let hook = BlockingLocalMutationHook()
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            deadlines: ProviderDeadlines(ioNanoseconds: 1, clock: clock),
+            mutationHook: hook
+        )
+        await clock.waitUntilIdle()
+        let observation = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
+        )
+        let staging = root.appendingPathComponent("Late.stage")
+
+        let call = Task { () -> ProviderMutationReceipt? in
+            do {
+                try await provider.fetch(observation, to: staging)
+                return nil
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                return receipt
+            } catch {
+                Issue.record("Unexpected fetch error: \(error)")
+                return nil
+            }
+        }
+        await hook.waitUntilStarted(count: 1)
+        await clock.waitUntilSleeping()
+        await clock.fireAll()
+        let receipt = try #require(await call.value)
+        #expect(receipt.kind == .fetch)
+        guard case .unavailable = (await provider.scan(.entireDrive)).status else {
+            Issue.record("Scan raced an indeterminate fetch.")
+            hook.release()
+            return
+        }
+
+        hook.release()
+        await waitForProviderMutationQuiescence(provider, receipt: receipt)
+        #expect(try Data(contentsOf: staging) == contents)
+        await provider.finishIndeterminateMutationRecovery(for: receipt)
+        guard case .complete = (await provider.scan(.entireDrive)).status else {
+            Issue.record("Provider stayed blocked after fetch reconciliation.")
+            return
         }
     }
 
@@ -1126,10 +1179,30 @@ struct LocalFolderStorageProviderTests {
         try await firstStores.journal.append(.intent(operation), runID: runID)
 
         try await firstProvider.trash(original)
+        let recoveryURL = try #require(
+            await firstProvider.recoveryURL(for: original.path)
+        )
+        let mutationReceipt = ProviderMutationReceipt(
+            id: UUID(uuidString: "aa000000-0000-0000-0000-000000000006")!,
+            provider: location.id,
+            kind: .trash,
+            affectedPaths: [original.path],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_050)
+        )
+        try await firstStores.journal.append(
+            .mutationIndeterminate(
+                operationID: operationID,
+                receipt: mutationReceipt,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_051)
+            ),
+            runID: runID
+        )
+        let recoveryHook = RecordingLocalMutationHook()
         let restartedProvider = await LocalFolderStorageProvider.make(
             location: location,
             rootURL: root,
-            volumes: ScriptedVolumeInspector()
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: recoveryHook
         )
         let restartedStores = EngineStores(
             baseRecords: try FileBaseRecordStore(rootURL: engineRoot.appendingPathComponent("records")),
@@ -1159,6 +1232,10 @@ struct LocalFolderStorageProviderTests {
         #expect(records.count == 1)
         #expect(records.first?.path == original.path)
         #expect(records.first?.tombstone != nil)
+        #expect(recoveryHook.kinds().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(try Data(contentsOf: recoveryURL) == Data("journal recovery".utf8))
+        #expect(try await restartedStores.journal.unfinishedRun(for: syncSetID) == nil)
     }
 
     @Test func quarantineRejectsInternalSymlinkEscape() async throws {
@@ -1325,6 +1402,207 @@ struct LocalFolderStorageProviderTests {
         #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
     }
 
+    @Test func everyProductionMutationRouteUsesOwnedCoordinator() async throws {
+        let root = try makeRoot("owned-mutation-routes")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hook = RecordingLocalMutationHook()
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: hook
+        )
+        let staging = root.appendingPathComponent("Staging.bin")
+        try Data("first".utf8).write(to: staging)
+
+        let first = try await provider.store(
+            from: staging,
+            at: "/Owned.txt",
+            options: StoreOptions()
+        )
+        try Data("second".utf8).write(to: staging)
+        let replaced = try await provider.store(
+            from: staging,
+            at: first.path,
+            options: StoreOptions(overwrite: .ifVersionMatches(first.version))
+        )
+        _ = try await provider.makeFolder(at: "/Folder")
+        let fetched = root.appendingPathComponent("Owned.fetch")
+        try await provider.fetch(replaced, to: fetched)
+        let relocated = try await provider.relocate(replaced, to: "/Moved.txt")
+        try await provider.trash(relocated)
+
+        #expect(
+            hook.kinds()
+                == [.store, .store, .makeFolder, .fetch, .relocate, .trash]
+        )
+        #expect(try await provider.currentState(of: relocated).isTrashed)
+        #expect(await provider.recoveryURL(for: relocated.path) != nil)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent(".aetherloom/trash-receipts").path
+            )
+        )
+    }
+
+    @Test func mutationDeadlineBeforeStartHasNoFilesystemSideEffect() async throws {
+        let root = try makeRoot("mutation-pre-start-timeout")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staging = root.appendingPathComponent("Staging.bin")
+        try Data("never copied".utf8).write(to: staging)
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            deadlines: ProviderDeadlines(ioNanoseconds: 0)
+        )
+
+        await #expect(
+            throws: ProviderError.mutationDeadlineExpiredBeforeStart(
+                provider: provider.locationID,
+                path: "/Never.txt"
+            )
+        ) {
+            _ = try await provider.store(
+                from: staging,
+                at: "/Never.txt",
+                options: StoreOptions()
+            )
+        }
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("Never.txt").path
+            )
+        )
+    }
+
+    @Test func postStartStoreTimeoutBlocksScansUntilLateSuccessIsReconciled() async throws {
+        let root = try makeRoot("mutation-late-success")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staging = root.appendingPathComponent("Staging.bin")
+        try Data("late success".utf8).write(to: staging)
+        let clock = ProviderMutationManualClock()
+        let hook = BlockingLocalMutationHook()
+        let receiptID = UUID(uuidString: "a2000000-0000-0000-0000-000000000001")!
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            deadlines: ProviderDeadlines(
+                ioNanoseconds: 1,
+                clock: clock,
+                makeMutationID: { receiptID }
+            ),
+            mutationHook: hook
+        )
+        await clock.waitUntilIdle()
+
+        let call = Task { () -> ProviderMutationReceipt? in
+            do {
+                _ = try await provider.store(
+                    from: staging,
+                    at: "/Late.txt",
+                    options: StoreOptions()
+                )
+                Issue.record("Store unexpectedly completed before its deadline.")
+                return nil
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                return receipt
+            } catch {
+                Issue.record("Unexpected store error: \(error)")
+                return nil
+            }
+        }
+        await hook.waitUntilStarted(count: 1)
+        await clock.waitUntilSleeping()
+        await clock.fireAll()
+        let receipt = try #require(await call.value)
+        #expect(receipt.id == receiptID)
+
+        let blockedScan = await provider.scan(.entireDrive)
+        guard case .unavailable = blockedScan.status else {
+            Issue.record("Scan was allowed to race an indeterminate mutation.")
+            hook.release()
+            return
+        }
+
+        hook.release()
+        await waitForProviderMutationQuiescence(provider, receipt: receipt)
+        #expect(
+            await provider.indeterminateMutationState(for: receipt)
+                == .quiescent(.succeeded)
+        )
+        #expect(await provider.indeterminateMutationReceipt() == receipt)
+        let recovered = try await provider.currentStateForRecovery(
+            of: ItemObservation(
+                location: provider.locationID,
+                path: "/Late.txt",
+                kind: .file
+            ),
+            receipt: receipt
+        )
+        #expect(recovered.path == "/Late.txt")
+        await provider.finishIndeterminateMutationRecovery(for: receipt)
+        #expect(await provider.indeterminateMutationReceipt() == nil)
+
+        guard case .complete = (await provider.scan(.entireDrive)).status else {
+            Issue.record("Provider did not resume after reconciliation.")
+            return
+        }
+        _ = try await provider.makeFolder(at: "/AfterRecovery")
+    }
+
+    @Test func postStartStoreTimeoutRetainsLateFailure() async throws {
+        let root = try makeRoot("mutation-late-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staging = root.appendingPathComponent("Staging.bin")
+        try Data("late failure".utf8).write(to: staging)
+        let clock = ProviderMutationManualClock()
+        let hook = BlockingLocalMutationHook(failsWhenReleased: true)
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            deadlines: ProviderDeadlines(ioNanoseconds: 1, clock: clock),
+            mutationHook: hook
+        )
+        await clock.waitUntilIdle()
+
+        let call = Task { () -> ProviderMutationReceipt? in
+            do {
+                _ = try await provider.store(
+                    from: staging,
+                    at: "/Failure.txt",
+                    options: StoreOptions()
+                )
+                return nil
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                return receipt
+            } catch {
+                Issue.record("Unexpected store error: \(error)")
+                return nil
+            }
+        }
+        await hook.waitUntilStarted(count: 1)
+        await clock.waitUntilSleeping()
+        await clock.fireAll()
+        let receipt = try #require(await call.value)
+        hook.release()
+        await waitForProviderMutationQuiescence(provider, receipt: receipt)
+
+        guard case .quiescent(.failed) = await provider
+            .indeterminateMutationState(for: receipt) else {
+            Issue.record("Provider discarded the late failure.")
+            return
+        }
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("Failure.txt").path
+            )
+        )
+        await provider.finishIndeterminateMutationRecovery(for: receipt)
+    }
+
     private func makeRoot(_ name: String) throws -> URL {
         try TestTemporaryDirectory.make(
             suite: "LocalFolderStorageProviderTests",
@@ -1442,5 +1720,127 @@ private final class TrashFailureOnceRelocationPerformer:
         if failsThisCall {
             throw ExpectedFailure()
         }
+    }
+}
+
+private final class RecordingLocalMutationHook:
+    LocalMutationStarting,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var recorded: [ProviderMutationKind] = []
+
+    func beforeMutation(_ receipt: ProviderMutationReceipt) throws {
+        lock.withLock {
+            recorded.append(receipt.kind)
+        }
+    }
+
+    func kinds() -> [ProviderMutationKind] {
+        lock.withLock { recorded }
+    }
+}
+
+private final class BlockingLocalMutationHook:
+    LocalMutationStarting,
+    @unchecked Sendable
+{
+    struct ScriptedFailure: Error {}
+
+    private let condition = NSCondition()
+    private let failsWhenReleased: Bool
+    private var startedCount = 0
+    private var released = false
+
+    init(failsWhenReleased: Bool = false) {
+        self.failsWhenReleased = failsWhenReleased
+    }
+
+    func beforeMutation(_: ProviderMutationReceipt) throws {
+        condition.lock()
+        startedCount += 1
+        condition.broadcast()
+        while !released {
+            condition.wait()
+        }
+        let shouldFail = failsWhenReleased
+        condition.unlock()
+        if shouldFail {
+            throw ScriptedFailure()
+        }
+    }
+
+    func waitUntilStarted(count: Int) async {
+        while currentStartedCount() < count {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private func currentStartedCount() -> Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return startedCount
+    }
+}
+
+private actor ProviderMutationManualClock: ProviderDeadlineClock {
+    private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var sleeperWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func sleep(nanoseconds _: UInt64) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters[id] = continuation
+                let observers = sleeperWaiters
+                sleeperWaiters.removeAll()
+                for observer in observers {
+                    observer.resume()
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
+        }
+    }
+
+    func waitUntilSleeping() async {
+        if !waiters.isEmpty { return }
+        await withCheckedContinuation { continuation in
+            sleeperWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilIdle() async {
+        while !waiters.isEmpty {
+            await Task.yield()
+        }
+    }
+
+    func fireAll() {
+        let continuations = waiters.values
+        waiters.removeAll()
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+
+    private func cancel(_ id: UUID) {
+        waiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+    }
+}
+
+private func waitForProviderMutationQuiescence(
+    _ provider: LocalFolderStorageProvider,
+    receipt: ProviderMutationReceipt
+) async {
+    while await provider.indeterminateMutationState(for: receipt) == .inFlight {
+        await Task.yield()
     }
 }

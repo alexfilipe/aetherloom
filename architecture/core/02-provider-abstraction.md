@@ -108,6 +108,27 @@ Engine logic branches on capabilities and availability, never on `ProviderKind`.
 
 `ProviderError` ✅ keeps its taxonomy (`unavailable`, `itemUnavailable`, `placeholderOnly`, `notFound`, `itemAlreadyExists`, `preconditionFailed`, `unsupported`), keyed by `LocationID`. Discipline: `notFound` requires *positively confirmed absence at a healthy backend*; if the backend can't answer, throw `unavailable` — the executor treats them oppositely (replan vs abort-run).
 
-## 7. Changing the current code
+Mutation deadlines add two distinct errors:
+
+- `mutationDeadlineExpiredBeforeStart` proves the provider did not begin the side effect. It is a confirmed, terminal failure for that attempt.
+- `mutationIndeterminate(receipt)` means the deadline expired after blocking work began. It does **not** mean the syscall stopped. The receipt identifies the provider, operation kind, affected paths, and actual coordinator start time so the journal can retain the uncertainty.
+
+Providers with blocking calls refine `StorageProvider` through `IndeterminateMutationRecovering`. The refinement reports whether owned late work is still in flight, has reached quiescence with a retained success/failure, or belongs to a previous process. It also exposes the in-process indeterminate receipt so recovery can repair a failed journal-event append before it probes or releases anything. Its recovery-only probe bypasses the ordinary provider barrier; ordinary availability, scans, probes, and mutations remain blocked until the engine durably reconciles the receipt.
+
+## 7. Mutation ownership contract
+
+Every provider mutation has one durable owner from its atomic queued-to-started transition until the underlying operation actually returns. Caller cancellation or deadline expiry never releases that ownership. The provider must:
+
+1. prevent a timed-out queued operation from starting; if active work becomes indeterminate, invalidate every operation queued under the old authorization as pre-start and reject new mutation calls until recovery finishes;
+2. retain started work and its late success or failure;
+3. serialize conflicting reads and writes while the outcome is indeterminate;
+4. expose recovery truth without authorizing ordinary planning; and
+5. release its barrier only after the engine has marked the journal reconciled.
+
+This contract includes writes to caller-supplied staging URLs (`fetch`) because abandoned late copies can race stage cleanup and later materialization. Read-only scans and metadata probes may use ordinary deadline helpers when late completion cannot mutate provider or engine state, but their results are discarded and they remain barred during indeterminate mutation recovery.
+
+The provider/coordinator instance is session-owned: a root must not be reconstructed in the same process while its previous coordinator retains work. The current orchestrator's immutable provider map enforces this normal-path lifetime. A future provider-registry replacement API must transfer or share root ownership; only an actual process restart may treat a missing coordinator as `unknownAfterRestart`.
+
+## 8. Changing the current code
 
 Phase 2 of [11-migration.md](11-migration.md): rename protocol and fake; add availability/capabilities/scan; collapse move/rename → `relocate`; convert `UploadOptions` → `StoreOptions.OverwritePolicy`; add call log + fault scripting + fake trash to the fake; add `FlakyStorageProvider`. The existing fake's revision/precondition behavior carries over unchanged — it is the part most worth keeping.

@@ -1,6 +1,6 @@
 import Foundation
 
-public actor LocalFolderStorageProvider: StorageProvider {
+public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
     public static let expectedVolumeIdentityConfigurationKey = "expectedVolumeIdentity"
 
     /// Records the persistent volume UUID at enrollment time. The returned
@@ -49,9 +49,10 @@ public actor LocalFolderStorageProvider: StorageProvider {
     private let fetching: any LocalFetchPerforming
     private let nativeTrash: any LocalNativeTrashPerforming
     private let relocation: any LocalRelocationPerforming
+    private let mutationHook: any LocalMutationStarting
+    private let mutations: LocalMutationCoordinator
+    private let mutationArtifacts: LocalMutationArtifacts
     private let quarantineTimestamp: String
-    private var recoveryURLsByPath: [SyncPath: URL]
-    private var completedTrashVersions: [SyncPath: ItemVersion]
 
     public static func make(
         location: SyncLocation,
@@ -92,7 +93,9 @@ public actor LocalFolderStorageProvider: StorageProvider {
             capabilities: capabilities,
             fetching: SystemLocalFetchPerformer(),
             nativeTrash: SystemLocalNativeTrashPerformer(),
-            relocation: SystemLocalRelocationPerformer()
+            relocation: SystemLocalRelocationPerformer(),
+            mutationHook: NoOpLocalMutationHook(),
+            mutations: LocalMutationCoordinator()
         )
     }
 
@@ -103,7 +106,9 @@ public actor LocalFolderStorageProvider: StorageProvider {
         deadlines: ProviderDeadlines = ProviderDeadlines(),
         fetching: any LocalFetchPerforming = SystemLocalFetchPerformer(),
         nativeTrash: any LocalNativeTrashPerforming = SystemLocalNativeTrashPerformer(),
-        relocation: any LocalRelocationPerforming = SystemLocalRelocationPerformer()
+        relocation: any LocalRelocationPerforming = SystemLocalRelocationPerformer(),
+        mutationHook: any LocalMutationStarting = NoOpLocalMutationHook(),
+        mutations: LocalMutationCoordinator = LocalMutationCoordinator()
     ) async -> LocalFolderStorageProvider {
         let propertyResult = await withProviderDeadline(
             nanoseconds: deadlines.probeNanoseconds,
@@ -137,7 +142,9 @@ public actor LocalFolderStorageProvider: StorageProvider {
             ),
             fetching: fetching,
             nativeTrash: nativeTrash,
-            relocation: relocation
+            relocation: relocation,
+            mutationHook: mutationHook,
+            mutations: mutations
         )
     }
 
@@ -150,7 +157,9 @@ public actor LocalFolderStorageProvider: StorageProvider {
         capabilities: ProviderCapabilities,
         fetching: any LocalFetchPerforming,
         nativeTrash: any LocalNativeTrashPerforming,
-        relocation: any LocalRelocationPerforming
+        relocation: any LocalRelocationPerforming,
+        mutationHook: any LocalMutationStarting,
+        mutations: LocalMutationCoordinator
     ) {
         self.locationID = location.id
         self.capabilities = capabilities
@@ -161,12 +170,24 @@ public actor LocalFolderStorageProvider: StorageProvider {
         self.fetching = fetching
         self.nativeTrash = nativeTrash
         self.relocation = relocation
+        self.mutationHook = mutationHook
+        self.mutations = mutations
+        self.mutationArtifacts = LocalMutationArtifacts()
         self.quarantineTimestamp = Self.timestampString(for: deadlines.now())
-        self.recoveryURLsByPath = [:]
-        self.completedTrashVersions = [:]
     }
 
     public func checkAvailability() async -> LocationAvailability {
+        if let receipt = await mutations.barrierReceipt() {
+            return .unavailable(
+                .unknown(
+                    detail: "Filesystem mutation \(receipt.id.uuidString) is still awaiting reconciliation."
+                )
+            )
+        }
+        return await checkAvailabilityIgnoringMutationBarrier()
+    }
+
+    private func checkAvailabilityIgnoringMutationBarrier() async -> LocationAvailability {
         switch await probe({ await self.volumes.mountState(for: self.rootURL) }) {
         case .timedOut:
             return .unavailable(.volumeUnreachable(detail: "Volume mount inspection timed out."))
@@ -276,60 +297,31 @@ public actor LocalFolderStorageProvider: StorageProvider {
             throw ProviderError.itemUnavailable(provider: locationID, path: observation.path)
         }
         let fetching = self.fetching
-        let copyResult = await withProviderDeadline(
+        let receipt = mutationReceipt(kind: .fetch, paths: [observation.path])
+        let hook = mutationHook
+        let copyResult: LocalMutationDeadlineResult<Void> = await mutations.perform(
+            receipt: receipt,
             nanoseconds: deadlines.ioNanoseconds,
-            clock: deadlines.clock
-        ) {
+            clock: deadlines.clock,
+            startedAt: deadlines.now
+        ) { startedReceipt in
             do {
+                try hook.beforeMutation(startedReceipt)
                 try fetching.copyItem(at: sourceURL, to: stagingURL)
-                return LocalFileOperationResult.succeeded
+                return .success(())
             } catch {
-                return .failed(LocalFileFailure(error))
+                return .failure(
+                    .itemUnavailable(
+                        provider: observation.location,
+                        path: observation.path
+                    )
+                )
             }
         }
         switch copyResult {
-        case .timedOut:
-            throw ProviderError.unavailable(
-                provider: locationID,
-                reason: "Filesystem fetch timed out."
-            )
-        case .value(.succeeded):
-            let afterCopy = try await matchingCurrentState(of: observation)
-            guard afterCopy.version.isSameVersion(as: observation.version) else {
-                throw ProviderError.preconditionFailed(
-                    provider: locationID,
-                    path: observation.path
-                )
-            }
-            let verification = await withProviderDeadline(
-                nanoseconds: deadlines.ioNanoseconds,
-                clock: deadlines.clock
-            ) {
-                do {
-                    return LocalByteComparisonResult.equal(
-                        try Self.filesHaveEqualBytes(sourceURL, stagingURL)
-                    )
-                } catch {
-                    return .failed
-                }
-            }
-            switch verification {
-            case .timedOut:
-                throw ProviderError.unavailable(
-                    provider: locationID,
-                    reason: "Filesystem fetch verification timed out."
-                )
-            case .value(.equal(true)):
-                break
-            case .value(.equal(false)), .value(.failed):
-                throw ProviderError.preconditionFailed(
-                    provider: locationID,
-                    path: observation.path
-                )
-            }
-            _ = try await matchingCurrentState(of: observation)
-            return
-        case .value(.failed):
+        case .completed(.success):
+            break
+        case .completed(.failure):
             if case let .unavailable(reason) = await checkAvailability() {
                 throw ProviderError.unavailable(
                     provider: locationID,
@@ -340,11 +332,65 @@ public actor LocalFolderStorageProvider: StorageProvider {
                 provider: locationID,
                 path: observation.path
             )
+        case .deadlineExpiredBeforeStart:
+            throw ProviderError.mutationDeadlineExpiredBeforeStart(
+                provider: locationID,
+                path: observation.path
+            )
+        case let .indeterminate(receipt):
+            throw ProviderError.mutationIndeterminate(receipt)
         }
+
+        let afterCopy = try await matchingCurrentState(of: observation)
+        guard afterCopy.version.isSameVersion(as: observation.version) else {
+            throw ProviderError.preconditionFailed(
+                provider: locationID,
+                path: observation.path
+            )
+        }
+        let verification = await withProviderDeadline(
+            nanoseconds: deadlines.ioNanoseconds,
+            clock: deadlines.clock
+        ) {
+            do {
+                return LocalByteComparisonResult.equal(
+                    try Self.filesHaveEqualBytes(sourceURL, stagingURL)
+                )
+            } catch {
+                return .failed
+            }
+        }
+        switch verification {
+        case .timedOut:
+            throw ProviderError.unavailable(
+                provider: locationID,
+                reason: "Filesystem fetch verification timed out."
+            )
+        case .value(.equal(true)):
+            break
+        case .value(.equal(false)), .value(.failed):
+            throw ProviderError.preconditionFailed(
+                provider: locationID,
+                path: observation.path
+            )
+        }
+        _ = try await matchingCurrentState(of: observation)
     }
 
     public func currentState(of observation: ItemObservation) async throws -> ItemObservation {
-        if case let .unavailable(reason) = await checkAvailability() {
+        if let receipt = await mutations.barrierReceipt() {
+            throw ProviderError.unavailable(
+                provider: locationID,
+                reason: "Filesystem mutation \(receipt.id.uuidString) is still awaiting reconciliation."
+            )
+        }
+        return try await currentStateIgnoringMutationBarrier(of: observation)
+    }
+
+    private func currentStateIgnoringMutationBarrier(
+        of observation: ItemObservation
+    ) async throws -> ItemObservation {
+        if case let .unavailable(reason) = await checkAvailabilityIgnoringMutationBarrier() {
             throw ProviderError.unavailable(provider: locationID, reason: reason.detail)
         }
         guard observation.location == locationID,
@@ -381,7 +427,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
         case let .value(.observation(current)):
             return current
         case let .value(.failed(failure)):
-            if case let .unavailable(reason) = await checkAvailability() {
+            if case let .unavailable(reason) = await checkAvailabilityIgnoringMutationBarrier() {
                 throw ProviderError.unavailable(provider: locationID, reason: reason.detail)
             }
             let isAbsent = failure.isMissingFile
@@ -409,329 +455,170 @@ public actor LocalFolderStorageProvider: StorageProvider {
         at path: SyncPath,
         options: StoreOptions
     ) async throws -> ItemObservation {
-        try await requireAvailable()
-        guard !path.isRoot,
-              !isInternalPath(path),
-              let destination = resolvedURL(
-                  for: path,
-                  followingFinalSymlink: false
-              ) else {
-            throw ProviderError.itemUnavailable(provider: locationID, path: path)
-        }
-
-        let existing = try existingEntry(at: path)
-        switch options.overwrite {
-        case .neverOverwrite:
-            if let existing {
-                guard existing.observation.kind == .file else {
-                    throw ProviderError.itemAlreadyExists(
-                        provider: locationID,
-                        path: path
-                    )
-                }
-                if try Self.filesHaveEqualBytes(stagingURL, existing.url) {
-                    return existing.observation
-                }
-                throw ProviderError.itemAlreadyExists(
-                    provider: locationID,
-                    path: path
+        try await requireAvailableBeforeEnqueue()
+        let receipt = mutationReceipt(kind: .store, paths: [path])
+        let context = mutationContext()
+        return try await resolveMutation(
+            await mutations.perform(
+                receipt: receipt,
+                nanoseconds: deadlines.ioNanoseconds,
+                clock: deadlines.clock,
+                startedAt: deadlines.now
+            ) { startedReceipt in
+                await context.store(
+                    from: stagingURL,
+                    at: path,
+                    options: options,
+                    receipt: startedReceipt
                 )
-            }
-        case let .ifVersionMatches(expected):
-            guard let existing,
-                  existing.observation.kind == .file,
-                  existing.observation.version.isSameVersion(as: expected) else {
-                throw ProviderError.preconditionFailed(
-                    provider: locationID,
-                    path: path
-                )
-            }
-        }
-
-        do {
-            let replacementTarget = existing?.url ?? destination
-            let replacementDirectory = try FileManager.default.url(
-                for: .itemReplacementDirectory,
-                in: .userDomainMask,
-                appropriateFor: replacementTarget,
-                create: true
-            )
-            let temporary = replacementDirectory.appendingPathComponent(
-                UUID().uuidString
-            )
-            try FileManager.default.copyItem(at: stagingURL, to: temporary)
-            let committedURL: URL
-            let committedPath: SyncPath
-            if let existing {
-                _ = try FileManager.default.replaceItemAt(
-                    existing.url,
-                    withItemAt: temporary,
-                    backupItemName: nil,
-                    options: [.usingNewMetadataOnly]
-                )
-                committedURL = existing.url
-                committedPath = existing.observation.path
-            } else {
-                try FileManager.default.moveItem(at: temporary, to: destination)
-                committedURL = destination
-                committedPath = path
-            }
-            return try Self.observation(
-                locationID: locationID,
-                url: committedURL,
-                path: committedPath
-            )
-        } catch let error as ProviderError {
-            throw error
-        } catch {
-            throw ProviderError.itemUnavailable(provider: locationID, path: path)
-        }
+            },
+            path: path
+        )
     }
 
     public func makeFolder(at path: SyncPath) async throws -> ItemObservation {
-        try await requireAvailable()
-        guard !path.isRoot,
-              !isInternalPath(path),
-              let destination = resolvedURL(
-                  for: path,
-                  followingFinalSymlink: false
-              ) else {
-            throw ProviderError.itemUnavailable(provider: locationID, path: path)
-        }
-        if let existing = try existingEntry(at: path) {
-            if existing.observation.kind == .folder {
-                return existing.observation
-            }
-            throw ProviderError.itemAlreadyExists(provider: locationID, path: path)
-        }
-        do {
-            try FileManager.default.createDirectory(
-                at: destination,
-                withIntermediateDirectories: false
-            )
-            return try Self.observation(
-                locationID: locationID,
-                url: destination,
-                path: path
-            )
-        } catch {
-            throw ProviderError.itemUnavailable(provider: locationID, path: path)
-        }
+        try await requireAvailableBeforeEnqueue()
+        let receipt = mutationReceipt(kind: .makeFolder, paths: [path])
+        let context = mutationContext()
+        return try await resolveMutation(
+            await mutations.perform(
+                receipt: receipt,
+                nanoseconds: deadlines.ioNanoseconds,
+                clock: deadlines.clock,
+                startedAt: deadlines.now
+            ) { startedReceipt in
+                await context.makeFolder(at: path, receipt: startedReceipt)
+            },
+            path: path
+        )
     }
 
     public func relocate(
         _ observation: ItemObservation,
         to newPath: SyncPath
     ) async throws -> ItemObservation {
-        try await requireAvailable()
-        if observation.path == newPath {
-            return try await matchingCurrentState(of: observation)
-        }
-        guard !newPath.isRoot,
-              !isInternalPath(newPath),
-              let destination = resolvedURL(
-                  for: newPath,
-                  followingFinalSymlink: false
-              ),
-              let initiallyResolvedSource = resolvedURL(
-                  for: observation.path,
-                  followingFinalSymlink: false
-              ) else {
-            throw ProviderError.itemUnavailable(provider: locationID, path: newPath)
-        }
-        // Resolve the only asynchronous filesystem classification before the
-        // final precondition/occupancy checks. The check and commit below then
-        // remain serialized in this actor without an actor-reentrancy window.
-        let isSameVolume = try await sameVolume(
-            initiallyResolvedSource,
-            destination.deletingLastPathComponent()
+        try await requireAvailableBeforeEnqueue()
+        let receipt = mutationReceipt(
+            kind: .relocate,
+            paths: [observation.path, newPath]
         )
-        let current = try await matchingCurrentState(of: observation)
-        guard let source = resolvedURL(
-            for: current.path,
-            followingFinalSymlink: false
-        ) else {
-            throw ProviderError.itemUnavailable(
-                provider: locationID,
-                path: current.path
-            )
-        }
-        if try existingEntry(at: newPath) != nil {
-            throw ProviderError.itemAlreadyExists(
-                provider: locationID,
-                path: newPath
-            )
-        }
-
-        do {
-            if isSameVolume {
-                try FileManager.default.moveItem(at: source, to: destination)
-            } else {
-                do {
-                    try relocation.copyItem(at: source, to: destination)
-                    guard try equivalentTrees(source, destination) else {
-                        throw ProviderError.itemUnavailable(
-                            provider: locationID,
-                            path: newPath
-                        )
-                    }
-                } catch {
-                    if filesystemEntryExists(at: destination) {
-                        recoveryURLsByPath[newPath] = try quarantineURL(
-                            destination,
-                            originalPath: newPath
-                        )
-                    }
-                    throw error
-                }
-                do {
-                    try relocation.beforeSourceTrash(at: source)
-                    try trashCurrentSynchronously(current, source: source)
-                } catch {
-                    if filesystemEntryExists(at: destination) {
-                        recoveryURLsByPath[newPath] = try quarantineURL(
-                            destination,
-                            originalPath: newPath
-                        )
-                    }
-                    throw error
-                }
-            }
-            return try Self.observation(
-                locationID: locationID,
-                url: destination,
-                path: newPath
-            )
-        } catch let error as ProviderError {
-            throw error
-        } catch {
-            throw ProviderError.itemUnavailable(
-                provider: locationID,
-                path: current.path
-            )
-        }
+        let context = mutationContext()
+        return try await resolveMutation(
+            await mutations.perform(
+                receipt: receipt,
+                nanoseconds: deadlines.ioNanoseconds,
+                clock: deadlines.clock,
+                startedAt: deadlines.now
+            ) { startedReceipt in
+                await context.relocate(
+                    observation,
+                    to: newPath,
+                    receipt: startedReceipt
+                )
+            },
+            path: newPath
+        )
     }
 
     public func trash(_ observation: ItemObservation) async throws {
-        try await requireAvailable()
-        if let completedVersion = completedTrashVersions[observation.path],
-           completedVersion.isSameVersion(as: observation.version) {
-            // A matching weak version is not sufficient: a new item can be
-            // recreated at the same path with the same size and mtime.
-            if try existingEntry(at: observation.path) == nil {
-                return
-            }
+        try await requireAvailableBeforeEnqueue()
+        let receipt = mutationReceipt(kind: .trash, paths: [observation.path])
+        let context = mutationContext()
+        let result: LocalMutationDeadlineResult<Void> = await mutations.perform(
+            receipt: receipt,
+            nanoseconds: deadlines.ioNanoseconds,
+            clock: deadlines.clock,
+            startedAt: deadlines.now
+        ) { startedReceipt in
+            await context.trash(observation, receipt: startedReceipt)
         }
-        let current = try await matchingCurrentState(of: observation)
-        if current.isTrashed {
-            completedTrashVersions[observation.path] = observation.version
-            return
-        }
-        guard let source = resolvedURL(
-            for: current.path,
-            followingFinalSymlink: false
-        ) else {
-            throw ProviderError.itemUnavailable(
-                provider: locationID,
-                path: current.path
-            )
-        }
+        _ = try await resolveMutation(result, path: observation.path)
+    }
 
-        do {
-            try trashCurrentSynchronously(current, source: source)
-        } catch let error as ProviderError {
-            throw error
-        } catch {
-            throw ProviderError.itemUnavailable(
+    func recoveryURL(for path: SyncPath) async -> URL? {
+        await mutationArtifacts.recoveryURL(for: path)
+    }
+
+    public func indeterminateMutationState(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderIndeterminateMutationState {
+        await mutations.state(for: receipt)
+    }
+
+    public func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
+        await mutations.indeterminateReceipt()
+    }
+
+    public func currentStateForRecovery(
+        of observation: ItemObservation,
+        receipt: ProviderMutationReceipt
+    ) async throws -> ItemObservation {
+        guard receipt.provider == locationID else {
+            throw ProviderError.preconditionFailed(
                 provider: locationID,
                 path: observation.path
             )
         }
+        guard case .inFlight = await mutations.state(for: receipt) else {
+            return try await currentStateIgnoringMutationBarrier(of: observation)
+        }
+        throw ProviderError.unavailable(
+            provider: locationID,
+            reason: "Filesystem mutation \(receipt.id.uuidString) is still running."
+        )
     }
 
-    func recoveryURL(for path: SyncPath) -> URL? {
-        recoveryURLsByPath[path]
+    public func finishIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async {
+        await mutations.finishRecovery(for: receipt)
     }
 
-    private func trashCurrentSynchronously(
-        _ current: ItemObservation,
-        source: URL
-    ) throws {
-        let immediatelyCurrent: ItemObservation
-        do {
-            immediatelyCurrent = try Self.observation(
-                locationID: locationID,
-                url: source,
-                path: current.path
-            )
-        } catch {
-            throw ProviderError.preconditionFailed(
-                provider: locationID,
-                path: current.path
-            )
-        }
-        guard immediatelyCurrent.kind == current.kind,
-              immediatelyCurrent.version.isSameVersion(as: current.version) else {
-            throw ProviderError.preconditionFailed(
-                provider: locationID,
-                path: current.path
-            )
-        }
-
-        if capabilities.hasNativeTrash {
-            var receipt = LocalTrashReceipt(
-                observation: immediatelyCurrent,
-                method: .nativeTrash,
-                recoveryPath: nil,
-                startedAt: deadlines.now()
-            )
-            try persistTrashReceipt(receipt)
-            do {
-                let resultingURL = try nativeTrash.trashItem(at: source)
-                if let resultingURL {
-                    recoveryURLsByPath[current.path] = resultingURL
-                    receipt.recoveryPath = resultingURL.path
-                }
-                try persistTrashReceipt(receipt)
-                completedTrashVersions[current.path] = current.version
-                return
-            } catch {
-                // A native implementation can move the item and still throw.
-                // Confirm path absence before attempting quarantine on source.
-                if try existingEntry(at: current.path) == nil {
-                    completedTrashVersions[current.path] = current.version
-                    return
-                }
-                let afterFailure = try Self.observation(
-                    locationID: locationID,
-                    url: source,
-                    path: current.path
-                )
-                guard afterFailure.kind == current.kind,
-                      afterFailure.version.isSameVersion(as: current.version) else {
-                    throw ProviderError.preconditionFailed(
-                        provider: locationID,
-                        path: current.path
-                    )
-                }
-                // A stale capability safely degrades to quarantine.
-            }
-        }
-
-        let recoveryURL = try quarantineDestinationURL(
-            originalPath: current.path
+    private func mutationReceipt(
+        kind: ProviderMutationKind,
+        paths: [SyncPath]
+    ) -> ProviderMutationReceipt {
+        ProviderMutationReceipt(
+            id: deadlines.makeMutationID(),
+            provider: locationID,
+            kind: kind,
+            affectedPaths: paths,
+            startedAt: deadlines.now()
         )
-        try persistTrashReceipt(
-            LocalTrashReceipt(
-                observation: immediatelyCurrent,
-                method: .quarantine,
-                recoveryPath: recoveryURL.path,
-                startedAt: deadlines.now()
-            )
+    }
+
+    private func mutationContext() -> MutationContext {
+        MutationContext(
+            locationID: locationID,
+            capabilities: capabilities,
+            rootURL: rootURL,
+            volumes: volumes,
+            deadlines: deadlines,
+            nativeTrash: nativeTrash,
+            relocation: relocation,
+            hook: mutationHook,
+            artifacts: mutationArtifacts,
+            quarantineTimestamp: quarantineTimestamp
         )
-        try FileManager.default.moveItem(at: source, to: recoveryURL)
-        recoveryURLsByPath[current.path] = recoveryURL
-        completedTrashVersions[current.path] = current.version
+    }
+
+    private func resolveMutation<Value: Sendable>(
+        _ result: LocalMutationDeadlineResult<Value>,
+        path: SyncPath
+    ) async throws -> Value {
+        switch result {
+        case let .completed(.success(value)):
+            return value
+        case let .completed(.failure(error)):
+            throw error
+        case .deadlineExpiredBeforeStart:
+            throw ProviderError.mutationDeadlineExpiredBeforeStart(
+                provider: locationID,
+                path: path
+            )
+        case let .indeterminate(receipt):
+            throw ProviderError.mutationIndeterminate(receipt)
+        }
     }
 
     private func trashedObservation(
@@ -756,18 +643,6 @@ public actor LocalFolderStorageProvider: StorageProvider {
         var observation = receipt.observation
         observation.isTrashed = true
         return observation
-    }
-
-    private func persistTrashReceipt(_ receipt: LocalTrashReceipt) throws {
-        let directory = try trashReceiptDirectory(create: true)
-        let receiptURL = directory.appendingPathComponent(
-            try trashReceiptFilename(for: receipt.observation),
-            isDirectory: false
-        )
-        try CanonicalCoding.encoder().encode(receipt).write(
-            to: receiptURL,
-            options: .atomic
-        )
     }
 
     private func loadTrashReceipt(
@@ -829,13 +704,21 @@ public actor LocalFolderStorageProvider: StorageProvider {
         return (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
     }
 
-    private func requireAvailable() async throws {
-        if case let .unavailable(reason) = await checkAvailability() {
+    private func requireAvailableIgnoringMutationBarrier() async throws {
+        if case let .unavailable(reason) = await checkAvailabilityIgnoringMutationBarrier() {
             throw ProviderError.unavailable(
                 provider: locationID,
                 reason: reason.detail
             )
         }
+    }
+
+    /// A mutation already owned by the coordinator is itself the availability
+    /// barrier. Do not run volume or path probes beside it; enqueue first and
+    /// let recovery release the root only after the late result is reconciled.
+    private func requireAvailableBeforeEnqueue() async throws {
+        guard await mutations.barrierReceipt() == nil else { return }
+        try await requireAvailableIgnoringMutationBarrier()
     }
 
     private func matchingCurrentState(
@@ -864,51 +747,6 @@ public actor LocalFolderStorageProvider: StorageProvider {
             )
         }
         return current
-    }
-
-    private func existingEntry(at path: SyncPath) throws -> LocalExistingEntry? {
-        guard !path.isRoot,
-              !isInternalPath(path),
-              let parent = resolvedURL(
-                  for: path.parent,
-                  followingFinalSymlink: true
-              ) else {
-            throw ProviderError.itemUnavailable(provider: locationID, path: path)
-        }
-        let names: [String]
-        do {
-            names = try FileManager.default.contentsOfDirectory(atPath: parent.path)
-        } catch {
-            let failure = LocalFileFailure(error)
-            if failure.isMissingFile {
-                return nil
-            }
-            throw ProviderError.itemUnavailable(provider: locationID, path: path)
-        }
-        let name = path.name
-        let actualName: String?
-        if capabilities.isCaseSensitive == true {
-            actualName = names.first { $0 == name }
-        } else {
-            actualName = names.first {
-                $0.caseInsensitiveCompare(name) == .orderedSame
-            }
-        }
-        guard let actualName else { return nil }
-        let actualPath = path.parent.appending(actualName)
-        let url = parent.appendingPathComponent(actualName, isDirectory: false)
-        do {
-            return LocalExistingEntry(
-                url: url,
-                observation: try Self.observation(
-                    locationID: locationID,
-                    url: url,
-                    path: actualPath
-                )
-            )
-        } catch {
-            throw ProviderError.itemUnavailable(provider: locationID, path: path)
-        }
     }
 
     private static func filesHaveEqualBytes(_ first: URL, _ second: URL) throws -> Bool {
@@ -942,42 +780,6 @@ public actor LocalFolderStorageProvider: StorageProvider {
                 return true
             }
         }
-    }
-
-    private func sameVolume(_ source: URL, _ destinationParent: URL) async throws -> Bool {
-        let sourceIdentity: String?
-        switch await probe({ await self.volumes.volumeIdentity(for: source) }) {
-        case let .value(identity):
-            sourceIdentity = identity
-        case .timedOut:
-            throw ProviderError.unavailable(
-                provider: locationID,
-                reason: "Source volume identity inspection timed out."
-            )
-        }
-        let destinationIdentity: String?
-        switch await probe({
-            await self.volumes.volumeIdentity(for: destinationParent)
-        }) {
-        case let .value(identity):
-            destinationIdentity = identity
-        case .timedOut:
-            throw ProviderError.unavailable(
-                provider: locationID,
-                reason: "Destination volume identity inspection timed out."
-            )
-        }
-        guard let sourceIdentity, let destinationIdentity else {
-            throw ProviderError.unavailable(
-                provider: locationID,
-                reason: "A volume identity could not be determined."
-            )
-        }
-        return sourceIdentity == destinationIdentity
-    }
-
-    private func equivalentTrees(_ source: URL, _ destination: URL) throws -> Bool {
-        try Self.equivalentTrees(source, destination)
     }
 
     private static func equivalentTrees(_ source: URL, _ destination: URL) throws -> Bool {
@@ -1025,85 +827,6 @@ public actor LocalFolderStorageProvider: StorageProvider {
             return false
         }
         return try Data(contentsOf: source) == Data(contentsOf: destination)
-    }
-
-    @discardableResult
-    private func quarantineURL(
-        _ source: URL,
-        originalPath: SyncPath
-    ) throws -> URL {
-        let destination = try quarantineDestinationURL(originalPath: originalPath)
-        try FileManager.default.moveItem(at: source, to: destination)
-        return destination
-    }
-
-    private func quarantineDestinationURL(
-        originalPath: SyncPath
-    ) throws -> URL {
-        guard let canonicalRoot = Self.canonicalizingExistingAncestors(rootURL) else {
-            throw ProviderError.itemUnavailable(
-                provider: locationID,
-                path: originalPath
-            )
-        }
-        let trashRoot = canonicalRoot
-            .appendingPathComponent(".aetherloom", isDirectory: true)
-            .appendingPathComponent("trash", isDirectory: true)
-            .appendingPathComponent(quarantineTimestamp, isDirectory: true)
-        let destinationParent = originalPath.parent.components.reduce(trashRoot) {
-            $0.appendingPathComponent($1, isDirectory: true)
-        }
-        guard let checkedBeforeCreate = Self.canonicalizingExistingAncestors(
-            destinationParent
-        ),
-        Self.contains(checkedBeforeCreate, in: canonicalRoot) else {
-            throw ProviderError.itemUnavailable(
-                provider: locationID,
-                path: originalPath
-            )
-        }
-        try FileManager.default.createDirectory(
-            at: destinationParent,
-            withIntermediateDirectories: true
-        )
-        guard let checkedParent = Self.canonicalizingExistingAncestors(
-            destinationParent
-        ),
-        Self.contains(checkedParent, in: canonicalRoot) else {
-            throw ProviderError.itemUnavailable(
-                provider: locationID,
-                path: originalPath
-            )
-        }
-        let destination = uniqueQuarantineURL(
-            in: checkedParent,
-            originalName: originalPath.name
-        )
-        return destination
-    }
-
-    private func uniqueQuarantineURL(
-        in parent: URL,
-        originalName: String
-    ) -> URL {
-        let initial = parent.appendingPathComponent(originalName)
-        guard !FileManager.default.fileExists(atPath: initial.path) else {
-            let name = originalName as NSString
-            let stem = name.deletingPathExtension
-            let pathExtension = name.pathExtension
-            var suffix = 2
-            while true {
-                let candidateName = pathExtension.isEmpty
-                    ? "\(stem) \(suffix)"
-                    : "\(stem) \(suffix).\(pathExtension)"
-                let candidate = parent.appendingPathComponent(candidateName)
-                if !FileManager.default.fileExists(atPath: candidate.path) {
-                    return candidate
-                }
-                suffix += 1
-            }
-        }
-        return initial
     }
 
     private func probe<Value: Sendable>(
@@ -1427,6 +1150,654 @@ public actor LocalFolderStorageProvider: StorageProvider {
         ]
         return formatter.string(from: date)
     }
+
+    private struct MutationContext: Sendable {
+        let locationID: LocationID
+        let capabilities: ProviderCapabilities
+        let rootURL: URL
+        let volumes: any VolumeInspecting
+        let deadlines: ProviderDeadlines
+        let nativeTrash: any LocalNativeTrashPerforming
+        let relocation: any LocalRelocationPerforming
+        let hook: any LocalMutationStarting
+        let artifacts: LocalMutationArtifacts
+        let quarantineTimestamp: String
+
+        func store(
+            from stagingURL: URL,
+            at path: SyncPath,
+            options: StoreOptions,
+            receipt: ProviderMutationReceipt
+        ) async -> Result<ItemObservation, ProviderError> {
+            do {
+                try hook.beforeMutation(receipt)
+                guard !path.isRoot,
+                      !isInternalPath(path),
+                      let destination = resolvedURL(
+                          for: path,
+                          followingFinalSymlink: false
+                      ) else {
+                    throw ProviderError.itemUnavailable(provider: locationID, path: path)
+                }
+
+                let existing = try existingEntry(at: path)
+                switch options.overwrite {
+                case .neverOverwrite:
+                    if let existing {
+                        guard existing.observation.kind == .file else {
+                            throw ProviderError.itemAlreadyExists(
+                                provider: locationID,
+                                path: path
+                            )
+                        }
+                        if try LocalFolderStorageProvider.filesHaveEqualBytes(
+                            stagingURL,
+                            existing.url
+                        ) {
+                            return .success(existing.observation)
+                        }
+                        throw ProviderError.itemAlreadyExists(
+                            provider: locationID,
+                            path: path
+                        )
+                    }
+                case let .ifVersionMatches(expected):
+                    guard let existing,
+                          existing.observation.kind == .file,
+                          existing.observation.version.isSameVersion(as: expected) else {
+                        throw ProviderError.preconditionFailed(
+                            provider: locationID,
+                            path: path
+                        )
+                    }
+                }
+
+                let replacementTarget = existing?.url ?? destination
+                let replacementDirectory = try FileManager.default.url(
+                    for: .itemReplacementDirectory,
+                    in: .userDomainMask,
+                    appropriateFor: replacementTarget,
+                    create: true
+                )
+                let temporary = replacementDirectory.appendingPathComponent(
+                    receipt.id.uuidString
+                )
+                try FileManager.default.copyItem(at: stagingURL, to: temporary)
+                let committedURL: URL
+                let committedPath: SyncPath
+                if let existing {
+                    _ = try FileManager.default.replaceItemAt(
+                        existing.url,
+                        withItemAt: temporary,
+                        backupItemName: nil,
+                        options: [.usingNewMetadataOnly]
+                    )
+                    committedURL = existing.url
+                    committedPath = existing.observation.path
+                } else {
+                    try FileManager.default.moveItem(at: temporary, to: destination)
+                    committedURL = destination
+                    committedPath = path
+                }
+                return .success(
+                    try LocalFolderStorageProvider.observation(
+                        locationID: locationID,
+                        url: committedURL,
+                        path: committedPath
+                    )
+                )
+            } catch let error as ProviderError {
+                return .failure(error)
+            } catch {
+                return .failure(.itemUnavailable(provider: locationID, path: path))
+            }
+        }
+
+        func makeFolder(
+            at path: SyncPath,
+            receipt: ProviderMutationReceipt
+        ) async -> Result<ItemObservation, ProviderError> {
+            do {
+                try hook.beforeMutation(receipt)
+                guard !path.isRoot,
+                      !isInternalPath(path),
+                      let destination = resolvedURL(
+                          for: path,
+                          followingFinalSymlink: false
+                      ) else {
+                    throw ProviderError.itemUnavailable(provider: locationID, path: path)
+                }
+                if let existing = try existingEntry(at: path) {
+                    if existing.observation.kind == .folder {
+                        return .success(existing.observation)
+                    }
+                    throw ProviderError.itemAlreadyExists(provider: locationID, path: path)
+                }
+                try FileManager.default.createDirectory(
+                    at: destination,
+                    withIntermediateDirectories: false
+                )
+                return .success(
+                    try LocalFolderStorageProvider.observation(
+                        locationID: locationID,
+                        url: destination,
+                        path: path
+                    )
+                )
+            } catch let error as ProviderError {
+                return .failure(error)
+            } catch {
+                return .failure(.itemUnavailable(provider: locationID, path: path))
+            }
+        }
+
+        func relocate(
+            _ expected: ItemObservation,
+            to newPath: SyncPath,
+            receipt: ProviderMutationReceipt
+        ) async -> Result<ItemObservation, ProviderError> {
+            do {
+                try hook.beforeMutation(receipt)
+                if expected.path == newPath {
+                    return .success(try matchingCurrentState(of: expected))
+                }
+                guard !newPath.isRoot,
+                      !isInternalPath(newPath),
+                      let destination = resolvedURL(
+                          for: newPath,
+                          followingFinalSymlink: false
+                      ),
+                      let initialSource = resolvedURL(
+                          for: expected.path,
+                          followingFinalSymlink: false
+                      ) else {
+                    throw ProviderError.itemUnavailable(provider: locationID, path: newPath)
+                }
+                let isSameVolume = try await sameVolume(
+                    initialSource,
+                    destination.deletingLastPathComponent()
+                )
+                let current = try matchingCurrentState(of: expected)
+                guard let source = resolvedURL(
+                    for: current.path,
+                    followingFinalSymlink: false
+                ) else {
+                    throw ProviderError.itemUnavailable(
+                        provider: locationID,
+                        path: current.path
+                    )
+                }
+                if try existingEntry(at: newPath) != nil {
+                    throw ProviderError.itemAlreadyExists(
+                        provider: locationID,
+                        path: newPath
+                    )
+                }
+
+                if isSameVolume {
+                    try FileManager.default.moveItem(at: source, to: destination)
+                } else {
+                    do {
+                        try relocation.copyItem(at: source, to: destination)
+                        guard try LocalFolderStorageProvider.equivalentTrees(
+                            source,
+                            destination
+                        ) else {
+                            throw ProviderError.itemUnavailable(
+                                provider: locationID,
+                                path: newPath
+                            )
+                        }
+                    } catch {
+                        if filesystemEntryExists(at: destination) {
+                            let recovery = try quarantineURL(
+                                destination,
+                                originalPath: newPath
+                            )
+                            await artifacts.recordRecovery(recovery, for: newPath)
+                        }
+                        throw error
+                    }
+                    do {
+                        try relocation.beforeSourceTrash(at: source)
+                        try await trashCurrent(current, source: source)
+                    } catch {
+                        if filesystemEntryExists(at: destination) {
+                            let recovery = try quarantineURL(
+                                destination,
+                                originalPath: newPath
+                            )
+                            await artifacts.recordRecovery(recovery, for: newPath)
+                        }
+                        throw error
+                    }
+                }
+                return .success(
+                    try LocalFolderStorageProvider.observation(
+                        locationID: locationID,
+                        url: destination,
+                        path: newPath
+                    )
+                )
+            } catch let error as ProviderError {
+                return .failure(error)
+            } catch {
+                return .failure(.itemUnavailable(provider: locationID, path: expected.path))
+            }
+        }
+
+        func trash(
+            _ expected: ItemObservation,
+            receipt: ProviderMutationReceipt
+        ) async -> Result<Void, ProviderError> {
+            do {
+                try hook.beforeMutation(receipt)
+                if let existing = try existingEntry(at: expected.path) {
+                    guard existing.observation.kind == expected.kind,
+                          existing.observation.version.isSameVersion(as: expected.version) else {
+                        throw ProviderError.preconditionFailed(
+                            provider: locationID,
+                            path: expected.path
+                        )
+                    }
+                    try await trashCurrent(existing.observation, source: existing.url)
+                    return .success(())
+                }
+                guard let trashed = try trashedObservation(from: expected),
+                      trashed.isTrashed else {
+                    throw ProviderError.preconditionFailed(
+                        provider: locationID,
+                        path: expected.path
+                    )
+                }
+                return .success(())
+            } catch let error as ProviderError {
+                return .failure(error)
+            } catch {
+                return .failure(
+                    .itemUnavailable(provider: locationID, path: expected.path)
+                )
+            }
+        }
+
+        private func matchingCurrentState(
+            of expected: ItemObservation
+        ) throws -> ItemObservation {
+            guard expected.location == locationID,
+                  let existing = try existingEntry(at: expected.path),
+                  existing.observation.kind == expected.kind,
+                  existing.observation.version.isSameVersion(as: expected.version) else {
+                throw ProviderError.preconditionFailed(
+                    provider: locationID,
+                    path: expected.path
+                )
+            }
+            return existing.observation
+        }
+
+        private func trashCurrent(
+            _ current: ItemObservation,
+            source: URL
+        ) async throws {
+            let immediatelyCurrent: ItemObservation
+            do {
+                immediatelyCurrent = try LocalFolderStorageProvider.observation(
+                    locationID: locationID,
+                    url: source,
+                    path: current.path
+                )
+            } catch {
+                throw ProviderError.preconditionFailed(
+                    provider: locationID,
+                    path: current.path
+                )
+            }
+            guard immediatelyCurrent.kind == current.kind,
+                  immediatelyCurrent.version.isSameVersion(as: current.version) else {
+                throw ProviderError.preconditionFailed(
+                    provider: locationID,
+                    path: current.path
+                )
+            }
+
+            if capabilities.hasNativeTrash {
+                var trashReceipt = LocalTrashReceipt(
+                    observation: immediatelyCurrent,
+                    method: .nativeTrash,
+                    recoveryPath: nil,
+                    startedAt: deadlines.now()
+                )
+                try persistTrashReceipt(trashReceipt)
+                do {
+                    let resultingURL = try nativeTrash.trashItem(at: source)
+                    if let resultingURL {
+                        await artifacts.recordRecovery(
+                            resultingURL,
+                            for: current.path
+                        )
+                        trashReceipt.recoveryPath = resultingURL.path
+                    }
+                    try persistTrashReceipt(trashReceipt)
+                    return
+                } catch {
+                    // Native trash can move and then throw. Absence plus the
+                    // write-ahead receipt is a recoverable success; never try a
+                    // second destructive fallback against an absent source.
+                    if try existingEntry(at: current.path) == nil {
+                        return
+                    }
+                    let afterFailure = try LocalFolderStorageProvider.observation(
+                        locationID: locationID,
+                        url: source,
+                        path: current.path
+                    )
+                    guard afterFailure.kind == current.kind,
+                          afterFailure.version.isSameVersion(as: current.version) else {
+                        throw ProviderError.preconditionFailed(
+                            provider: locationID,
+                            path: current.path
+                        )
+                    }
+                }
+            }
+
+            let recoveryURL = try quarantineDestinationURL(
+                originalPath: current.path
+            )
+            try persistTrashReceipt(
+                LocalTrashReceipt(
+                    observation: immediatelyCurrent,
+                    method: .quarantine,
+                    recoveryPath: recoveryURL.path,
+                    startedAt: deadlines.now()
+                )
+            )
+            try FileManager.default.moveItem(at: source, to: recoveryURL)
+            await artifacts.recordRecovery(recoveryURL, for: current.path)
+        }
+
+        private func existingEntry(at path: SyncPath) throws -> LocalExistingEntry? {
+            guard !path.isRoot,
+                  !isInternalPath(path),
+                  let parent = resolvedURL(
+                      for: path.parent,
+                      followingFinalSymlink: true
+                  ) else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: path)
+            }
+            let names: [String]
+            do {
+                names = try FileManager.default.contentsOfDirectory(atPath: parent.path)
+            } catch {
+                if LocalFileFailure(error).isMissingFile {
+                    return nil
+                }
+                throw ProviderError.itemUnavailable(provider: locationID, path: path)
+            }
+            let actualName: String?
+            if capabilities.isCaseSensitive == true {
+                actualName = names.first { $0 == path.name }
+            } else {
+                actualName = names.first {
+                    $0.caseInsensitiveCompare(path.name) == .orderedSame
+                }
+            }
+            guard let actualName else { return nil }
+            let actualPath = path.parent.appending(actualName)
+            let url = parent.appendingPathComponent(actualName, isDirectory: false)
+            do {
+                return LocalExistingEntry(
+                    url: url,
+                    observation: try LocalFolderStorageProvider.observation(
+                        locationID: locationID,
+                        url: url,
+                        path: actualPath
+                    )
+                )
+            } catch {
+                throw ProviderError.itemUnavailable(provider: locationID, path: path)
+            }
+        }
+
+        private func sameVolume(
+            _ source: URL,
+            _ destinationParent: URL
+        ) async throws -> Bool {
+            let sourceResult = await withProviderDeadline(
+                nanoseconds: deadlines.probeNanoseconds,
+                clock: deadlines.clock
+            ) {
+                await volumes.volumeIdentity(for: source)
+            }
+            let destinationResult = await withProviderDeadline(
+                nanoseconds: deadlines.probeNanoseconds,
+                clock: deadlines.clock
+            ) {
+                await volumes.volumeIdentity(for: destinationParent)
+            }
+            guard case let .value(sourceIdentity?) = sourceResult,
+                  case let .value(destinationIdentity?) = destinationResult else {
+                throw ProviderError.unavailable(
+                    provider: locationID,
+                    reason: "A volume identity could not be determined before relocation."
+                )
+            }
+            return sourceIdentity == destinationIdentity
+        }
+
+        private func resolvedURL(
+            for path: SyncPath,
+            followingFinalSymlink: Bool
+        ) -> URL? {
+            guard !path.components.contains(where: { $0 == "." || $0 == ".." }),
+                  let canonicalRoot = LocalFolderStorageProvider
+                    .canonicalizingExistingAncestors(rootURL) else {
+                return nil
+            }
+            let candidate = path.components.reduce(canonicalRoot) { partial, component in
+                partial.appendingPathComponent(component, isDirectory: false)
+            }
+            let checked: URL?
+            if followingFinalSymlink || path.isRoot {
+                checked = LocalFolderStorageProvider
+                    .canonicalizingExistingAncestors(candidate)
+            } else {
+                checked = LocalFolderStorageProvider.canonicalizingExistingAncestors(
+                    candidate.deletingLastPathComponent()
+                )?.appendingPathComponent(candidate.lastPathComponent)
+            }
+            guard let checked,
+                  LocalFolderStorageProvider.contains(checked, in: canonicalRoot) else {
+                return nil
+            }
+            return checked
+        }
+
+        private func isInternalPath(_ path: SyncPath) -> Bool {
+            LocalFolderStorageProvider.isInternal(
+                path,
+                isCaseSensitive: capabilities.isCaseSensitive
+            )
+        }
+
+        private func persistTrashReceipt(_ receipt: LocalTrashReceipt) throws {
+            let directory = try trashReceiptDirectory(create: true)
+            let receiptURL = directory.appendingPathComponent(
+                try trashReceiptFilename(for: receipt.observation),
+                isDirectory: false
+            )
+            try CanonicalCoding.encoder().encode(receipt).write(
+                to: receiptURL,
+                options: .atomic
+            )
+        }
+
+        private func trashedObservation(
+            from expected: ItemObservation
+        ) throws -> ItemObservation? {
+            let directory = try trashReceiptDirectory(create: false)
+            let receiptURL = directory.appendingPathComponent(
+                try trashReceiptFilename(for: expected),
+                isDirectory: false
+            )
+            guard filesystemEntryExists(at: receiptURL) else { return nil }
+            let receipt = try CanonicalCoding.decoder().decode(
+                LocalTrashReceipt.self,
+                from: Data(contentsOf: receiptURL)
+            )
+            guard receipt.observation.location == locationID,
+                  receipt.observation.path == expected.path,
+                  receipt.observation.kind == expected.kind,
+                  receipt.observation.version.isSameVersion(as: expected.version) else {
+                return nil
+            }
+            if receipt.method == .quarantine {
+                guard let recoveryPath = receipt.recoveryPath,
+                      filesystemEntryExists(
+                          at: URL(fileURLWithPath: recoveryPath)
+                      ) else {
+                    return nil
+                }
+            } else if let recoveryPath = receipt.recoveryPath,
+                      !filesystemEntryExists(at: URL(fileURLWithPath: recoveryPath)) {
+                return nil
+            }
+            var observation = receipt.observation
+            observation.isTrashed = true
+            return observation
+        }
+
+        private func trashReceiptFilename(
+            for observation: ItemObservation
+        ) throws -> String {
+            let encoded = try CanonicalCoding.encoder().encode(
+                LocalTrashReceiptKey(
+                    location: observation.location,
+                    path: observation.path,
+                    kind: observation.kind
+                )
+            )
+            return CanonicalCoding.sha256Hex(encoded) + ".json"
+        }
+
+        private func trashReceiptDirectory(create: Bool) throws -> URL {
+            guard let canonicalRoot = LocalFolderStorageProvider
+                .canonicalizingExistingAncestors(rootURL) else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
+            let directory = canonicalRoot
+                .appendingPathComponent(".aetherloom", isDirectory: true)
+                .appendingPathComponent("trash-receipts", isDirectory: true)
+            guard let checkedBeforeCreate = LocalFolderStorageProvider
+                .canonicalizingExistingAncestors(directory),
+                  LocalFolderStorageProvider.contains(
+                      checkedBeforeCreate,
+                      in: canonicalRoot
+                  ) else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
+            if create {
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+            }
+            guard let checked = LocalFolderStorageProvider
+                .canonicalizingExistingAncestors(directory),
+                  LocalFolderStorageProvider.contains(checked, in: canonicalRoot) else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
+            return checked
+        }
+
+        private func quarantineURL(
+            _ source: URL,
+            originalPath: SyncPath
+        ) throws -> URL {
+            let destination = try quarantineDestinationURL(originalPath: originalPath)
+            try FileManager.default.moveItem(at: source, to: destination)
+            return destination
+        }
+
+        private func quarantineDestinationURL(
+            originalPath: SyncPath
+        ) throws -> URL {
+            guard let canonicalRoot = LocalFolderStorageProvider
+                .canonicalizingExistingAncestors(rootURL) else {
+                throw ProviderError.itemUnavailable(
+                    provider: locationID,
+                    path: originalPath
+                )
+            }
+            let trashRoot = canonicalRoot
+                .appendingPathComponent(".aetherloom", isDirectory: true)
+                .appendingPathComponent("trash", isDirectory: true)
+                .appendingPathComponent(quarantineTimestamp, isDirectory: true)
+            let destinationParent = originalPath.parent.components.reduce(trashRoot) {
+                $0.appendingPathComponent($1, isDirectory: true)
+            }
+            guard let checkedBeforeCreate = LocalFolderStorageProvider
+                .canonicalizingExistingAncestors(destinationParent),
+                  LocalFolderStorageProvider.contains(
+                      checkedBeforeCreate,
+                      in: canonicalRoot
+                  ) else {
+                throw ProviderError.itemUnavailable(
+                    provider: locationID,
+                    path: originalPath
+                )
+            }
+            try FileManager.default.createDirectory(
+                at: destinationParent,
+                withIntermediateDirectories: true
+            )
+            guard let checkedParent = LocalFolderStorageProvider
+                .canonicalizingExistingAncestors(destinationParent),
+                  LocalFolderStorageProvider.contains(checkedParent, in: canonicalRoot) else {
+                throw ProviderError.itemUnavailable(
+                    provider: locationID,
+                    path: originalPath
+                )
+            }
+            return uniqueQuarantineURL(
+                in: checkedParent,
+                originalName: originalPath.name
+            )
+        }
+
+        private func uniqueQuarantineURL(
+            in parent: URL,
+            originalName: String
+        ) -> URL {
+            let initial = parent.appendingPathComponent(originalName)
+            guard !FileManager.default.fileExists(atPath: initial.path) else {
+                let name = originalName as NSString
+                let stem = name.deletingPathExtension
+                let pathExtension = name.pathExtension
+                var suffix = 2
+                while true {
+                    let candidateName = pathExtension.isEmpty
+                        ? "\(stem) \(suffix)"
+                        : "\(stem) \(suffix).\(pathExtension)"
+                    let candidate = parent.appendingPathComponent(candidateName)
+                    if !FileManager.default.fileExists(atPath: candidate.path) {
+                        return candidate
+                    }
+                    suffix += 1
+                }
+            }
+            return initial
+        }
+
+        private func filesystemEntryExists(at url: URL) -> Bool {
+            if (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil {
+                return true
+            }
+            return (try? FileManager.default.destinationOfSymbolicLink(
+                atPath: url.path
+            )) != nil
+        }
+    }
 }
 
 private struct LocalScanResult: Sendable {
@@ -1493,6 +1864,26 @@ private struct LocalFileFailure: Sendable {
         domain == NSCocoaErrorDomain
             && (code == NSFileNoSuchFileError || code == NSFileReadNoSuchFileError)
     }
+}
+
+actor LocalMutationArtifacts {
+    private var recoveryURLsByPath: [SyncPath: URL] = [:]
+
+    func recordRecovery(_ url: URL, for path: SyncPath) {
+        recoveryURLsByPath[path] = url
+    }
+
+    func recoveryURL(for path: SyncPath) -> URL? {
+        recoveryURLsByPath[path]
+    }
+}
+
+protocol LocalMutationStarting: Sendable {
+    func beforeMutation(_ receipt: ProviderMutationReceipt) throws
+}
+
+struct NoOpLocalMutationHook: LocalMutationStarting {
+    func beforeMutation(_: ProviderMutationReceipt) throws {}
 }
 
 protocol LocalFetchPerforming: Sendable {

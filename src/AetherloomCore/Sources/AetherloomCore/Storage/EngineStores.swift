@@ -195,6 +195,7 @@ public enum JournalOperationResultOutcome: String, Codable, Hashable, Sendable {
     case applied
     case skippedAlreadySatisfied
     case failed
+    case deadlineExpiredBeforeStart
 }
 
 public enum JournalRunOutcome: String, Codable, Hashable, Sendable {
@@ -206,6 +207,11 @@ public enum JournalRunOutcome: String, Codable, Hashable, Sendable {
 
 public enum JournalEvent: Codable, Hashable, Sendable {
     case intent(Operation)
+    case mutationIndeterminate(
+        operationID: OperationID,
+        receipt: ProviderMutationReceipt,
+        occurredAt: Date
+    )
     case result(operationID: OperationID, outcome: JournalOperationResultOutcome, occurredAt: Date, detail: String?)
     case itemConverged(decisionID: UUID, record: BaseRecord)
     case runFinished(outcome: JournalRunOutcome, occurredAt: Date, detail: String?)
@@ -218,6 +224,20 @@ public enum JournalEvent: Codable, Hashable, Sendable {
     public var resultOperationID: OperationID? {
         guard case let .result(operationID, _, _, _) = self else { return nil }
         return operationID
+    }
+
+    public var indeterminateOperationID: OperationID? {
+        guard case let .mutationIndeterminate(operationID, _, _) = self else {
+            return nil
+        }
+        return operationID
+    }
+
+    public var indeterminateMutationReceipt: ProviderMutationReceipt? {
+        guard case let .mutationIndeterminate(_, receipt, _) = self else {
+            return nil
+        }
+        return receipt
     }
 
     public var isRunFinished: Bool {
@@ -251,6 +271,18 @@ public struct JournalReplay: Codable, Hashable, Sendable {
 
     public var pendingOperationIDs: Set<OperationID> {
         intendedOperationIDs.subtracting(resultOperationIDs)
+    }
+
+    public var indeterminateReceiptsByOperation: [OperationID: ProviderMutationReceipt] {
+        events.reduce(into: [:]) { receipts, event in
+            guard let operationID = event.indeterminateOperationID,
+                  let receipt = event.indeterminateMutationReceipt else {
+                return
+            }
+            // A duplicate WAL event must not crash recovery. The latest
+            // complete event is the most conservative receipt to retain.
+            receipts[operationID] = receipt
+        }
     }
 }
 
@@ -890,7 +922,9 @@ private extension InMemoryBaseRecordStore {
 }
 
 private func validate(_ event: JournalEvent, runID: UUID, existingEvents: [JournalEvent]) throws {
-    guard let operationID = event.resultOperationID else { return }
+    guard let operationID = event.resultOperationID ?? event.indeterminateOperationID else {
+        return
+    }
     let hasIntent = existingEvents.contains { $0.intentOperationID == operationID }
     if !hasIntent {
         throw RunJournalStoreError.resultWithoutIntent(runID: runID, operationID: operationID)

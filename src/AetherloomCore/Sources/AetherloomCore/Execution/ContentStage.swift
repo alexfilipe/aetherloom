@@ -24,12 +24,15 @@ public actor ContentStage {
     private var entries: [StageKey: StageEntry] = [:]
     private var keysByURL: [URL: StageKey] = [:]
     private var inFlight: [StageKey: Task<StageEntry, Error>] = [:]
+    private var deferredContentsByReceipt: [UUID: [StagedContent]] = [:]
+    private var deferredTemporaryURLsByReceipt: [UUID: Set<URL>] = [:]
     private var accessCounter: UInt64 = 0
     private var currentBytes: Int64 = 0
 
     public init(rootDirectory: URL, byteLimit: Int64) {
         self.rootDirectory = rootDirectory
         self.byteLimit = max(byteLimit, 0)
+        Self.reclaimAbandonedTemporaryFiles(in: rootDirectory)
     }
 
     public func materialize(_ ref: ContentRef, from provider: any StorageProvider) async throws -> StagedContent {
@@ -57,6 +60,12 @@ public actor ContentStage {
             let entry = try await task.value
             inFlight[key] = nil
             return pin(entry, for: key)
+        } catch let lateWrite as IndeterminateStageWrite {
+            inFlight[key] = nil
+            deferredTemporaryURLsByReceipt[lateWrite.receipt.id, default: []]
+                .insert(lateWrite.temporaryURL)
+            try? FileManager.default.removeItem(at: stagingURL)
+            throw ProviderError.mutationIndeterminate(lateWrite.receipt)
         } catch {
             inFlight[key] = nil
             try? FileManager.default.removeItem(at: stagingURL)
@@ -65,11 +74,61 @@ public actor ContentStage {
     }
 
     public func release(_ content: StagedContent) async {
+        releasePinnedContent(content)
+    }
+
+    /// Keeps a materialized source pinned while a destination provider may
+    /// still be reading it after the caller's deadline.
+    func deferRelease(
+        _ content: StagedContent,
+        for receipt: ProviderMutationReceipt
+    ) {
+        deferredContentsByReceipt[receipt.id, default: []].append(content)
+    }
+
+    /// Called only after the journal has been reconciled and the owned late
+    /// operation is quiescent. It releases both destination-store pins and
+    /// fetch temporary files without racing blocking filesystem work.
+    func releaseDeferredArtifacts(for receipt: ProviderMutationReceipt) {
+        let contents = deferredContentsByReceipt.removeValue(forKey: receipt.id) ?? []
+        for content in contents {
+            releasePinnedContent(content)
+        }
+        let temporaryURLs = deferredTemporaryURLsByReceipt
+            .removeValue(forKey: receipt.id) ?? []
+        for url in temporaryURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
+        evictIfNeeded()
+    }
+
+    func retainedArtifactCount(for receipt: ProviderMutationReceipt) -> Int {
+        (deferredContentsByReceipt[receipt.id]?.count ?? 0)
+            + (deferredTemporaryURLsByReceipt[receipt.id]?.count ?? 0)
+    }
+
+    private func releasePinnedContent(_ content: StagedContent) {
         guard let key = keysByURL[content.url], var entry = entries[key] else { return }
         entry.pinCount = max(0, entry.pinCount - 1)
         entry.lastAccess = nextAccess()
         entries[key] = entry
         evictIfNeeded()
+    }
+
+    private nonisolated static func reclaimAbandonedTemporaryFiles(
+        in rootDirectory: URL
+    ) {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: rootDirectory,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        for file in files
+        where file.pathExtension == "tmp"
+            && UUID(
+                uuidString: file.deletingPathExtension().lastPathComponent
+            ) != nil {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     private func pinCachedEntry(for key: StageKey) -> StagedContent? {
@@ -159,6 +218,11 @@ private struct StageEntry: Sendable {
     var lastAccess: UInt64
 }
 
+private struct IndeterminateStageWrite: Error, Sendable {
+    var receipt: ProviderMutationReceipt
+    var temporaryURL: URL
+}
+
 private func materializeEntry(
     _ ref: ContentRef,
     from provider: any StorageProvider,
@@ -191,6 +255,15 @@ private func materializeEntry(
             content: StagedContent(url: stagingURL, verifiedHash: actualHash, size: Int64(data.count)),
             pinCount: 0,
             lastAccess: 0
+        )
+    } catch let ProviderError.mutationIndeterminate(receipt) {
+        // The provider still owns a late write to `temporaryURL`. Removing it
+        // here would race that blocking syscall. The stage actor retains the
+        // URL by receipt until recovery observes quiescence; startup cleanup
+        // handles a process that exited before reconciliation.
+        throw IndeterminateStageWrite(
+            receipt: receipt,
+            temporaryURL: temporaryURL
         )
     } catch {
         try? FileManager.default.removeItem(at: temporaryURL)

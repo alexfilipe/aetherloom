@@ -30,6 +30,8 @@ import Testing
     #expect(ActivityMessageCatalog.holdTriageShown == "Aetherloom summarized why this hold needs review.")
     #expect(ActivityMessageCatalog.recoveryPerformed == "Aetherloom checked an unfinished sync run and preserved the safest state.")
     #expect(ActivityMessageCatalog.stoppedForReplan == "Sync stopped because a file changed after planning. Preview changes again before continuing.")
+    #expect(ActivityMessageCatalog.mutationDeadlineExpiredBeforeStart == "Sync stopped because a filesystem operation did not start before its deadline. No filesystem change was made by that attempt.")
+    #expect(ActivityMessageCatalog.mutationIndeterminate == "Sync paused while a filesystem operation finishes. Aetherloom will reconcile its result before scanning or applying more changes.")
     #expect(ActivityMessageCatalog.verificationFailed == "Sync could not verify a completed write.")
     #expect(ActivityMessageCatalog.runFinished == "Sync finished.")
     #expect(ActivityMessageCatalog.runStarted(locationCount: 3) == "Sync started for 3 locations.")
@@ -192,6 +194,78 @@ import Testing
     let replay = try #require(try await store.unfinishedRun(for: syncSetID))
     #expect(replay.runID == runID)
     #expect(replay.events == [.intent(operation)])
+}
+
+@Test func fileRunJournalPersistsIndeterminateMutationReceipt() async throws {
+    let root = try temporaryDirectory("file-journal-indeterminate")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let syncSetID = uuid("000000000811")
+    let runID = uuid("000000000812")
+    let operation = transferOperation(id: "000000000813")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000814"),
+        provider: operation.location,
+        kind: .store,
+        affectedPaths: [operation.kind.targetPath],
+        startedAt: phaseDate
+    )
+    let event = JournalEvent.mutationIndeterminate(
+        operationID: operation.id,
+        receipt: receipt,
+        occurredAt: phaseDate
+    )
+
+    let firstStore = try FileRunJournalStore(rootURL: root)
+    try await firstStore.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "indeterminate")
+    )
+    try await firstStore.append(.intent(operation), runID: runID)
+    try await firstStore.append(event, runID: runID)
+
+    let reconstructed = try FileRunJournalStore(rootURL: root)
+    let replay = try #require(
+        try await reconstructed.unfinishedRun(for: syncSetID)
+    )
+    #expect(replay.events == [.intent(operation), event])
+    #expect(replay.pendingOperationIDs == [operation.id])
+    #expect(replay.indeterminateReceiptsByOperation == [operation.id: receipt])
+}
+
+@Test func runJournalRejectsIndeterminateReceiptBeforeIntent() async throws {
+    let store = InMemoryRunJournalStore()
+    let syncSetID = uuid("000000000815")
+    let runID = uuid("000000000816")
+    let operation = transferOperation(id: "000000000817")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000818"),
+        provider: operation.location,
+        kind: .store,
+        affectedPaths: [operation.kind.targetPath],
+        startedAt: phaseDate
+    )
+    try await store.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "invalid-indeterminate")
+    )
+
+    await #expect(
+        throws: RunJournalStoreError.resultWithoutIntent(
+            runID: runID,
+            operationID: operation.id
+        )
+    ) {
+        try await store.append(
+            .mutationIndeterminate(
+                operationID: operation.id,
+                receipt: receipt,
+                occurredAt: phaseDate
+            ),
+            runID: runID
+        )
+    }
 }
 
 @Test func fileRunJournalMarkReconciledCompactsAndHidesRun() async throws {

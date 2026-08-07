@@ -60,15 +60,46 @@ The ordering matters: a missing root must be classified as *volume gone* before 
 - **Name normalization:** paths are carried as observed; Unicode normalization differences (NFC/NFD) are the reconciler's concern via `SyncPath` semantics, not silently rewritten by the provider.
 - **`/.aetherloom/` is never reported.** It is the provider's own quarantine/metadata space and a built-in exclusion ✅.
 
-## 5. Mutations and trash (sketch — normative spec in 01 ⏭)
+## 5. Mutations, ownership, and trash
+
+All blocking local side effects run through one provider-root `LocalMutationCoordinator`. Root-wide serialization is deliberately conservative: stores touch replacement directories, relocates touch source and destination trees, and trash touches both user paths and `/.aetherloom/` receipts. Narrow path locks would make ancestor/descendant and composite relocate overlap easy to get wrong.
+
+The coordinator atomically claims queued work before invoking it and returns one of four semantic outcomes:
+
+1. confirmed success;
+2. confirmed failure;
+3. deadline expired while queued, proving no side effect started; or
+4. deadline expired after start, with a durable `ProviderMutationReceipt` and an indeterminate result.
+
+For outcome 4, the blocking task and its eventual success/failure remain retained. Every mutation already queued behind it is invalidated as pre-start/no-side-effect; calls arriving during the recovery barrier are also rejected pre-start. Quiescence alone does not release the root. Ordinary availability, scans, current-state probes, and later mutations remain barred until engine recovery probes actual provider state, marks the journal reconciled, and explicitly releases the receipt. Only a fresh call authorized after new scans and replanning may then enter. After process restart no task result exists, so recovery treats the journaled receipt as `unknownAfterRestart` and relies only on safe provider probes. Recovery never replays the old mutation.
+
+If persisting the indeterminate journal event fails, the live provider still exposes its retained receipt. Recovery first writes that missing event, then performs the same quiescent probe and release sequence. The provider map is immutable for an orchestrator session; constructing a second provider/coordinator for the same root while the first retains work is unsupported because an in-process blocking syscall cannot be reclassified as a restart.
 
 - `store` writes to a temporary URL **on the destination volume**, then `replaceItemAt` — an interrupted store never leaves a torn destination file. `OverwritePolicy` is enforced by probe-compare inside the provider's actor before the replace. Idempotent re-application per the conformance contract ([../00-overview.md §3](../00-overview.md)): `.neverOverwrite` against a destination holding byte-identical content (compare staged vs destination bytes) succeeds without writing and returns the current observation.
 - `relocate` uses `moveItem` after confirming the destination path is absent; cross-device relocates are copy-verify-trash, never copy-delete.
 - `trash`: native trash where `hasNativeTrash`, else quarantine to `/.aetherloom/trash/<ISO-8601 run date>/<relative path>` at the location root. If a native `trashItem` fails at runtime despite the frozen capability, fall back to quarantine — never fail into leaving content unpreserved when quarantine is possible.
-- `fetch` copies content to the executor's staging URL; on a placeholder it throws `placeholderOnly` ✅ rather than triggering a download (materialization policy belongs to the iCloud variant).
+- Trash receipts are written before native trash or quarantine movement and are part of the same owned operation. Existing receipt decoding remains unchanged.
+- `fetch` copies content to the executor's staging URL through the same ownership coordinator; an indeterminate copy retains ownership of the temporary stage path until it finishes. On a placeholder it throws `placeholderOnly` ✅ rather than triggering a download (materialization policy belongs to the iCloud variant).
+- The content stage keys late fetch temporary URLs and destination-store source pins by mutation receipt. Durable recovery releases them only after quiescence and journal reconciliation. A new stage owner removes only UUID-named `.tmp` files in its dedicated root left by a previous process, while preserving unrelated files and verified `.stage` cache entries.
 - `currentState` re-reads one item's resource values; missing item at a healthy volume ⇒ `notFound`, anything doubtful ⇒ `unavailable` ([../../core/02-provider-abstraction.md §6](../../core/02-provider-abstraction.md)).
 
-## 6. Open questions (resolve before or during the tasks that touch them)
+## 6. Blocking-I/O audit
+
+| Operation | Deadline and ownership policy |
+| --- | --- |
+| Construction and capability probes | Read-only, deadline-bounded; late Foundation reads are discarded. |
+| Availability and metadata probes | Read-only, deadline-bounded; never run while a mutation receipt bars the root. |
+| Scan enumeration | Read-only, deadline-bounded; timeout is `.incomplete`, and a mutation barrier prevents starting it. |
+| Fetch copy to staging | Side-effecting, owned and root-serialized through the mutation coordinator. |
+| Fetch byte verification | Read-only, deadline-bounded after the owned copy completes. |
+| Store/replace and directory creation | Owned as one composite operation, including path checks, temporary copy, commit, and observation. |
+| Same-volume relocate | Owned from source/destination validation through move and observation. |
+| Cross-volume relocate | One owned composite copy → verify → source trash/quarantine operation; never nested coordinator work. |
+| Native trash/quarantine and receipts | One owned composite operation; native move-then-throw is reconciled from receipt plus confirmed source absence, with no permanent-delete fallback. |
+
+Read-only deadline helpers may leave a late read executing because Foundation cancellation is cooperative. Those reads cannot mutate provider or engine state, their results are discarded, and the root mutation barrier prevents them from racing an indeterminate side effect. Any newly introduced local write, including metadata or staging writes, must route through the coordinator.
+
+## 7. Open questions (resolve before or during the tasks that touch them)
 
 1. **Stable IDs**: are APFS file IDs dependable across remounts for `hasStableItemIDs = true` on local volumes? Upgrade path: flag flip + conformance cases proving rename tracking. Until proven, `false`.
 2. **mtime granularity on network filesystems**: SMB servers commonly truncate to 1–2 s. Does `ItemVersion` comparison need an explicit tolerance, or does size+mtime equality remain safe as-is? (Direction of error today: coarse mtimes make *fewer* `same` verdicts, which routes to preservation — acceptable, but noisy.) Belongs to 02 ⏭.

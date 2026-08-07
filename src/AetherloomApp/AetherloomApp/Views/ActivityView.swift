@@ -277,6 +277,8 @@ struct ActivityView: View {
             return ActivityOutcomeBadge(text: "Refused", tone: .paused)
         case .stoppedForReplan:
             return ActivityOutcomeBadge(text: "Stopped to replan", tone: .attention)
+        case .mutationIndeterminate:
+            return ActivityOutcomeBadge(text: "Paused for recovery", tone: .paused)
         case .cancelled:
             return ActivityOutcomeBadge(text: "Cancelled", tone: .neutral)
         case .failed:

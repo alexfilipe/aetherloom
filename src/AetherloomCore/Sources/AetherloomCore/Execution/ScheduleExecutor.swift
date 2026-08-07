@@ -5,6 +5,7 @@ public enum ScheduleExecutionError: Error, Equatable, Sendable {
     case planNeedsReview
     case invalidApproval(ApprovalRejectionReason)
     case invalidSchedule(String)
+    case journalWriteFailed(operationID: OperationID, detail: String)
 }
 
 public enum SyncRunOutcome: Codable, Hashable, Sendable {
@@ -12,6 +13,11 @@ public enum SyncRunOutcome: Codable, Hashable, Sendable {
     case held
     case completed
     case stoppedForReplan(location: LocationID, path: SyncPath)
+    case mutationIndeterminate(
+        location: LocationID,
+        path: SyncPath,
+        receiptID: UUID
+    )
     case cancelled
     case failed(message: String)
 }
@@ -20,6 +26,7 @@ public enum OperationExecutionStatus: String, Codable, Hashable, Sendable {
     case applied
     case skipped
     case failed
+    case indeterminate
 }
 
 public struct OperationExecutionRecord: Codable, Hashable, Sendable {
@@ -218,12 +225,12 @@ public struct ScheduleExecutor: Sendable {
             let batchResults = try await execute(batch, plan: plan, runID: runID)
             for (operation, result) in batchResults.sorted(by: { state.index(of: $0.operation.id) < state.index(of: $1.operation.id) }) {
                 try await record(result, for: operation, plan: plan, state: &state, baseRecords: &baseRecords, runID: runID)
-                if case let .stoppedForReplan(location, path) = result.stop {
-                    summaryOutcome = .stoppedForReplan(location: location, path: path)
+                if let stop = result.stop {
+                    summaryOutcome = summaryOutcome.merging(stop: stop)
                 }
             }
 
-            if case .stoppedForReplan = summaryOutcome {
+            if summaryOutcome.stopsSchedule {
                 break
             }
         }
@@ -232,7 +239,7 @@ public struct ScheduleExecutor: Sendable {
             summaryOutcome = .failed(message: firstFailure.detail ?? "One or more operations failed.")
         }
 
-        let journalOutcome: JournalRunOutcome
+        let journalOutcome: JournalRunOutcome?
         switch summaryOutcome {
         case .refused:
             journalOutcome = .failed
@@ -242,16 +249,23 @@ public struct ScheduleExecutor: Sendable {
             journalOutcome = .succeeded
         case .stoppedForReplan:
             journalOutcome = .stoppedForReplan
+        case .mutationIndeterminate:
+            // Leave the WAL unfinished. The operation has an intent and an
+            // indeterminate receipt but no confirmed result; recovery must
+            // establish truth before any fresh scan or plan.
+            journalOutcome = nil
         case .cancelled:
             journalOutcome = .cancelled
         case .failed:
             journalOutcome = .failed
         }
-        try await stores.journal.append(
-            .runFinished(outcome: journalOutcome, occurredAt: environment.now(), detail: summaryOutcome.detail),
-            runID: runID
-        )
-        if logRunBoundaryActivity {
+        if let journalOutcome {
+            try await stores.journal.append(
+                .runFinished(outcome: journalOutcome, occurredAt: environment.now(), detail: summaryOutcome.detail),
+                runID: runID
+            )
+        }
+        if logRunBoundaryActivity, journalOutcome != nil {
             await appendActivity(
                 syncSetID: plan.syncSetID,
                 runID: runID,
@@ -324,8 +338,9 @@ public struct ScheduleExecutor: Sendable {
                     observation: observation,
                     detail: "Already satisfied."
                 )
-                try await stores.journal.append(
+                try await appendJournal(
                     .result(operationID: operation.id, outcome: .skippedAlreadySatisfied, occurredAt: environment.now(), detail: record.detail),
+                    for: operation,
                     runID: runID
                 )
                 return OperationRunResult(record: record, sourceObservation: sourceObservation(for: operation, staged: nil))
@@ -364,8 +379,9 @@ public struct ScheduleExecutor: Sendable {
                     status: .applied,
                     observation: observation
                 )
-                try await stores.journal.append(
+                try await appendJournal(
                     .result(operationID: operation.id, outcome: .applied, occurredAt: environment.now(), detail: nil),
+                    for: operation,
                     runID: runID
                 )
                 await stores.activity.append(catalog.entry(for: operation, syncSetID: plan.syncSetID, runID: runID, occurredAt: environment.now()))
@@ -379,8 +395,9 @@ public struct ScheduleExecutor: Sendable {
                     status: .failed,
                     detail: message
                 )
-                try await stores.journal.append(
+                try await appendJournal(
                     .result(operationID: operation.id, outcome: .failed, occurredAt: environment.now(), detail: message),
+                    for: operation,
                     runID: runID
                 )
                 await appendActivity(
@@ -393,6 +410,72 @@ public struct ScheduleExecutor: Sendable {
                     detail: message
                 )
                 return OperationRunResult(record: record)
+
+            case let .deadlineExpiredBeforeStart(path):
+                let detail = "Mutation deadline expired before filesystem work started."
+                let record = OperationExecutionRecord(
+                    operationID: operation.id,
+                    location: operation.location,
+                    path: path,
+                    status: .failed,
+                    detail: detail
+                )
+                try await appendJournal(
+                    .result(
+                        operationID: operation.id,
+                        outcome: .deadlineExpiredBeforeStart,
+                        occurredAt: environment.now(),
+                        detail: detail
+                    ),
+                    for: operation,
+                    runID: runID
+                )
+                await appendActivity(
+                    syncSetID: plan.syncSetID,
+                    runID: runID,
+                    category: .safety,
+                    locationID: operation.location,
+                    path: path,
+                    message: ActivityMessageCatalog.mutationDeadlineExpiredBeforeStart,
+                    detail: detail
+                )
+                return OperationRunResult(record: record)
+
+            case let .indeterminate(receipt):
+                let path = operation.kind.targetPath
+                let detail = "Filesystem mutation exceeded its deadline after starting; recovery must reconcile receipt \(receipt.id.uuidString)."
+                try await appendJournal(
+                    .mutationIndeterminate(
+                        operationID: operation.id,
+                        receipt: receipt,
+                        occurredAt: environment.now()
+                    ),
+                    for: operation,
+                    runID: runID
+                )
+                await appendActivity(
+                    syncSetID: plan.syncSetID,
+                    runID: runID,
+                    category: .safety,
+                    locationID: operation.location,
+                    path: path,
+                    message: ActivityMessageCatalog.mutationIndeterminate,
+                    detail: detail
+                )
+                return OperationRunResult(
+                    record: OperationExecutionRecord(
+                        operationID: operation.id,
+                        location: operation.location,
+                        path: path,
+                        status: .indeterminate,
+                        detail: detail
+                    ),
+                    stop: .mutationIndeterminate(
+                        location: operation.location,
+                        path: path,
+                        receiptID: receipt.id
+                    )
+                )
 
             case let .stoppedForReplan(path):
                 await appendActivity(
@@ -414,29 +497,72 @@ public struct ScheduleExecutor: Sendable {
                     stop: .stoppedForReplan(location: operation.location, path: path)
                 )
             }
-        } catch {
-            let message = String(describing: error)
-            let record = OperationExecutionRecord(
-                operationID: operation.id,
-                location: operation.location,
-                path: operation.kind.targetPath,
-                status: .failed,
-                detail: message
-            )
-            try await stores.journal.append(
-                .result(operationID: operation.id, outcome: .failed, occurredAt: environment.now(), detail: message),
+        } catch let error as ScheduleExecutionError {
+            if case .journalWriteFailed = error {
+                // The intent remains the only durable fact. Never convert a
+                // WAL failure into a terminal provider failure after apply
+                // may have started or completed.
+                throw error
+            }
+            return try await recordProviderFailure(
+                error,
+                operation: operation,
+                plan: plan,
                 runID: runID
             )
-            await appendActivity(
-                syncSetID: plan.syncSetID,
-                runID: runID,
-                category: .error,
-                locationID: operation.location,
-                path: operation.kind.targetPath,
-                message: ActivityMessageCatalog.verificationFailed,
-                detail: message
+        } catch {
+            return try await recordProviderFailure(
+                error,
+                operation: operation,
+                plan: plan,
+                runID: runID
             )
-            return OperationRunResult(record: record)
+        }
+    }
+
+    private func recordProviderFailure(
+        _ error: any Error,
+        operation: Operation,
+        plan: SyncPlan,
+        runID: UUID
+    ) async throws -> OperationRunResult {
+        let message = String(describing: error)
+        let record = OperationExecutionRecord(
+            operationID: operation.id,
+            location: operation.location,
+            path: operation.kind.targetPath,
+            status: .failed,
+            detail: message
+        )
+        try await appendJournal(
+            .result(operationID: operation.id, outcome: .failed, occurredAt: environment.now(), detail: message),
+            for: operation,
+            runID: runID
+        )
+        await appendActivity(
+            syncSetID: plan.syncSetID,
+            runID: runID,
+            category: .error,
+            locationID: operation.location,
+            path: operation.kind.targetPath,
+            message: ActivityMessageCatalog.verificationFailed,
+            detail: message
+        )
+        return OperationRunResult(record: record)
+    }
+
+    private func appendJournal(
+        _ event: JournalEvent,
+        for operation: Operation,
+        runID: UUID
+    ) async throws {
+        do {
+            try await stores.journal.append(event, runID: runID)
+        } catch {
+            throw ScheduleExecutionError.journalWriteFailed(
+                operationID: operation.id,
+                detail: String(describing: error)
+            )
         }
     }
 
@@ -653,17 +779,26 @@ public struct ScheduleExecutor: Sendable {
                     return .failed("Folder verification failed at \(path.rawValue).")
                 }
                 return .applied(verified, staged: nil)
+            } catch ProviderError.mutationDeadlineExpiredBeforeStart {
+                return .deadlineExpiredBeforeStart(path)
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                return .indeterminate(receipt)
             } catch {
                 return .failed(String(describing: error))
             }
 
         case let .transfer(content, path, overwrite):
+            var materialized: StagedContent?
+            var releaseMaterialized = true
+            defer {
+                if releaseMaterialized, let materialized {
+                    Task { await stage.release(materialized) }
+                }
+            }
             do {
                 let source = try self.provider(for: content.sourceLocation)
                 let staged = try await stage.materialize(content, from: source)
-                defer {
-                    Task { await stage.release(staged) }
-                }
+                materialized = staged
                 let stored = try await provider.store(from: staged.url, at: path, options: StoreOptions(overwrite: overwrite))
                 let verified = try await provider.currentState(of: stored)
                 guard verified.kind == content.kind, !verified.isTrashed else {
@@ -676,6 +811,17 @@ public struct ScheduleExecutor: Sendable {
                     return .failed("Stored item hash was \(providerHash), expected \(stagedHash).")
                 }
                 return .applied(verified.upgraded(with: staged), staged: staged)
+            } catch ProviderError.mutationDeadlineExpiredBeforeStart {
+                return .deadlineExpiredBeforeStart(path)
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                // The local provider may still be reading the staged file.
+                // Tie its pin to the durable receipt so recovery releases it
+                // only after the late task is quiescent and reconciled.
+                if let materialized {
+                    await stage.deferRelease(materialized, for: receipt)
+                    releaseMaterialized = false
+                }
+                return .indeterminate(receipt)
             } catch ProviderError.preconditionFailed {
                 return .stoppedForReplan(path)
             } catch ProviderError.itemAlreadyExists {
@@ -693,6 +839,10 @@ public struct ScheduleExecutor: Sendable {
                     return .failed("Relocate verification failed at \(newPath.rawValue).")
                 }
                 return .applied(verified, staged: nil)
+            } catch ProviderError.mutationDeadlineExpiredBeforeStart {
+                return .deadlineExpiredBeforeStart(newPath)
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                return .indeterminate(receipt)
             } catch ProviderError.preconditionFailed {
                 return .stoppedForReplan(itemRef.path)
             } catch ProviderError.itemAlreadyExists {
@@ -710,6 +860,10 @@ public struct ScheduleExecutor: Sendable {
                     return .failed("Trash verification failed at \(itemRef.path.rawValue).")
                 }
                 return .applied(verified, staged: nil)
+            } catch ProviderError.mutationDeadlineExpiredBeforeStart {
+                return .deadlineExpiredBeforeStart(itemRef.path)
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                return .indeterminate(receipt)
             } catch ProviderError.notFound {
                 return .applied(itemRef.observation.trashed(), staged: nil)
             } catch ProviderError.preconditionFailed {
@@ -881,6 +1035,8 @@ private enum ProbeResult: Sendable {
 private enum ApplyResult: Sendable {
     case applied(ItemObservation, staged: StagedContent?)
     case failed(String)
+    case deadlineExpiredBeforeStart(SyncPath)
+    case indeterminate(ProviderMutationReceipt)
     case stoppedForReplan(SyncPath)
 }
 
@@ -901,11 +1057,32 @@ extension SyncRunOutcome {
             return nil
         case let .stoppedForReplan(location, path):
             return "\(location.rawValue.uuidString) \(path.rawValue)"
+        case let .mutationIndeterminate(location, path, receiptID):
+            return "\(location.rawValue.uuidString) \(path.rawValue) receipt \(receiptID.uuidString)"
         case .cancelled:
             return "Cancelled."
         case let .failed(message):
             return message
         }
+    }
+
+    fileprivate var stopsSchedule: Bool {
+        switch self {
+        case .stoppedForReplan, .mutationIndeterminate:
+            return true
+        case .refused, .held, .completed, .cancelled, .failed:
+            return false
+        }
+    }
+
+    fileprivate func merging(stop candidate: SyncRunOutcome) -> SyncRunOutcome {
+        if case .mutationIndeterminate = self {
+            return self
+        }
+        if case .mutationIndeterminate = candidate {
+            return candidate
+        }
+        return candidate
     }
 }
 

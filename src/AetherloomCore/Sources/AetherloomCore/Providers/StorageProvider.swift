@@ -17,6 +17,84 @@ public protocol StorageProvider: Sendable {
     func currentState(of observation: ItemObservation) async throws -> ItemObservation
 }
 
+/// A durable identity for a provider mutation whose caller-visible deadline
+/// expired after the provider had allowed blocking work to start.
+public struct ProviderMutationReceipt: Codable, Hashable, Sendable {
+    public var id: UUID
+    public var provider: LocationID
+    public var kind: ProviderMutationKind
+    public var affectedPaths: [SyncPath]
+    public var startedAt: Date
+
+    public init(
+        id: UUID,
+        provider: LocationID,
+        kind: ProviderMutationKind,
+        affectedPaths: [SyncPath],
+        startedAt: Date
+    ) {
+        self.id = id
+        self.provider = provider
+        self.kind = kind
+        self.affectedPaths = affectedPaths
+        self.startedAt = startedAt
+    }
+}
+
+public enum ProviderMutationKind: String, Codable, Hashable, Sendable {
+    case fetch
+    case makeFolder
+    case store
+    case relocate
+    case trash
+}
+
+public enum ProviderLateMutationOutcome: Codable, Hashable, Sendable {
+    case succeeded
+    case failed(detail: String)
+}
+
+public enum ProviderIndeterminateMutationState: Codable, Hashable, Sendable {
+    case inFlight
+    case quiescent(ProviderLateMutationOutcome)
+    /// The process restarted after the journal persisted the receipt. The old
+    /// blocking call no longer exists, so recovery must establish truth from
+    /// the provider rather than trusting a missing in-memory result.
+    case unknownAfterRestart
+}
+
+/// Optional refinement for providers that can retain blocking mutations past a
+/// caller deadline. Recovery uses this seam only for a journaled indeterminate
+/// mutation; normal planning continues to use `StorageProvider`.
+public protocol IndeterminateMutationRecovering: StorageProvider {
+    /// Returns the in-process receipt whose post-deadline result still needs
+    /// reconciliation. This repairs the narrow case where the provider kept
+    /// ownership but the journal's indeterminate-event append failed.
+    func indeterminateMutationReceipt() async -> ProviderMutationReceipt?
+
+    func indeterminateMutationState(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderIndeterminateMutationState
+
+    /// Recovery-only metadata read. The provider must keep ordinary scans,
+    /// probes, and mutations blocked until `finishIndeterminateMutationRecovery`
+    /// is called.
+    func currentStateForRecovery(
+        of observation: ItemObservation,
+        receipt: ProviderMutationReceipt
+    ) async throws -> ItemObservation
+
+    func finishIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async
+}
+
+public extension IndeterminateMutationRecovering {
+    func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
+        nil
+    }
+}
+
 public enum LocationAvailability: Codable, Hashable, Sendable {
     case available
     case unavailable(LocationUnavailabilityReason)
@@ -116,4 +194,10 @@ public enum ProviderError: Error, Equatable, Sendable {
     case itemAlreadyExists(provider: LocationID, path: SyncPath)
     case preconditionFailed(provider: LocationID, path: SyncPath)
     case unsupported(provider: LocationID, reason: String)
+    /// The mutation never received permission to start, so no side effect is
+    /// possible from this attempt.
+    case mutationDeadlineExpiredBeforeStart(provider: LocationID, path: SyncPath)
+    /// Blocking work may still be running. This is not a confirmed failure and
+    /// must remain recoverable until the receipt is reconciled.
+    case mutationIndeterminate(ProviderMutationReceipt)
 }

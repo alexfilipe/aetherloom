@@ -18,19 +18,22 @@ public struct ProviderDeadlines: Sendable {
     public var ioNanoseconds: UInt64
     let clock: any ProviderDeadlineClock
     let now: @Sendable () -> Date
+    let makeMutationID: @Sendable () -> UUID
 
     public init(
         probeNanoseconds: UInt64 = 2_000_000_000,
         scanNanoseconds: UInt64 = 60_000_000_000,
         ioNanoseconds: UInt64 = 60_000_000_000,
         clock: any ProviderDeadlineClock = SystemProviderDeadlineClock(),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        makeMutationID: @escaping @Sendable () -> UUID = { UUID() }
     ) {
         self.probeNanoseconds = probeNanoseconds
         self.scanNanoseconds = scanNanoseconds
         self.ioNanoseconds = ioNanoseconds
         self.clock = clock
         self.now = now
+        self.makeMutationID = makeMutationID
     }
 }
 
