@@ -21,7 +21,7 @@ public protocol BaseRecordStore: Sendable {
 
 public protocol RunJournalStore: Sendable {
     func begin(runID: UUID, syncSetID: UUID, fingerprint: PlanFingerprint) async throws
-    func append(_ event: JournalEvent, runID: UUID) async throws       // intent | result | itemConverged | runFinished
+    func append(_ event: JournalEvent, runID: UUID) async throws       // intent | mutationIndeterminate | result | itemConverged | runFinished
     func unfinishedRun(for syncSetID: UUID) async throws -> JournalReplay?
     func markReconciled(runID: UUID) async throws
 }
@@ -48,6 +48,9 @@ public protocol LocationRegistry: Sendable {
 
 - **Corrupt or unreadable base state ⇒ refusal to plan deletions.** `records(for:)` throwing `corrupt` maps to `RefusalReason.baseStateUnreadable` ([04 §1]). Degradation direction: no memory ⇒ everything looks *new* ⇒ worst case is redundant conflict copies — never a trash.
 - **Journal append failure aborts the run before the side effect** — an intent that can't be journaled must not be applied (WAL discipline; [05 §3] order).
+- **A post-start deadline is not a failure result.** Append `mutationIndeterminate(operationID, receipt, occurredAt)` and leave the operation pending and the run unfinished. The event is the durable evidence that a side effect may have occurred even when the originating process exits.
+- **Failure to append that event is also non-terminal.** The provider continues retaining its in-process receipt and barrier. Recovery must rediscover that receipt and durably repair the missing event before any recovery probe or release; it never converts this persistence failure into a provider failure result.
+- **Uncertain recovery never compacts the journal.** Provider unavailability, a still-running owned task, or a failed truth probe leaves the WAL intact. `markReconciled` happens before the provider releases its mutation barrier.
 - Store failures are loud: `error` activity entry + surfaced in the run summary. Silence is the only forbidden behavior.
 - **Never stored:** credentials/OAuth tokens (Keychain, app-side, later), file contents, advisor prompts.
 
@@ -56,7 +59,7 @@ public protocol LocationRegistry: Sendable {
 Root directory is injected by the app (no `Application Support` literals in core). All JSON via one encoder/decoder factory: sorted keys, ISO-8601 dates with fractional seconds — the same canonical encoding fingerprints use.
 
 - `FileBaseRecordStore`: one atomic file per sync set (`records-<id>.json`), versioned envelope `{"schemaVersion": 1, "records": […]}`, forward-tolerant decoding (unknown keys ignored), decode failure ⇒ `corrupt` (the file is quarantined aside as `.corrupt-<date>`, never overwritten silently).
-- `FileRunJournalStore`: `journal-<runID>.jsonl`, append-only, fsync-on-append (journals are small and correctness-critical), torn-final-line tolerant on replay; reconciled journals compacted to a summary line.
+- `FileRunJournalStore`: `journal-<runID>.jsonl`, append-only, fsync-on-append (journals are small and correctness-critical), torn-final-line tolerant on replay; reconciled journals compacted to a summary line. `mutationIndeterminate` is an additive schema-1 event, so existing schema-1 journals continue to decode unchanged. Duplicate complete indeterminate events replay conservatively without trapping; the latest receipt remains pending.
 - `FileActivityStore`: monthly JSONL, [08 §2].
 - `InMemory*` variants for every protocol: actors over dictionaries; the test default.
 

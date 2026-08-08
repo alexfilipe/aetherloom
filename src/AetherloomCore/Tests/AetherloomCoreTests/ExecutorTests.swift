@@ -189,6 +189,444 @@ import Testing
     #expect(intentIndex < storeIndex)
 }
 
+@Test func indeterminateMutationRemainsPendingAndStopsTheSchedule() async throws {
+    let base = FakeStorageProvider(locationID: .oneDrive)
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000611"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/Indeterminate"],
+        startedAt: phase06Date
+    )
+    let provider = DeadlineMakeFolderProvider(
+        base: base,
+        error: .mutationIndeterminate(receipt)
+    )
+    let operation = operation(
+        "000000000612",
+        location: .oneDrive,
+        kind: .makeFolder(at: "/Indeterminate"),
+        precondition: .pathAbsent
+    )
+    let plan = planForOperations([operation], path: "/Indeterminate")
+    let stores = EngineStores.inMemory()
+    let runID = uuid("000000000613")
+    let executor = try executor(
+        providerMap: [.oneDrive: provider],
+        stores: stores,
+        name: "indeterminate-mutation"
+    )
+
+    let summary = try await executor.execute(plan, runID: runID)
+    let replay = try #require(
+        try await stores.journal.unfinishedRun(for: plan.syncSetID)
+    )
+
+    #expect(
+        summary.outcome
+            == .mutationIndeterminate(
+                location: .oneDrive,
+                path: "/Indeterminate",
+                receiptID: receipt.id
+            )
+    )
+    #expect(summary.appliedOperations.isEmpty)
+    #expect(summary.failedOperations.isEmpty)
+    #expect(replay.pendingOperationIDs == [operation.id])
+    #expect(replay.indeterminateReceiptsByOperation == [operation.id: receipt])
+    #expect(!replay.events.contains { $0.isRunFinished })
+    #expect(!replay.events.contains { $0.resultOperationID == operation.id })
+    let messages = await stores.activity.entries(
+        matching: ActivityQuery(runID: runID, limit: 100)
+    ).map(\.message)
+    #expect(messages.contains(ActivityMessageCatalog.mutationIndeterminate))
+    #expect(!messages.contains(ActivityMessageCatalog.runFinished))
+}
+
+@Test func indeterminateMutationDominatesOtherSameBatchStops() async throws {
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000616"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/Indeterminate"],
+        startedAt: phase06Date
+    )
+    let indeterminateProvider = DeadlineMakeFolderProvider(
+        base: FakeStorageProvider(locationID: .oneDrive),
+        error: .mutationIndeterminate(receipt)
+    )
+    let driftedProvider = FakeStorageProvider(locationID: .localFolder)
+    _ = await driftedProvider.putFile(
+        path: "/Drifted",
+        contents: Data("occupied".utf8),
+        modifiedAt: phase06Date
+    )
+    let indeterminate = operation(
+        "000000000617",
+        location: .oneDrive,
+        kind: .makeFolder(at: "/Indeterminate"),
+        precondition: .pathAbsent
+    )
+    let drifted = operation(
+        "000000000618",
+        location: .localFolder,
+        kind: .makeFolder(at: "/Drifted"),
+        precondition: .pathAbsent
+    )
+    let plan = planForOperations(
+        [indeterminate, drifted],
+        path: "/MixedStops"
+    )
+    let stores = EngineStores.inMemory()
+    let executor = try executor(
+        providerMap: [
+            .oneDrive: indeterminateProvider,
+            .localFolder: driftedProvider,
+        ],
+        stores: stores,
+        name: "mixed-indeterminate-stop"
+    )
+
+    let summary = try await executor.execute(
+        plan,
+        runID: uuid("000000000619")
+    )
+    let replay = try #require(
+        try await stores.journal.unfinishedRun(for: plan.syncSetID)
+    )
+
+    #expect(
+        summary.outcome == .mutationIndeterminate(
+            location: .oneDrive,
+            path: "/Indeterminate",
+            receiptID: receipt.id
+        )
+    )
+    #expect(replay.indeterminateReceiptsByOperation[indeterminate.id] == receipt)
+    #expect(!replay.events.contains { $0.isRunFinished })
+}
+
+@Test func indeterminateJournalFailureNeverWritesTerminalResult() async throws {
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000620"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/JournalFailure"],
+        startedAt: phase06Date
+    )
+    let provider = DeadlineMakeFolderProvider(
+        base: FakeStorageProvider(locationID: .oneDrive),
+        error: .mutationIndeterminate(receipt)
+    )
+    let operation = operation(
+        "000000000621",
+        location: .oneDrive,
+        kind: .makeFolder(at: "/JournalFailure"),
+        precondition: .pathAbsent
+    )
+    let plan = planForOperations([operation], path: "/JournalFailure")
+    let journal = FailIndeterminateRunJournalStore()
+    let stores = engineStores(journal: journal)
+    let executor = try executor(
+        providerMap: [.oneDrive: provider],
+        stores: stores,
+        name: "indeterminate-journal-failure"
+    )
+    let runID = uuid("000000000622")
+
+    do {
+        _ = try await executor.execute(plan, runID: runID)
+        Issue.record("Execution did not surface the journal failure.")
+    } catch let ScheduleExecutionError.journalWriteFailed(operationID, detail) {
+        #expect(operationID == operation.id)
+        #expect(detail.contains("scriptedIndeterminateFailure"))
+    }
+
+    let replay = try #require(
+        try await journal.unfinishedRun(for: plan.syncSetID)
+    )
+    #expect(replay.pendingOperationIDs == [operation.id])
+    #expect(replay.indeterminateReceiptsByOperation.isEmpty)
+    #expect(!replay.events.contains { $0.resultOperationID == operation.id })
+    #expect(!replay.events.contains { $0.isRunFinished })
+
+    let report = try await RunRecovery(
+        providers: [.oneDrive: provider],
+        stores: stores,
+        environment: phase06Environment()
+    ).recover(replay)
+    #expect(report.reconciledOperations == [operation.id])
+    #expect(await provider.didFinishRecovery())
+    #expect(try await journal.unfinishedRun(for: plan.syncSetID) == nil)
+}
+
+@Test func preStartMutationDeadlineIsTerminalWithoutIndeterminateReceipt() async throws {
+    let base = FakeStorageProvider(locationID: .oneDrive)
+    let provider = DeadlineMakeFolderProvider(
+        base: base,
+        error: .mutationDeadlineExpiredBeforeStart(
+            provider: .oneDrive,
+            path: "/NeverStarted"
+        )
+    )
+    let operation = operation(
+        "000000000614",
+        location: .oneDrive,
+        kind: .makeFolder(at: "/NeverStarted"),
+        precondition: .pathAbsent
+    )
+    let plan = planForOperations([operation], path: "/NeverStarted")
+    let stores = EngineStores.inMemory()
+    let executor = try executor(
+        providerMap: [.oneDrive: provider],
+        stores: stores,
+        name: "pre-start-deadline"
+    )
+
+    let summary = try await executor.execute(
+        plan,
+        runID: uuid("000000000615")
+    )
+
+    #expect(summary.failedOperations.map(\.operationID) == [operation.id])
+    #expect(try await stores.journal.unfinishedRun(for: plan.syncSetID) == nil)
+    #expect(await base.item(at: "/NeverStarted") == nil)
+}
+
+@Test func indeterminateFetchNeverStartsDestinationStoreAndRecoversWithoutReplay() async throws {
+    let sourceBase = FakeStorageProvider(locationID: .googleDrive)
+    let sourceItem = await sourceBase.putFile(
+        path: "/LateFetch.txt",
+        contents: Data("late fetch".utf8),
+        modifiedAt: phase06Date
+    )
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000616"),
+        provider: .googleDrive,
+        kind: .fetch,
+        affectedPaths: [sourceItem.path],
+        startedAt: phase06Date
+    )
+    let source = IndeterminateFetchProvider(base: sourceBase, receipt: receipt)
+    let destination = FakeStorageProvider(locationID: .oneDrive)
+    let conflictCopyPath: SyncPath = "/LateFetch (Conflict copy).txt"
+    let operation = operation(
+        "000000000617",
+        location: .oneDrive,
+        kind: .transfer(
+            content: ContentRef(sourceItem),
+            to: conflictCopyPath,
+            overwrite: .neverOverwrite
+        ),
+        precondition: .pathAbsent
+    )
+    let plan = planForOperations([operation], path: conflictCopyPath)
+    let stores = EngineStores.inMemory()
+    let stageRoot = try temporaryDirectory("phase06-indeterminate-fetch")
+    let stage = ContentStage(rootDirectory: stageRoot, byteLimit: 0)
+    let executor = ScheduleExecutor(
+        providers: [.googleDrive: source, .oneDrive: destination],
+        stores: stores,
+        stage: stage,
+        environment: phase06Environment()
+    )
+
+    let summary = try await executor.execute(
+        plan,
+        runID: uuid("000000000618")
+    )
+    #expect(
+        summary.outcome
+            == .mutationIndeterminate(
+                location: .googleDrive,
+                path: sourceItem.path,
+                receiptID: receipt.id
+            )
+    )
+    let indeterminateRecord = try #require(summary.indeterminateOperations.first)
+    #expect(summary.indeterminateOperations.count == 1)
+    #expect(indeterminateRecord.operationID == operation.id)
+    #expect(indeterminateRecord.location == .googleDrive)
+    #expect(indeterminateRecord.path == sourceItem.path)
+    #expect(indeterminateRecord.status == .indeterminate)
+    #expect(await destination.callLog().filter { $0.operation == .store }.isEmpty)
+    #expect(await stage.retainedArtifactCount(for: receipt) == 1)
+    #expect(
+        try FileManager.default.contentsOfDirectory(
+            at: stageRoot,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "tmp" }.count == 1
+    )
+    let replay = try #require(
+        try await stores.journal.unfinishedRun(for: plan.syncSetID)
+    )
+    #expect(replay.indeterminateReceiptsByOperation[operation.id] == receipt)
+    let persistedIntent = try #require(
+        replay.events.compactMap { event -> AetherloomCore.Operation? in
+            guard case let .intent(operation) = event else { return nil }
+            return operation
+        }.first
+    )
+    #expect(persistedIntent.location == .oneDrive)
+    #expect(persistedIntent.kind.targetPath == conflictCopyPath)
+    #expect(!replay.events.contains { $0.resultOperationID == operation.id })
+    #expect(!replay.events.contains { $0.isRunFinished })
+    let safetyEntries = await stores.activity.entries(
+        matching: ActivityQuery(
+            runID: summary.runID,
+            categories: [.safety],
+            limit: 20
+        )
+    )
+    let indeterminateActivity = try #require(
+        safetyEntries.first {
+            $0.message == ActivityMessageCatalog.mutationIndeterminate
+        }
+    )
+    #expect(indeterminateActivity.locationID == .googleDrive)
+    #expect(indeterminateActivity.path == sourceItem.path)
+    #expect(indeterminateActivity.detail?.contains(conflictCopyPath.rawValue) == true)
+
+    let report = try await RunRecovery(
+        providers: [.googleDrive: source, .oneDrive: destination],
+        stores: stores,
+        stage: stage,
+        environment: phase06Environment()
+    ).recover(replay)
+
+    #expect(report.reconciledOperations == [operation.id])
+    #expect(await source.didFinishRecovery())
+    #expect(await destination.callLog().filter { $0.operation == .store }.isEmpty)
+    #expect(await stage.retainedArtifactCount(for: receipt) == 0)
+    #expect(
+        try FileManager.default.contentsOfDirectory(
+            at: stageRoot,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "tmp" }.isEmpty
+    )
+    #expect(try await stores.journal.unfinishedRun(for: plan.syncSetID) == nil)
+}
+
+@Test func legacySyncRunSummaryDecodesWithoutIndeterminateOperations() throws {
+    let summary = SyncRunSummary(
+        runID: uuid("000000000619"),
+        syncSetID: uuid("000000000620"),
+        outcome: .completed
+    )
+    let encoded = try CanonicalCoding.encoder().encode(summary)
+    var object = try #require(
+        JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    object.removeValue(forKey: "indeterminateOperations")
+    let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+    let decoded = try CanonicalCoding.decoder().decode(
+        SyncRunSummary.self,
+        from: legacyData
+    )
+    #expect(decoded.indeterminateOperations.isEmpty)
+    #expect(decoded.runID == summary.runID)
+    #expect(decoded.syncSetID == summary.syncSetID)
+}
+
+@Test func indeterminateStoreKeepsSourcePinnedOnlyUntilRecovery() async throws {
+    let source = FakeStorageProvider(locationID: .googleDrive)
+    let sourceItem = await source.putFile(
+        path: "/LateStore.txt",
+        contents: Data("late store".utf8),
+        modifiedAt: phase06Date
+    )
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000623"),
+        provider: .oneDrive,
+        kind: .store,
+        affectedPaths: [sourceItem.path],
+        startedAt: phase06Date
+    )
+    let destination = IndeterminateStoreProvider(
+        base: FakeStorageProvider(locationID: .oneDrive),
+        receipt: receipt
+    )
+    let operation = operation(
+        "000000000624",
+        location: .oneDrive,
+        kind: .transfer(
+            content: ContentRef(sourceItem),
+            to: sourceItem.path,
+            overwrite: .neverOverwrite
+        ),
+        precondition: .pathAbsent
+    )
+    let plan = planForOperations([operation], path: sourceItem.path)
+    let stores = EngineStores.inMemory()
+    let stageRoot = try temporaryDirectory("phase06-indeterminate-store")
+    let stage = ContentStage(rootDirectory: stageRoot, byteLimit: 0)
+    let executor = ScheduleExecutor(
+        providers: [.googleDrive: source, .oneDrive: destination],
+        stores: stores,
+        stage: stage,
+        environment: phase06Environment()
+    )
+
+    let summary = try await executor.execute(
+        plan,
+        runID: uuid("000000000625")
+    )
+    #expect(
+        summary.outcome == .mutationIndeterminate(
+            location: .oneDrive,
+            path: sourceItem.path,
+            receiptID: receipt.id
+        )
+    )
+    #expect(await stage.retainedArtifactCount(for: receipt) == 1)
+    #expect(await destination.storeCallCount() == 1)
+    #expect(
+        try FileManager.default.contentsOfDirectory(
+            at: stageRoot,
+            includingPropertiesForKeys: nil
+        ).contains { $0.pathExtension == "stage" }
+    )
+
+    let replay = try #require(
+        try await stores.journal.unfinishedRun(for: plan.syncSetID)
+    )
+    _ = try await RunRecovery(
+        providers: [.googleDrive: source, .oneDrive: destination],
+        stores: stores,
+        stage: stage,
+        environment: phase06Environment()
+    ).recover(replay)
+
+    #expect(await stage.retainedArtifactCount(for: receipt) == 0)
+    #expect(await destination.storeCallCount() == 1)
+    #expect(await destination.didFinishRecovery())
+    #expect(
+        try FileManager.default.contentsOfDirectory(
+            at: stageRoot,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "stage" }.isEmpty
+    )
+}
+
+@Test func contentStageStartupReclaimsOnlyAbandonedTemporaryWrites() throws {
+    let root = try temporaryDirectory("phase06-stage-startup-cleanup")
+    let abandoned = root.appendingPathComponent(
+        "00000000-0000-0000-0000-000000000626.tmp"
+    )
+    let unrelated = root.appendingPathComponent("unrelated.tmp")
+    let cache = root.appendingPathComponent("retained.stage")
+    try Data("temporary".utf8).write(to: abandoned)
+    try Data("not ours".utf8).write(to: unrelated)
+    try Data("cache".utf8).write(to: cache)
+
+    _ = ContentStage(rootDirectory: root, byteLimit: 10_000_000)
+
+    #expect(!FileManager.default.fileExists(atPath: abandoned.path))
+    #expect(FileManager.default.fileExists(atPath: unrelated.path))
+    #expect(FileManager.default.fileExists(atPath: cache.path))
+}
+
 @Test func baseRecordUpdatesLandBeforeRunFinished() async throws {
     let recorder = EventRecorder()
     let baseRecords = RecordingBaseRecordStore(delegate: InMemoryBaseRecordStore(), recorder: recorder)
@@ -515,6 +953,243 @@ private actor CorruptAfterStoreProvider: StorageProvider {
     }
 }
 
+private actor DeadlineMakeFolderProvider: IndeterminateMutationRecovering {
+    nonisolated let locationID: LocationID
+    nonisolated let capabilities: ProviderCapabilities
+
+    private let base: FakeStorageProvider
+    private let error: ProviderError
+    private var finishedRecovery = false
+
+    init(base: FakeStorageProvider, error: ProviderError) {
+        self.base = base
+        self.error = error
+        self.locationID = base.locationID
+        self.capabilities = base.capabilities
+    }
+
+    func checkAvailability() async -> LocationAvailability {
+        await base.checkAvailability()
+    }
+
+    func scan(_ scope: SyncScope) async -> LocationSnapshot {
+        await base.scan(scope)
+    }
+
+    func changedSubtrees(
+        in scope: SyncScope,
+        since cursor: ChangeCursor?
+    ) async throws -> ChangeHint {
+        try await base.changedSubtrees(in: scope, since: cursor)
+    }
+
+    func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
+        try await base.fetch(observation, to: stagingURL)
+    }
+
+    func store(
+        from stagingURL: URL,
+        at path: SyncPath,
+        options: StoreOptions
+    ) async throws -> ItemObservation {
+        try await base.store(from: stagingURL, at: path, options: options)
+    }
+
+    func makeFolder(at _: SyncPath) async throws -> ItemObservation {
+        throw error
+    }
+
+    func relocate(
+        _ observation: ItemObservation,
+        to newPath: SyncPath
+    ) async throws -> ItemObservation {
+        try await base.relocate(observation, to: newPath)
+    }
+
+    func trash(_ observation: ItemObservation) async throws {
+        try await base.trash(observation)
+    }
+
+    func currentState(of observation: ItemObservation) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
+
+    func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
+        guard case let .mutationIndeterminate(receipt) = error else {
+            return nil
+        }
+        return receipt
+    }
+
+    func indeterminateMutationState(
+        for _: ProviderMutationReceipt
+    ) async -> ProviderIndeterminateMutationState {
+        .quiescent(.succeeded)
+    }
+
+    func currentStateForRecovery(
+        of observation: ItemObservation,
+        receipt _: ProviderMutationReceipt
+    ) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
+
+    func finishIndeterminateMutationRecovery(
+        for _: ProviderMutationReceipt
+    ) async {
+        finishedRecovery = true
+    }
+
+    func didFinishRecovery() -> Bool {
+        finishedRecovery
+    }
+}
+
+private actor IndeterminateFetchProvider: IndeterminateMutationRecovering {
+    nonisolated let locationID: LocationID
+    nonisolated let capabilities: ProviderCapabilities
+
+    private let base: FakeStorageProvider
+    private let receipt: ProviderMutationReceipt
+    private var finishedRecovery = false
+
+    init(base: FakeStorageProvider, receipt: ProviderMutationReceipt) {
+        self.base = base
+        self.receipt = receipt
+        self.locationID = base.locationID
+        self.capabilities = base.capabilities
+    }
+
+    func checkAvailability() async -> LocationAvailability { await base.checkAvailability() }
+    func scan(_ scope: SyncScope) async -> LocationSnapshot { await base.scan(scope) }
+    func changedSubtrees(in scope: SyncScope, since cursor: ChangeCursor?) async throws -> ChangeHint {
+        try await base.changedSubtrees(in: scope, since: cursor)
+    }
+    func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
+        try await base.fetch(observation, to: stagingURL)
+        throw ProviderError.mutationIndeterminate(receipt)
+    }
+    func store(from stagingURL: URL, at path: SyncPath, options: StoreOptions) async throws -> ItemObservation {
+        try await base.store(from: stagingURL, at: path, options: options)
+    }
+    func makeFolder(at path: SyncPath) async throws -> ItemObservation {
+        try await base.makeFolder(at: path)
+    }
+    func relocate(_ observation: ItemObservation, to newPath: SyncPath) async throws -> ItemObservation {
+        try await base.relocate(observation, to: newPath)
+    }
+    func trash(_ observation: ItemObservation) async throws {
+        try await base.trash(observation)
+    }
+    func currentState(of observation: ItemObservation) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
+    func indeterminateMutationState(for _: ProviderMutationReceipt) async -> ProviderIndeterminateMutationState {
+        .quiescent(.succeeded)
+    }
+    func currentStateForRecovery(
+        of observation: ItemObservation,
+        receipt _: ProviderMutationReceipt
+    ) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
+    func finishIndeterminateMutationRecovery(for _: ProviderMutationReceipt) async {
+        finishedRecovery = true
+    }
+    func didFinishRecovery() -> Bool { finishedRecovery }
+}
+
+private actor IndeterminateStoreProvider: IndeterminateMutationRecovering {
+    nonisolated let locationID: LocationID
+    nonisolated let capabilities: ProviderCapabilities
+
+    private let base: FakeStorageProvider
+    private let receipt: ProviderMutationReceipt
+    private var stores = 0
+    private var finishedRecovery = false
+
+    init(base: FakeStorageProvider, receipt: ProviderMutationReceipt) {
+        self.base = base
+        self.receipt = receipt
+        self.locationID = base.locationID
+        self.capabilities = base.capabilities
+    }
+
+    func checkAvailability() async -> LocationAvailability {
+        await base.checkAvailability()
+    }
+
+    func scan(_ scope: SyncScope) async -> LocationSnapshot {
+        await base.scan(scope)
+    }
+
+    func changedSubtrees(
+        in scope: SyncScope,
+        since cursor: ChangeCursor?
+    ) async throws -> ChangeHint {
+        try await base.changedSubtrees(in: scope, since: cursor)
+    }
+
+    func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
+        try await base.fetch(observation, to: stagingURL)
+    }
+
+    func store(
+        from stagingURL: URL,
+        at _: SyncPath,
+        options _: StoreOptions
+    ) async throws -> ItemObservation {
+        _ = try Data(contentsOf: stagingURL)
+        stores += 1
+        throw ProviderError.mutationIndeterminate(receipt)
+    }
+
+    func makeFolder(at path: SyncPath) async throws -> ItemObservation {
+        try await base.makeFolder(at: path)
+    }
+
+    func relocate(
+        _ observation: ItemObservation,
+        to newPath: SyncPath
+    ) async throws -> ItemObservation {
+        try await base.relocate(observation, to: newPath)
+    }
+
+    func trash(_ observation: ItemObservation) async throws {
+        try await base.trash(observation)
+    }
+
+    func currentState(of observation: ItemObservation) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
+
+    func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
+        receipt
+    }
+
+    func indeterminateMutationState(
+        for _: ProviderMutationReceipt
+    ) async -> ProviderIndeterminateMutationState {
+        .quiescent(.failed(detail: "scripted late failure"))
+    }
+
+    func currentStateForRecovery(
+        of observation: ItemObservation,
+        receipt _: ProviderMutationReceipt
+    ) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
+
+    func finishIndeterminateMutationRecovery(
+        for _: ProviderMutationReceipt
+    ) async {
+        finishedRecovery = true
+    }
+
+    func storeCallCount() -> Int { stores }
+    func didFinishRecovery() -> Bool { finishedRecovery }
+}
+
 private actor RecordingRunJournalStore: RunJournalStore {
     private let delegate: InMemoryRunJournalStore
     private let recorder: EventRecorder
@@ -532,10 +1207,52 @@ private actor RecordingRunJournalStore: RunJournalStore {
         switch event {
         case let .intent(operation):
             await recorder.record("journal.intent:\(operation.kind.targetPath.rawValue)")
+        case let .mutationIndeterminate(operationID, receipt, _):
+            await recorder.record(
+                "journal.indeterminate:\(operationID.rawValue.uuidString):\(receipt.id.uuidString)"
+            )
         case .runFinished:
             await recorder.record("journal.runFinished")
         case .result, .itemConverged:
             break
+        }
+        try await delegate.append(event, runID: runID)
+    }
+
+    func unfinishedRun(for syncSetID: UUID) async throws -> JournalReplay? {
+        try await delegate.unfinishedRun(for: syncSetID)
+    }
+
+    func markReconciled(runID: UUID) async throws {
+        try await delegate.markReconciled(runID: runID)
+    }
+}
+
+private enum ScriptedJournalFailure: Error {
+    case scriptedIndeterminateFailure
+}
+
+private actor FailIndeterminateRunJournalStore: RunJournalStore {
+    private let delegate = InMemoryRunJournalStore()
+    private var shouldFailIndeterminateAppend = true
+
+    func begin(
+        runID: UUID,
+        syncSetID: UUID,
+        fingerprint: PlanFingerprint
+    ) async throws {
+        try await delegate.begin(
+            runID: runID,
+            syncSetID: syncSetID,
+            fingerprint: fingerprint
+        )
+    }
+
+    func append(_ event: JournalEvent, runID: UUID) async throws {
+        if case .mutationIndeterminate = event,
+           shouldFailIndeterminateAppend {
+            shouldFailIndeterminateAppend = false
+            throw ScriptedJournalFailure.scriptedIndeterminateFailure
         }
         try await delegate.append(event, runID: runID)
     }
