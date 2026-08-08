@@ -225,6 +225,181 @@ import Testing
     #expect(await secondCalls.count() == 1)
 }
 
+@Test func admittedReadLeasePreventsMutationInterleavingUntilPhysicalCompletion() async {
+    let coordinator = LocalMutationCoordinator()
+    let readClock = ManualMutationDeadlineClock()
+    let mutationClock = ManualMutationDeadlineClock()
+    let readGate = ControlledReadOperation(value: 41)
+    let mutationCalls = MutationInvocationCounter()
+    let receipt = mutationReceipt("000000000009", kind: .store)
+
+    let read = Task {
+        await coordinator.performRead(
+            nanoseconds: 1,
+            clock: readClock
+        ) {
+            await readGate.run()
+        }
+    }
+    await readGate.waitUntilStarted()
+
+    let mutation = Task {
+        await coordinator.perform(
+            receipt: receipt,
+            nanoseconds: 1,
+            clock: mutationClock,
+            startedAt: { receipt.startedAt }
+        ) { _ in
+            await mutationCalls.record()
+            return .success(42)
+        }
+    }
+    await mutationClock.waitUntilSleeping()
+    #expect(await mutationCalls.count() == 0)
+    #expect(await coordinator.barrierReceipt() == receipt)
+
+    await readGate.release()
+    guard case .completed(41) = await read.value else {
+        Issue.record("Read did not complete through its owned lease.")
+        return
+    }
+    guard case .completed(.success(42)) = await mutation.value else {
+        Issue.record("Mutation did not start after the read lease drained.")
+        return
+    }
+    #expect(await mutationCalls.count() == 1)
+}
+
+@Test func readTimeoutRetainsLeaseAndQueuedWriterBlocksLaterReads() async {
+    let coordinator = LocalMutationCoordinator()
+    let readClock = ManualMutationDeadlineClock()
+    let mutationClock = ManualMutationDeadlineClock()
+    let readGate = ControlledReadOperation(value: 7)
+    let laterReadCalls = MutationInvocationCounter()
+    let mutationCalls = MutationInvocationCounter()
+    let receipt = mutationReceipt("000000000010", kind: .makeFolder)
+
+    let read = Task {
+        await coordinator.performRead(
+            nanoseconds: 1,
+            clock: readClock
+        ) {
+            await readGate.run()
+        }
+    }
+    await readGate.waitUntilStarted()
+    await readClock.waitUntilSleeping()
+    await readClock.fireAll()
+    guard case .timedOut = await read.value else {
+        Issue.record("Read deadline did not return to its caller.")
+        return
+    }
+    #expect(await coordinator.retainedReadCount() == 1)
+
+    let mutation = Task {
+        await coordinator.perform(
+            receipt: receipt,
+            nanoseconds: 1,
+            clock: mutationClock,
+            startedAt: { receipt.startedAt }
+        ) { _ in
+            await mutationCalls.record()
+            return .success(8)
+        }
+    }
+    await mutationClock.waitUntilSleeping()
+    let laterRead = await coordinator.performRead(
+        nanoseconds: 1,
+        clock: ManualMutationDeadlineClock()
+    ) {
+        await laterReadCalls.record()
+        return 9
+    }
+    guard case let .blocked(blockingReceipt) = laterRead else {
+        Issue.record("Writer-preferred admission allowed a later read.")
+        await readGate.release()
+        _ = await mutation.value
+        return
+    }
+    #expect(blockingReceipt == receipt)
+    #expect(await laterReadCalls.count() == 0)
+    #expect(await mutationCalls.count() == 0)
+
+    await readGate.release()
+    guard case .completed(.success(8)) = await mutation.value else {
+        Issue.record("Writer did not resume after the late read completed.")
+        return
+    }
+    #expect(await coordinator.retainedReadCount() == 0)
+}
+
+@Test func cancelledReadRetainsLeaseUntilPhysicalCompletion() async {
+    let coordinator = LocalMutationCoordinator()
+    let clock = ManualMutationDeadlineClock()
+    let gate = ControlledReadOperation(value: 11)
+
+    let read = Task {
+        await coordinator.performRead(
+            nanoseconds: 1,
+            clock: clock
+        ) {
+            await gate.run()
+        }
+    }
+    await gate.waitUntilStarted()
+    read.cancel()
+    guard case .cancelled = await read.value else {
+        Issue.record("Read cancellation was not caller-visible.")
+        return
+    }
+    #expect(await coordinator.retainedReadCount() == 1)
+    await gate.release()
+    while await coordinator.retainedReadCount() != 0 {
+        await Task.yield()
+    }
+}
+
+@Test func recoveryClaimIsReceiptMatchedAndExclusive() async {
+    let coordinator = LocalMutationCoordinator()
+    let receipt = mutationReceipt("000000000011", kind: .relocate)
+    let wrongReceipt = mutationReceipt("000000000012", kind: .relocate)
+    let recoveryCalls = MutationInvocationCounter()
+
+    #expect(await coordinator.beginRecovery(for: receipt) == .unknownAfterRestart)
+    #expect(await coordinator.beginRecovery(for: wrongReceipt) == .inFlight)
+
+    let wrongRead = await coordinator.performRecoveryRead(
+        for: wrongReceipt,
+        nanoseconds: 1,
+        clock: ManualMutationDeadlineClock()
+    ) {
+        await recoveryCalls.record()
+        return 1
+    }
+    guard case let .blocked(blockingReceipt) = wrongRead else {
+        Issue.record("A wrong receipt entered the recovery read bypass.")
+        return
+    }
+    #expect(blockingReceipt == receipt)
+    #expect(await recoveryCalls.count() == 0)
+
+    let rightRead = await coordinator.performRecoveryRead(
+        for: receipt,
+        nanoseconds: 1,
+        clock: ManualMutationDeadlineClock()
+    ) {
+        await recoveryCalls.record()
+        return 2
+    }
+    guard case .completed(2) = rightRead else {
+        Issue.record("The matching recovery receipt was not admitted.")
+        return
+    }
+    #expect(await recoveryCalls.count() == 1)
+    await coordinator.finishRecovery(for: receipt)
+    #expect(await coordinator.barrierReceipt() == nil)
+}
+
 private actor ManualMutationDeadlineClock: ProviderDeadlineClock {
     private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
     private var sleeperWaiters: [CheckedContinuation<Void, Never>] = []
@@ -286,6 +461,49 @@ private actor ControlledMutationOperation<Value: Sendable> {
             }
         }
         return result
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
+private actor ControlledReadOperation<Value: Sendable> {
+    private let value: Value
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(value: Value) {
+        self.value = value
+    }
+
+    func run() async -> Value {
+        started = true
+        let observers = startWaiters
+        startWaiters.removeAll()
+        for observer in observers {
+            observer.resume()
+        }
+        if !released {
+            await withCheckedContinuation { continuation in
+                releaseWaiters.append(continuation)
+            }
+        }
+        return value
     }
 
     func waitUntilStarted() async {

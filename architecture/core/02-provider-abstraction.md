@@ -111,9 +111,9 @@ Engine logic branches on capabilities and availability, never on `ProviderKind`.
 Mutation deadlines add two distinct errors:
 
 - `mutationDeadlineExpiredBeforeStart` proves the provider did not begin the side effect. It is a confirmed, terminal failure for that attempt.
-- `mutationIndeterminate(receipt)` means the deadline expired after blocking work began. It does **not** mean the syscall stopped. The receipt identifies the provider, operation kind, affected paths, and actual coordinator start time so the journal can retain the uncertainty.
+- `mutationIndeterminate(receipt)` means the deadline expired after blocking work began. It does **not** mean the syscall stopped. The receipt identifies the provider, operation kind, affected paths, and actual coordinator start time so the journal can retain the uncertainty. Stable recovery identity is the receipt ID plus provider, kind, and ordered paths; `startedAt` is timestamp evidence rather than identity because canonical date encoding may round sub-millisecond precision. `affectedPaths` is ordered: the first entry is the receipt provider's primary path (for relocate, source then destination). Caller-visible activity, execution records, and outcomes use that receipt attribution; destination operation context remains in the journaled intent.
 
-Providers with blocking calls refine `StorageProvider` through `IndeterminateMutationRecovering`. The refinement reports whether owned late work is still in flight, has reached quiescence with a retained success/failure, or belongs to a previous process. It also exposes the in-process indeterminate receipt so recovery can repair a failed journal-event append before it probes or releases anything. Its recovery-only probe bypasses the ordinary provider barrier; ordinary availability, scans, probes, and mutations remain blocked until the engine durably reconciles the receipt.
+Providers with blocking calls refine `StorageProvider` through `IndeterminateMutationRecovering`. The refinement reports whether owned late work is still in flight, has reached quiescence with a retained success/failure, or belongs to a previous process. It also exposes the in-process indeterminate receipt so recovery can repair a failed journal-event append before it probes or releases anything. `beginIndeterminateMutationRecovery` atomically claims a genuinely restarted receipt; an unrelated same-process owner or read reports in-flight instead of masquerading as restart. Its recovery-only probe bypasses the ordinary barrier only for the exact claimed/quiescent receipt and only while no unrelated owner is active. Ordinary availability, scans, probes, and mutations remain blocked until the engine durably reconciles the receipt.
 
 ## 7. Mutation ownership contract
 
@@ -121,13 +121,13 @@ Every provider mutation has one durable owner from its atomic queued-to-started 
 
 1. prevent a timed-out queued operation from starting; if active work becomes indeterminate, invalidate every operation queued under the old authorization as pre-start and reject new mutation calls until recovery finishes;
 2. retain started work and its late success or failure;
-3. serialize conflicting reads and writes while the outcome is indeterminate;
+3. atomically serialize reads that authorize sync truth against mutation admission, and keep each read lease until the underlying work returns even when its caller times out or cancels;
 4. expose recovery truth without authorizing ordinary planning; and
 5. release its barrier only after the engine has marked the journal reconciled.
 
-This contract includes writes to caller-supplied staging URLs (`fetch`) because abandoned late copies can race stage cleanup and later materialization. Read-only scans and metadata probes may use ordinary deadline helpers when late completion cannot mutate provider or engine state, but their results are discarded and they remain barred during indeterminate mutation recovery.
+This contract includes writes to caller-supplied staging URLs (`fetch`) because abandoned late copies can race stage cleanup and later materialization. Local availability, scan, metadata, and recovery probes are coordinator-owned compound reads. Already-admitted reads may overlap; the first queued mutation closes ordinary read admission, waits for every physical read to drain, and then starts. A timed-out read therefore blocks mutation until its late completion rather than producing hybrid scan truth.
 
-The provider/coordinator instance is session-owned: a root must not be reconstructed in the same process while its previous coordinator retains work. The current orchestrator's immutable provider map enforces this normal-path lifetime. A future provider-registry replacement API must transfer or share root ownership; only an actual process restart may treat a missing coordinator as `unknownAfterRestart`.
+Local root ownership is process-wide, keyed by canonical root path plus the configured enrollment volume identity; `LocationID` is deliberately not part of the key. The registry also retains every configured-path alias, so a symlinked root keeps its original owner while its target is temporarily unavailable. A previously unseen alias that cannot be resolved is rejected when another root on that enrolled volume already exists in-process; ambiguity never creates a second owner. Reconstructed providers and orchestrators for the same physical root share the coordinator and recovery artifacts, while different roots or volume identities cannot inherit stale state. Registry entries are retained for the process lifetime rather than risk evicting an owner with an unobservable blocking syscall. Only an actual process restart may create `unknownAfterRestart`.
 
 ## 8. Changing the current code
 

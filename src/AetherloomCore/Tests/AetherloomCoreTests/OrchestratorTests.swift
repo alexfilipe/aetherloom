@@ -465,6 +465,136 @@ import Testing
     #expect(plan.schedule.operations.isEmpty)
 }
 
+@Test func phase07ReconstructedLocalOrchestratorSharesLiveRootOwner() async throws {
+    let root = try phase07TemporaryDirectory("reconstructed-local-owner")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = LocalRootIORegistry()
+    let location = SyncLocation(
+        id: .localFolder,
+        kind: .localFolder,
+        configuration: [
+            LocalFolderStorageProvider.expectedVolumeIdentityConfigurationKey:
+                "scripted-volume",
+        ]
+    )
+    let clock = OrchestratorMutationClock()
+    let hook = OrchestratorBlockingMutationHook()
+    let receiptID = phase07UUID("000000000521")
+    let firstProvider = await LocalFolderStorageProvider.make(
+        location: location,
+        rootURL: root,
+        volumes: ScriptedVolumeInspector(),
+        deadlines: ProviderDeadlines(
+            ioNanoseconds: 1,
+            clock: clock,
+            now: {
+                Date(timeIntervalSince1970: 1_800_000_100.123_456_7)
+            },
+            makeMutationID: { receiptID }
+        ),
+        mutationHook: hook,
+        registry: registry
+    )
+    await clock.waitUntilIdle()
+    let syncSet = phase07SyncSet([.localFolder])
+    let journalRoot = root
+        .appendingPathComponent(".aetherloom", isDirectory: true)
+        .appendingPathComponent("orchestrator-file-journal", isDirectory: true)
+    let stores = EngineStores(
+        baseRecords: InMemoryBaseRecordStore(),
+        journal: try FileRunJournalStore(rootURL: journalRoot),
+        conflicts: InMemoryConflictStore(),
+        adviceCache: InMemoryAdviceCacheStore(),
+        activity: InMemoryActivityStore(),
+        locations: InMemoryLocationRegistry()
+    )
+    let oldOrchestrator = try phase07Orchestrator(
+        syncSet: syncSet,
+        providerMap: [.localFolder: firstProvider],
+        stores: stores
+    )
+    _ = oldOrchestrator
+
+    let mutation = Task { () -> ProviderMutationReceipt? in
+        do {
+            _ = try await firstProvider.makeFolder(at: "/LateFolder")
+            return nil
+        } catch let ProviderError.mutationIndeterminate(receipt) {
+            return receipt
+        } catch {
+            Issue.record("Unexpected local mutation error: \(error)")
+            return nil
+        }
+    }
+    await hook.waitUntilStarted()
+    await clock.waitUntilSleeping()
+    await clock.fireAll()
+    let receipt = try #require(await mutation.value)
+
+    let operation = Operation(
+        id: OperationID(phase07UUID("000000000522")),
+        location: .localFolder,
+        kind: .makeFolder(at: "/LateFolder"),
+        precondition: .pathAbsent
+    )
+    let runID = phase07UUID("000000000523")
+    try await stores.journal.begin(
+        runID: runID,
+        syncSetID: syncSet.id,
+        fingerprint: PlanFingerprint(rawValue: "reconstructed-local-owner")
+    )
+    try await stores.journal.append(.intent(operation), runID: runID)
+    try await stores.journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: phase07Date
+        ),
+        runID: runID
+    )
+
+    let reconstructedProvider = await LocalFolderStorageProvider.make(
+        location: location,
+        rootURL: root,
+        volumes: ScriptedVolumeInspector(),
+        registry: registry
+    )
+    var reconstructedStores = stores
+    reconstructedStores.journal = try FileRunJournalStore(rootURL: journalRoot)
+    let reconstructedOrchestrator = try phase07Orchestrator(
+        syncSet: syncSet,
+        providerMap: [.localFolder: reconstructedProvider],
+        stores: reconstructedStores
+    )
+
+    await #expect(
+        throws: RunRecoveryError.indeterminateMutationStillRunning(
+            operationID: operation.id,
+            receiptID: receipt.id
+        )
+    ) {
+        _ = try await reconstructedOrchestrator.prepare(syncSet)
+    }
+
+    hook.release()
+    while await reconstructedProvider.indeterminateMutationState(for: receipt)
+        == .inFlight {
+        await Task.yield()
+    }
+    let preparation = try await reconstructedOrchestrator.prepare(syncSet)
+
+    #expect(hook.startedCount() == 1)
+    #expect(
+        try await reconstructedStores.journal.unfinishedRun(for: syncSet.id)
+            == nil
+    )
+    guard case let .plan(plan) = preparation.outcome else {
+        Issue.record("Reconstructed orchestrator did not freshly replan.")
+        return
+    }
+    #expect(plan.schedule.operations.isEmpty)
+}
+
 private func phase07SyncSet(
     _ locations: [LocationID],
     mode: SyncMode = .balancedMirror,
@@ -806,4 +936,86 @@ private actor RecoveryGatedProvider: IndeterminateMutationRecovering {
     func scanCount() -> Int { scanCalls }
     func recoveryProbeCount() -> Int { recoveryProbes }
     func mutationCount() -> Int { mutations }
+}
+
+private actor OrchestratorMutationClock: ProviderDeadlineClock {
+    private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var sleeperWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func sleep(nanoseconds _: UInt64) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters[id] = continuation
+                let observers = sleeperWaiters
+                sleeperWaiters.removeAll()
+                for observer in observers {
+                    observer.resume()
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
+        }
+    }
+
+    func waitUntilSleeping() async {
+        if !waiters.isEmpty { return }
+        await withCheckedContinuation { continuation in
+            sleeperWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilIdle() async {
+        while !waiters.isEmpty {
+            await Task.yield()
+        }
+    }
+
+    func fireAll() {
+        let continuations = waiters.values
+        waiters.removeAll()
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+
+    private func cancel(_ id: UUID) {
+        waiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+    }
+}
+
+private final class OrchestratorBlockingMutationHook:
+    LocalMutationStarting,
+    @unchecked Sendable
+{
+    private let condition = NSCondition()
+    private var starts = 0
+    private var released = false
+
+    func beforeMutation(_: ProviderMutationReceipt) throws {
+        condition.lock()
+        starts += 1
+        condition.broadcast()
+        while !released {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func waitUntilStarted() async {
+        while startedCount() == 0 {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func startedCount() -> Int {
+        condition.withLock { starts }
+    }
 }

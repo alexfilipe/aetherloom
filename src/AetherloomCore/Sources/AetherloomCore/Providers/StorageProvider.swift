@@ -39,6 +39,17 @@ public struct ProviderMutationReceipt: Codable, Hashable, Sendable {
         self.affectedPaths = affectedPaths
         self.startedAt = startedAt
     }
+
+    /// Compares the durable mutation identity without relying on `startedAt`.
+    /// Canonical JSON preserves wall-clock ordering but may round a `Date` at
+    /// sub-millisecond precision, so the timestamp is evidence rather than an
+    /// identity field during same-process journal recovery.
+    func identifiesSameMutation(as other: ProviderMutationReceipt) -> Bool {
+        id == other.id
+            && provider == other.provider
+            && kind == other.kind
+            && affectedPaths == other.affectedPaths
+    }
 }
 
 public enum ProviderMutationKind: String, Codable, Hashable, Sendable {
@@ -76,6 +87,13 @@ public protocol IndeterminateMutationRecovering: StorageProvider {
         for receipt: ProviderMutationReceipt
     ) async -> ProviderIndeterminateMutationState
 
+    /// Atomically claims recovery ownership for a journaled receipt. A local
+    /// provider uses this to distinguish a genuine process restart from an
+    /// in-process reconstruction that still has another root owner or read.
+    func beginIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderIndeterminateMutationState
+
     /// Recovery-only metadata read. The provider must keep ordinary scans,
     /// probes, and mutations blocked until `finishIndeterminateMutationRecovery`
     /// is called.
@@ -92,6 +110,12 @@ public protocol IndeterminateMutationRecovering: StorageProvider {
 public extension IndeterminateMutationRecovering {
     func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
         nil
+    }
+
+    func beginIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderIndeterminateMutationState {
+        await indeterminateMutationState(for: receipt)
     }
 }
 

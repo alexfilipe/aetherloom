@@ -409,17 +409,18 @@ import Testing
     )
     let source = IndeterminateFetchProvider(base: sourceBase, receipt: receipt)
     let destination = FakeStorageProvider(locationID: .oneDrive)
+    let conflictCopyPath: SyncPath = "/LateFetch (Conflict copy).txt"
     let operation = operation(
         "000000000617",
         location: .oneDrive,
         kind: .transfer(
             content: ContentRef(sourceItem),
-            to: sourceItem.path,
+            to: conflictCopyPath,
             overwrite: .neverOverwrite
         ),
         precondition: .pathAbsent
     )
-    let plan = planForOperations([operation], path: sourceItem.path)
+    let plan = planForOperations([operation], path: conflictCopyPath)
     let stores = EngineStores.inMemory()
     let stageRoot = try temporaryDirectory("phase06-indeterminate-fetch")
     let stage = ContentStage(rootDirectory: stageRoot, byteLimit: 0)
@@ -437,11 +438,17 @@ import Testing
     #expect(
         summary.outcome
             == .mutationIndeterminate(
-                location: .oneDrive,
+                location: .googleDrive,
                 path: sourceItem.path,
                 receiptID: receipt.id
             )
     )
+    let indeterminateRecord = try #require(summary.indeterminateOperations.first)
+    #expect(summary.indeterminateOperations.count == 1)
+    #expect(indeterminateRecord.operationID == operation.id)
+    #expect(indeterminateRecord.location == .googleDrive)
+    #expect(indeterminateRecord.path == sourceItem.path)
+    #expect(indeterminateRecord.status == .indeterminate)
     #expect(await destination.callLog().filter { $0.operation == .store }.isEmpty)
     #expect(await stage.retainedArtifactCount(for: receipt) == 1)
     #expect(
@@ -453,6 +460,32 @@ import Testing
     let replay = try #require(
         try await stores.journal.unfinishedRun(for: plan.syncSetID)
     )
+    #expect(replay.indeterminateReceiptsByOperation[operation.id] == receipt)
+    let persistedIntent = try #require(
+        replay.events.compactMap { event -> AetherloomCore.Operation? in
+            guard case let .intent(operation) = event else { return nil }
+            return operation
+        }.first
+    )
+    #expect(persistedIntent.location == .oneDrive)
+    #expect(persistedIntent.kind.targetPath == conflictCopyPath)
+    #expect(!replay.events.contains { $0.resultOperationID == operation.id })
+    #expect(!replay.events.contains { $0.isRunFinished })
+    let safetyEntries = await stores.activity.entries(
+        matching: ActivityQuery(
+            runID: summary.runID,
+            categories: [.safety],
+            limit: 20
+        )
+    )
+    let indeterminateActivity = try #require(
+        safetyEntries.first {
+            $0.message == ActivityMessageCatalog.mutationIndeterminate
+        }
+    )
+    #expect(indeterminateActivity.locationID == .googleDrive)
+    #expect(indeterminateActivity.path == sourceItem.path)
+    #expect(indeterminateActivity.detail?.contains(conflictCopyPath.rawValue) == true)
 
     let report = try await RunRecovery(
         providers: [.googleDrive: source, .oneDrive: destination],
@@ -472,6 +505,28 @@ import Testing
         ).filter { $0.pathExtension == "tmp" }.isEmpty
     )
     #expect(try await stores.journal.unfinishedRun(for: plan.syncSetID) == nil)
+}
+
+@Test func legacySyncRunSummaryDecodesWithoutIndeterminateOperations() throws {
+    let summary = SyncRunSummary(
+        runID: uuid("000000000619"),
+        syncSetID: uuid("000000000620"),
+        outcome: .completed
+    )
+    let encoded = try CanonicalCoding.encoder().encode(summary)
+    var object = try #require(
+        JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    object.removeValue(forKey: "indeterminateOperations")
+    let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+    let decoded = try CanonicalCoding.decoder().decode(
+        SyncRunSummary.self,
+        from: legacyData
+    )
+    #expect(decoded.indeterminateOperations.isEmpty)
+    #expect(decoded.runID == summary.runID)
+    #expect(decoded.syncSetID == summary.syncSetID)
 }
 
 @Test func indeterminateStoreKeepsSourcePinnedOnlyUntilRecovery() async throws {

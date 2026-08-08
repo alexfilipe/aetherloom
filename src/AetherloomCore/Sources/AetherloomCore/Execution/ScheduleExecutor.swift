@@ -81,6 +81,7 @@ public struct SyncRunSummary: Codable, Hashable, Sendable {
     public var appliedOperations: [OperationExecutionRecord]
     public var skippedOperations: [OperationExecutionRecord]
     public var failedOperations: [OperationExecutionRecord]
+    public var indeterminateOperations: [OperationExecutionRecord]
     public var perItemResults: [ItemExecutionResult]
 
     public init(
@@ -90,6 +91,7 @@ public struct SyncRunSummary: Codable, Hashable, Sendable {
         appliedOperations: [OperationExecutionRecord] = [],
         skippedOperations: [OperationExecutionRecord] = [],
         failedOperations: [OperationExecutionRecord] = [],
+        indeterminateOperations: [OperationExecutionRecord] = [],
         perItemResults: [ItemExecutionResult] = []
     ) {
         self.runID = runID
@@ -98,7 +100,58 @@ public struct SyncRunSummary: Codable, Hashable, Sendable {
         self.appliedOperations = appliedOperations
         self.skippedOperations = skippedOperations
         self.failedOperations = failedOperations
+        self.indeterminateOperations = indeterminateOperations
         self.perItemResults = perItemResults
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runID
+        case syncSetID
+        case outcome
+        case appliedOperations
+        case skippedOperations
+        case failedOperations
+        case indeterminateOperations
+        case perItemResults
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        runID = try container.decode(UUID.self, forKey: .runID)
+        syncSetID = try container.decode(UUID.self, forKey: .syncSetID)
+        outcome = try container.decode(SyncRunOutcome.self, forKey: .outcome)
+        appliedOperations = try container.decode(
+            [OperationExecutionRecord].self,
+            forKey: .appliedOperations
+        )
+        skippedOperations = try container.decode(
+            [OperationExecutionRecord].self,
+            forKey: .skippedOperations
+        )
+        failedOperations = try container.decode(
+            [OperationExecutionRecord].self,
+            forKey: .failedOperations
+        )
+        indeterminateOperations = try container.decodeIfPresent(
+            [OperationExecutionRecord].self,
+            forKey: .indeterminateOperations
+        ) ?? []
+        perItemResults = try container.decode(
+            [ItemExecutionResult].self,
+            forKey: .perItemResults
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(runID, forKey: .runID)
+        try container.encode(syncSetID, forKey: .syncSetID)
+        try container.encode(outcome, forKey: .outcome)
+        try container.encode(appliedOperations, forKey: .appliedOperations)
+        try container.encode(skippedOperations, forKey: .skippedOperations)
+        try container.encode(failedOperations, forKey: .failedOperations)
+        try container.encode(indeterminateOperations, forKey: .indeterminateOperations)
+        try container.encode(perItemResults, forKey: .perItemResults)
     }
 }
 
@@ -282,6 +335,7 @@ public struct ScheduleExecutor: Sendable {
             appliedOperations: state.appliedOperations,
             skippedOperations: state.skippedOperations,
             failedOperations: state.failedOperations,
+            indeterminateOperations: state.indeterminateOperations,
             perItemResults: state.itemResults.sorted { $0.path == $1.path ? $0.id.uuidString < $1.id.uuidString : $0.path < $1.path }
         )
     }
@@ -442,8 +496,17 @@ public struct ScheduleExecutor: Sendable {
                 return OperationRunResult(record: record)
 
             case let .indeterminate(receipt):
-                let path = operation.kind.targetPath
-                let detail = "Filesystem mutation exceeded its deadline after starting; recovery must reconcile receipt \(receipt.id.uuidString)."
+                // Receipt paths are ordered with the provider-owned primary
+                // path first (relocate is source, then destination). A legacy
+                // malformed empty list falls back conservatively to operation
+                // context, while recovery will still reject that receipt.
+                let location = receipt.provider
+                let path = receipt.affectedPaths.first ?? operation.kind.targetPath
+                let destinationContext = operation.location == location
+                    && operation.kind.targetPath == path
+                    ? ""
+                    : " Destination operation: \(operation.location.rawValue.uuidString) \(operation.kind.targetPath.rawValue)."
+                let detail = "Filesystem mutation exceeded its deadline after starting; recovery must reconcile receipt \(receipt.id.uuidString).\(destinationContext)"
                 try await appendJournal(
                     .mutationIndeterminate(
                         operationID: operation.id,
@@ -457,7 +520,7 @@ public struct ScheduleExecutor: Sendable {
                     syncSetID: plan.syncSetID,
                     runID: runID,
                     category: .safety,
-                    locationID: operation.location,
+                    locationID: location,
                     path: path,
                     message: ActivityMessageCatalog.mutationIndeterminate,
                     detail: detail
@@ -465,13 +528,13 @@ public struct ScheduleExecutor: Sendable {
                 return OperationRunResult(
                     record: OperationExecutionRecord(
                         operationID: operation.id,
-                        location: operation.location,
+                        location: location,
                         path: path,
                         status: .indeterminate,
                         detail: detail
                     ),
                     stop: .mutationIndeterminate(
-                        location: operation.location,
+                        location: location,
                         path: path,
                         receiptID: receipt.id
                     )
@@ -953,6 +1016,10 @@ private struct ExecutionState {
 
     var failedOperations: [OperationExecutionRecord] {
         records(with: .failed)
+    }
+
+    var indeterminateOperations: [OperationExecutionRecord] {
+        records(with: .indeterminate)
     }
 
     func index(of operationID: OperationID) -> Int {

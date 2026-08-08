@@ -7,6 +7,7 @@ public enum RunRecoveryError: Error, Equatable, Sendable {
     )
     case indeterminateMutationProviderCannotRecover(operationID: OperationID)
     case providerTruthUnavailable(operationID: OperationID, detail: String)
+    case relocateOutcomeUncertain(operationID: OperationID, detail: String)
 }
 
 public struct RunRecoveryReport: Codable, Hashable, Sendable {
@@ -88,7 +89,7 @@ public struct RunRecovery: Sendable {
                         operationID: operation.id
                     )
                 }
-                switch await provider.indeterminateMutationState(for: receipt) {
+                switch await provider.beginIndeterminateMutationRecovery(for: receipt) {
                 case .inFlight:
                     throw RunRecoveryError.indeterminateMutationStillRunning(
                         operationID: operation.id,
@@ -254,24 +255,67 @@ public struct RunRecovery: Sendable {
         case let .relocate(itemRef, newPath):
             var destinationProbe = itemRef.observation
             destinationProbe.path = newPath
-            let current = try await recoveryState(
+            let resolvedDestination = await recoveryStateResult(
                 of: destinationProbe,
                 provider: provider,
                 recoveryProvider: recoveryProvider,
                 receipt: receipt,
                 operationID: operation.id
             )
-            guard let current, current.path == newPath, !current.isTrashed else {
-                if receipt != nil {
-                    _ = try await recoveryState(
-                        of: itemRef.observation,
-                        provider: provider,
-                        recoveryProvider: recoveryProvider,
-                        receipt: receipt,
-                        operationID: operation.id
-                    )
-                }
+            let resolvedSource = await recoveryStateResult(
+                of: itemRef.observation,
+                provider: provider,
+                recoveryProvider: recoveryProvider,
+                receipt: receipt,
+                operationID: operation.id
+            )
+            let destination = try resolvedDestination.get()
+            let source = try resolvedSource.get()
+
+            let destinationMatches = destination.map {
+                observation(
+                    $0,
+                    matches: itemRef,
+                    at: newPath,
+                    mayBeTrashed: false
+                )
+            } ?? false
+            let liveSourceMatches = source.map {
+                observation(
+                    $0,
+                    matches: itemRef,
+                    at: itemRef.path,
+                    mayBeTrashed: false
+                )
+            } ?? false
+            let trashedSourceMatches = source.map {
+                $0.isTrashed && observation(
+                    $0,
+                    matches: itemRef,
+                    at: itemRef.path,
+                    mayBeTrashed: true
+                )
+            } ?? false
+
+            if destination == nil, liveSourceMatches {
+                // The old relocate definitely did not apply. Recovery may
+                // close the intent only into a fresh scan/replan; it never
+                // reissues the old schedule.
                 return nil
+            }
+            guard let current = destination,
+                  destinationMatches,
+                  source == nil || trashedSourceMatches else {
+                throw RunRecoveryError.relocateOutcomeUncertain(
+                    operationID: operation.id,
+                    detail: relocateUncertaintyDetail(
+                        destination: destination,
+                        source: source,
+                        destinationMatches: destinationMatches,
+                        liveSourceMatches: liveSourceMatches,
+                        trashedSourceMatches: trashedSourceMatches
+                    )
+                )
             }
             return BaseRecord(
                 id: environment.makeID(),
@@ -332,6 +376,75 @@ public struct RunRecovery: Sendable {
                 detail: String(describing: error)
             )
         }
+    }
+
+    private func recoveryStateResult(
+        of observation: ItemObservation,
+        provider: any StorageProvider,
+        recoveryProvider: (any IndeterminateMutationRecovering)?,
+        receipt: ProviderMutationReceipt?,
+        operationID: OperationID
+    ) async -> Result<ItemObservation?, RunRecoveryError> {
+        do {
+            return .success(
+                try await recoveryState(
+                    of: observation,
+                    provider: provider,
+                    recoveryProvider: recoveryProvider,
+                    receipt: receipt,
+                    operationID: operationID
+                )
+            )
+        } catch let error as RunRecoveryError {
+            return .failure(error)
+        } catch {
+            return .failure(
+                .providerTruthUnavailable(
+                    operationID: operationID,
+                    detail: String(describing: error)
+                )
+            )
+        }
+    }
+
+    private func observation(
+        _ observation: ItemObservation,
+        matches expected: ItemRef,
+        at path: SyncPath,
+        mayBeTrashed: Bool
+    ) -> Bool {
+        observation.location == expected.location
+            && observation.path == path
+            && observation.kind == expected.kind
+            && !observation.isPlaceholder
+            && (mayBeTrashed || !observation.isTrashed)
+            && observation.version.comparison(to: expected.expectedVersion) == .same
+            && (expected.itemID == nil || observation.itemID == expected.itemID)
+    }
+
+    private func relocateUncertaintyDetail(
+        destination: ItemObservation?,
+        source: ItemObservation?,
+        destinationMatches: Bool,
+        liveSourceMatches: Bool,
+        trashedSourceMatches: Bool
+    ) -> String {
+        if destinationMatches, liveSourceMatches {
+            return "Both the intended destination and the live source are present."
+        }
+        if destination != nil, !destinationMatches {
+            return "Destination kind, identity, or version does not prove the intended item."
+        }
+        if source != nil, !liveSourceMatches, !trashedSourceMatches {
+            return "Source state does not prove either the original item or a recoverable trash move."
+        }
+        if destination == nil, source == nil {
+            return "Neither endpoint contains enough evidence to establish the relocate outcome."
+        }
+        if destination == nil, trashedSourceMatches {
+            return "The source is recoverably trashed but the intended destination is absent."
+        }
+        return "The relocate endpoints do not establish a single safe outcome."
     }
 }
 
