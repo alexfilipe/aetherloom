@@ -181,7 +181,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                       resolvedExistingRootPath(rootURL) == canonicalRootPath else {
                     return nil
                 }
-                await volumes.properties(for: rootURL)
+                return await volumes.properties(for: rootURL)
             }
         switch result {
         case let .completed(properties):
