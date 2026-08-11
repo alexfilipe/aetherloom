@@ -1376,14 +1376,6 @@ struct LocalFolderStorageProviderTests {
             "NativeRecovery.txt",
             isDirectory: false
         )
-        let reportedNativeRecovery = world.appendingPathComponent(
-            "ReportedNativeRecovery.txt",
-            isDirectory: false
-        )
-        let hiddenRoot = world.appendingPathComponent(
-            "UnavailableRoot",
-            isDirectory: true
-        )
         try FileManager.default.createDirectory(
             at: root,
             withIntermediateDirectories: true
@@ -1670,6 +1662,14 @@ struct LocalFolderStorageProviderTests {
         let nativeRecovery = world.appendingPathComponent(
             "NativeRecovery.txt",
             isDirectory: false
+        )
+        let reportedNativeRecovery = world.appendingPathComponent(
+            "ReportedNativeRecovery.txt",
+            isDirectory: false
+        )
+        let hiddenRoot = world.appendingPathComponent(
+            "UnavailableRoot",
+            isDirectory: true
         )
         let quarantineHolding = world.appendingPathComponent(
             "QuarantineHolding.txt",
