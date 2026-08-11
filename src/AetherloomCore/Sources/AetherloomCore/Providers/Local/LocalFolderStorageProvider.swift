@@ -49,6 +49,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
     private let fetching: any LocalFetchPerforming
     private let nativeTrash: any LocalNativeTrashPerforming
     private let relocation: any LocalRelocationPerforming
+    private let quarantine: any LocalQuarantinePerforming
     private let mutationHook: any LocalMutationStarting
     private let trashReceiptPersistence: any LocalTrashReceiptPersisting
     private let mutations: LocalMutationCoordinator
@@ -96,6 +97,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             fetching: SystemLocalFetchPerformer(),
             nativeTrash: SystemLocalNativeTrashPerformer(),
             relocation: SystemLocalRelocationPerformer(),
+            quarantine: SystemLocalQuarantinePerformer(),
             mutationHook: NoOpLocalMutationHook(),
             trashReceiptPersistence: AtomicLocalTrashReceiptPersister(),
             ownership: ownership
@@ -110,6 +112,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         fetching: any LocalFetchPerforming = SystemLocalFetchPerformer(),
         nativeTrash: any LocalNativeTrashPerforming = SystemLocalNativeTrashPerformer(),
         relocation: any LocalRelocationPerforming = SystemLocalRelocationPerformer(),
+        quarantine: any LocalQuarantinePerforming = SystemLocalQuarantinePerformer(),
         mutationHook: any LocalMutationStarting = NoOpLocalMutationHook(),
         trashReceiptPersistence: any LocalTrashReceiptPersisting = AtomicLocalTrashReceiptPersister(),
         registry: LocalRootIORegistry = .shared
@@ -146,6 +149,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             fetching: fetching,
             nativeTrash: nativeTrash,
             relocation: relocation,
+            quarantine: quarantine,
             mutationHook: mutationHook,
             trashReceiptPersistence: trashReceiptPersistence,
             ownership: ownership
@@ -205,6 +209,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         fetching: any LocalFetchPerforming,
         nativeTrash: any LocalNativeTrashPerforming,
         relocation: any LocalRelocationPerforming,
+        quarantine: any LocalQuarantinePerforming,
         mutationHook: any LocalMutationStarting,
         trashReceiptPersistence: any LocalTrashReceiptPersisting,
         ownership: LocalRootOwnership
@@ -218,6 +223,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         self.fetching = fetching
         self.nativeTrash = nativeTrash
         self.relocation = relocation
+        self.quarantine = quarantine
         self.mutationHook = mutationHook
         self.trashReceiptPersistence = trashReceiptPersistence
         self.mutations = ownership.mutations
@@ -585,6 +591,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             fetching: fetching,
             nativeTrash: nativeTrash,
             relocation: relocation,
+            quarantine: quarantine,
             hook: mutationHook,
             trashReceiptPersistence: trashReceiptPersistence,
             artifacts: mutationArtifacts,
@@ -1269,6 +1276,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let fetching: any LocalFetchPerforming
         let nativeTrash: any LocalNativeTrashPerforming
         let relocation: any LocalRelocationPerforming
+        let quarantine: any LocalQuarantinePerforming
         let hook: any LocalMutationStarting
         let trashReceiptPersistence: any LocalTrashReceiptPersisting
         let artifacts: LocalMutationArtifacts
@@ -1708,17 +1716,28 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             )
             try persistTrashReceipt(quarantineReceipt)
             do {
-                try FileManager.default.moveItem(at: source, to: recoveryURL)
+                try quarantine.moveItem(at: source, to: recoveryURL)
             } catch let moveError {
-                let sourceIsAbsent: Bool
+                let remainingSource: LocalExistingEntry?
                 do {
-                    sourceIsAbsent = try existingEntry(at: current.path) == nil
+                    remainingSource = try existingEntry(at: current.path)
                 } catch {
                     throw ProviderError.mutationIndeterminate(mutationReceipt)
                 }
-                guard sourceIsAbsent,
-                      filesystemEntryExists(at: recoveryURL) else {
+                if let remainingSource {
+                    guard remainingSource.observation.kind == current.kind,
+                          remainingSource.observation.version.isSameVersion(
+                              as: current.version
+                          ) else {
+                        throw ProviderError.mutationIndeterminate(mutationReceipt)
+                    }
                     throw moveError
+                }
+                switch quarantine.artifactState(at: recoveryURL) {
+                case .present:
+                    break
+                case .missing, .unavailable:
+                    throw ProviderError.mutationIndeterminate(mutationReceipt)
                 }
             }
             quarantineReceipt.committedAt = deadlines.now()
@@ -2143,6 +2162,17 @@ protocol LocalTrashReceiptPersisting: Sendable {
     func persist(_ data: Data, at url: URL) throws
 }
 
+enum LocalQuarantineArtifactState: Sendable {
+    case present
+    case missing
+    case unavailable(detail: String)
+}
+
+protocol LocalQuarantinePerforming: Sendable {
+    func moveItem(at source: URL, to destination: URL) throws
+    func artifactState(at url: URL) -> LocalQuarantineArtifactState
+}
+
 struct AtomicLocalTrashReceiptPersister: LocalTrashReceiptPersisting {
     func persist(_ data: Data, at url: URL) throws {
         try data.write(to: url, options: .atomic)
@@ -2157,6 +2187,31 @@ struct SystemLocalNativeTrashPerformer: LocalNativeTrashPerforming {
             resultingItemURL: &resultingURL
         )
         return resultingURL as URL?
+    }
+}
+
+struct SystemLocalQuarantinePerformer: LocalQuarantinePerforming {
+    func moveItem(at source: URL, to destination: URL) throws {
+        try FileManager.default.moveItem(at: source, to: destination)
+    }
+
+    func artifactState(at url: URL) -> LocalQuarantineArtifactState {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+            return .present
+        } catch {
+            guard LocalFileFailure(error).isMissingFile else {
+                return .unavailable(detail: String(describing: error))
+            }
+        }
+        do {
+            _ = try FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+            return .present
+        } catch {
+            return LocalFileFailure(error).isMissingFile
+                ? .missing
+                : .unavailable(detail: String(describing: error))
+        }
     }
 }
 

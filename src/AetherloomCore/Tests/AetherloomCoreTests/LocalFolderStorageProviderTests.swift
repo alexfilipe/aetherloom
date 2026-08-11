@@ -1606,11 +1606,66 @@ struct LocalFolderStorageProviderTests {
         #expect(await remote.callLog().isEmpty)
     }
 
+    @Test func systemQuarantineInspectionDistinguishesMissingAndPresent() throws {
+        let root = try makeRoot("quarantine-artifact-inspection")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let artifact = root.appendingPathComponent("Artifact.txt")
+        let quarantine = SystemLocalQuarantinePerformer()
+
+        guard case .missing = quarantine.artifactState(at: artifact) else {
+            Issue.record("A positively missing quarantine artifact was not distinguished.")
+            return
+        }
+        try Data("recoverable".utf8).write(to: artifact)
+        guard case .present = quarantine.artifactState(at: artifact) else {
+            Issue.record("A present quarantine artifact was not proven present.")
+            return
+        }
+    }
+
+    @Test func quarantineMoveFailureWithSourcePresentRemainsOrdinary() async throws {
+        let root = try makeRoot("quarantine-source-preserved-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("Preserved.txt")
+        let contents = Data("source remains authoritative".utf8)
+        try contents.write(to: sourceURL)
+        let hook = RecordingLocalMutationHook()
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            quarantine: ThrowWithoutMovingQuarantinePerformer(),
+            mutationHook: hook
+        )
+        let observation = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath[
+                "/Preserved.txt"
+            ]
+        )
+
+        await #expect(
+            throws: ProviderError.itemUnavailable(
+                provider: provider.locationID,
+                path: observation.path
+            )
+        ) {
+            try await provider.trash(observation)
+        }
+        #expect(try Data(contentsOf: sourceURL) == contents)
+        #expect(await provider.indeterminateMutationReceipt() == nil)
+        guard case .complete = (await provider.scan(.entireDrive)).status else {
+            Issue.record("A source-preserved quarantine failure retained a barrier.")
+            return
+        }
+        _ = try await provider.makeFolder(at: "/FreshMutation")
+        #expect(hook.kinds() == [.trash, .makeFolder])
+    }
+
     @Test(arguments: PostMoveTrashMode.allCases)
-    func postMoveReceiptFailureRetainsWALAndRootBarrier(
+    func postMoveUncertaintyRetainsWALAndRootBarrier(
         mode: PostMoveTrashMode
     ) async throws {
-        let world = try makeRoot("post-move-receipt-\(mode.rawValue)")
+        let world = try makeRoot("post-move-uncertainty-\(mode.rawValue)")
         defer { try? FileManager.default.removeItem(at: world) }
         let root = world.appendingPathComponent("Root", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -1623,17 +1678,45 @@ struct LocalFolderStorageProviderTests {
 
         let location = localLocation()
         let remoteLocation = SyncLocation(id: .oneDrive, kind: .oneDrive)
-        let receiptID = UUID(
-            uuidString: mode == .nativeTrash
-                ? "a3000000-0000-0000-0000-000000000011"
-                : "a3000000-0000-0000-0000-000000000012"
-        )!
+        let receiptID = mode.receiptID
+        let mutationIDs = LockedUUIDSequence(
+            [
+                receiptID,
+                UUID(uuidString: "a3000000-0000-0000-0000-000000000018")!,
+                UUID(uuidString: "a3000000-0000-0000-0000-000000000019")!,
+            ]
+        )
         let clock = ProviderMutationManualClock()
-        let hook = RecordingLocalMutationHook()
+        let hook = BlockingLocalMutationHook()
         let nativeRecovery = world.appendingPathComponent(
             "NativeRecovery.txt",
             isDirectory: false
         )
+        let quarantineHolding = world.appendingPathComponent(
+            "QuarantineHolding.txt",
+            isDirectory: false
+        )
+        let quarantine: any LocalQuarantinePerforming
+        let trashReceiptPersistence: any LocalTrashReceiptPersisting
+        switch mode {
+        case .nativeTrash, .quarantine:
+            quarantine = SystemLocalQuarantinePerformer()
+            trashReceiptPersistence = FailAfterFirstTrashReceiptPersister()
+        case .quarantineMissingArtifact:
+            quarantine = MoveThenThrowQuarantinePerformer(
+                holdingURL: quarantineHolding,
+                scriptedArtifactState: .missing
+            )
+            trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
+        case .quarantineUnavailableArtifact:
+            quarantine = MoveThenThrowQuarantinePerformer(
+                holdingURL: quarantineHolding,
+                scriptedArtifactState: .unavailable(
+                    detail: "scripted inspection failure"
+                )
+            )
+            trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
+        }
         let provider = await LocalFolderStorageProvider.make(
             location: location,
             rootURL: root,
@@ -1648,13 +1731,14 @@ struct LocalFolderStorageProviderTests {
                 ioNanoseconds: 1,
                 clock: clock,
                 now: { Date(timeIntervalSince1970: 1_800_000_210) },
-                makeMutationID: { receiptID }
+                makeMutationID: { mutationIDs.next() }
             ),
             nativeTrash: MovingNativeTrashPerformer(
                 destination: nativeRecovery
             ),
+            quarantine: quarantine,
             mutationHook: hook,
-            trashReceiptPersistence: FailAfterFirstTrashReceiptPersister()
+            trashReceiptPersistence: trashReceiptPersistence
         )
         await clock.waitUntilIdle()
         let observation = try #require(
@@ -1690,30 +1774,56 @@ struct LocalFolderStorageProviderTests {
                         initiatedBy: remoteLocation.id
                     ),
                     operations: [operationID],
-                    explanation: "Exercise post-move receipt persistence."
+                    explanation: "Exercise post-move recovery uncertainty."
                 ),
             ],
             schedule: OperationSchedule(operations: [operation]),
             gate: .clear,
             fingerprint: PlanFingerprint(
-                rawValue: "post-move-receipt-\(mode.rawValue)"
+                rawValue: "post-move-uncertainty-\(mode.rawValue)"
             )
         )
         let stores = EngineStores.inMemory()
         let runID = UUID(
             uuidString: "a3000000-0000-0000-0000-000000000016"
         )!
-        let summary = try await ScheduleExecutor(
-            providers: [location.id: provider],
-            stores: stores,
-            stage: ContentStage(
-                rootDirectory: world.appendingPathComponent("ExecutionStage"),
-                byteLimit: 1_000_000
-            ),
-            environment: ExecutionEnvironment(
-                now: { Date(timeIntervalSince1970: 1_800_000_211) }
+        let execution = Task {
+            try await ScheduleExecutor(
+                providers: [location.id: provider],
+                stores: stores,
+                stage: ContentStage(
+                    rootDirectory: world.appendingPathComponent("ExecutionStage"),
+                    byteLimit: 1_000_000
+                ),
+                environment: ExecutionEnvironment(
+                    now: { Date(timeIntervalSince1970: 1_800_000_211) }
+                )
+            ).execute(plan, runID: runID)
+        }
+        await hook.waitUntilStarted(count: 1)
+        let queuedPath: SyncPath = "/QueuedMustStayBlocked"
+        let queuedMutation = Task { () -> ProviderError? in
+            do {
+                _ = try await provider.makeFolder(at: queuedPath)
+                Issue.record("A queued mutation crossed post-move uncertainty.")
+                return nil
+            } catch let error as ProviderError {
+                return error
+            } catch {
+                Issue.record("Unexpected queued mutation error: \(error)")
+                return nil
+            }
+        }
+        await clock.waitUntilSleeping(nanoseconds: 1, count: 2)
+        hook.release()
+        let summary = try await execution.value
+        let queuedError = await queuedMutation.value
+        #expect(
+            queuedError == .mutationDeadlineExpiredBeforeStart(
+                provider: location.id,
+                path: queuedPath
             )
-        ).execute(plan, runID: runID)
+        )
         await clock.waitUntilIdle()
 
         let replay = try #require(
@@ -1742,6 +1852,12 @@ struct LocalFolderStorageProviderTests {
         }
         #expect(await provider.indeterminateMutationReceipt() == receipt)
         #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        switch mode {
+        case .quarantineMissingArtifact, .quarantineUnavailableArtifact:
+            #expect(try Data(contentsOf: quarantineHolding) == contents)
+        case .nativeTrash, .quarantine:
+            break
+        }
         #expect(hook.kinds() == [.trash])
         guard case .unavailable = (await provider.scan(.entireDrive)).status else {
             Issue.record("A fresh scan crossed the unresolved trash barrier.")
@@ -2806,6 +2922,21 @@ struct LocalFolderStorageProviderTests {
 enum PostMoveTrashMode: String, CaseIterable, Sendable {
     case nativeTrash
     case quarantine
+    case quarantineMissingArtifact
+    case quarantineUnavailableArtifact
+
+    var receiptID: UUID {
+        switch self {
+        case .nativeTrash:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000011")!
+        case .quarantine:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000012")!
+        case .quarantineMissingArtifact:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000020")!
+        case .quarantineUnavailableArtifact:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000021")!
+        }
+    }
 }
 
 private actor BlockingReadVolumeInspector: VolumeInspecting {
@@ -2945,6 +3076,34 @@ private struct MovingNativeTrashPerformer: LocalNativeTrashPerforming {
     }
 }
 
+private struct MoveThenThrowQuarantinePerformer: LocalQuarantinePerforming {
+    struct ExpectedFailure: Error {}
+
+    let holdingURL: URL
+    let scriptedArtifactState: LocalQuarantineArtifactState
+
+    func moveItem(at source: URL, to _: URL) throws {
+        try FileManager.default.moveItem(at: source, to: holdingURL)
+        throw ExpectedFailure()
+    }
+
+    func artifactState(at _: URL) -> LocalQuarantineArtifactState {
+        scriptedArtifactState
+    }
+}
+
+private struct ThrowWithoutMovingQuarantinePerformer: LocalQuarantinePerforming {
+    struct ExpectedFailure: Error {}
+
+    func moveItem(at _: URL, to _: URL) throws {
+        throw ExpectedFailure()
+    }
+
+    func artifactState(at _: URL) -> LocalQuarantineArtifactState {
+        .unavailable(detail: "Inspection must not matter while the source remains.")
+    }
+}
+
 private final class FailAfterFirstTrashReceiptPersister:
     LocalTrashReceiptPersisting,
     @unchecked Sendable
@@ -3039,15 +3198,17 @@ private final class BlockingLocalMutationHook:
     private let condition = NSCondition()
     private let failsWhenReleased: Bool
     private var startedCount = 0
+    private var startedKinds: [ProviderMutationKind] = []
     private var released = false
 
     init(failsWhenReleased: Bool = false) {
         self.failsWhenReleased = failsWhenReleased
     }
 
-    func beforeMutation(_: ProviderMutationReceipt) throws {
+    func beforeMutation(_ receipt: ProviderMutationReceipt) throws {
         condition.lock()
         startedCount += 1
+        startedKinds.append(receipt.kind)
         condition.broadcast()
         while !released {
             condition.wait()
@@ -3072,6 +3233,12 @@ private final class BlockingLocalMutationHook:
         condition.unlock()
     }
 
+    func kinds() -> [ProviderMutationKind] {
+        condition.lock()
+        defer { condition.unlock() }
+        return startedKinds
+    }
+
     private func currentStartedCount() -> Int {
         condition.lock()
         defer { condition.unlock() }
@@ -3081,13 +3248,15 @@ private final class BlockingLocalMutationHook:
 
 private actor ProviderMutationManualClock: ProviderDeadlineClock {
     private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var waiterDurations: [UUID: UInt64] = [:]
     private var sleeperWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func sleep(nanoseconds _: UInt64) async throws {
+    func sleep(nanoseconds: UInt64) async throws {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 waiters[id] = continuation
+                waiterDurations[id] = nanoseconds
                 let observers = sleeperWaiters
                 sleeperWaiters.removeAll()
                 for observer in observers {
@@ -3106,6 +3275,12 @@ private actor ProviderMutationManualClock: ProviderDeadlineClock {
         }
     }
 
+    func waitUntilSleeping(nanoseconds: UInt64, count: Int) async {
+        while waiterDurations.values.filter({ $0 == nanoseconds }).count < count {
+            await Task.yield()
+        }
+    }
+
     func waitUntilIdle() async {
         while !waiters.isEmpty {
             await Task.yield()
@@ -3115,13 +3290,34 @@ private actor ProviderMutationManualClock: ProviderDeadlineClock {
     func fireAll() {
         let continuations = waiters.values
         waiters.removeAll()
+        waiterDurations.removeAll()
         for continuation in continuations {
             continuation.resume()
         }
     }
 
     private func cancel(_ id: UUID) {
+        waiterDurations[id] = nil
         waiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+    }
+}
+
+private final class LockedUUIDSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [UUID]
+
+    init(_ values: [UUID]) {
+        self.values = values
+    }
+
+    func next() -> UUID {
+        lock.withLock {
+            precondition(
+                !values.isEmpty,
+                "The deterministic UUID sequence was exhausted."
+            )
+            return values.removeFirst()
+        }
     }
 }
 
