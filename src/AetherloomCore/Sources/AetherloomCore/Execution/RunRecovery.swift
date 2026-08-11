@@ -325,7 +325,7 @@ public struct RunRecovery: Sendable {
                 // reissues the old schedule.
                 return
             }
-            guard let current = destination,
+            guard destination != nil,
                   destinationMatches,
                   source == nil || trashedSourceMatches else {
                 throw RunRecoveryError.relocateOutcomeUncertain(
