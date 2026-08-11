@@ -290,7 +290,8 @@ public enum ProviderError: Error, Equatable, Sendable {
     /// The mutation never received permission to start, so no side effect is
     /// possible from this attempt.
     case mutationDeadlineExpiredBeforeStart(provider: LocationID, path: SyncPath)
-    /// Blocking work may still be running. This is not a confirmed failure and
+    /// Blocking work may still be running, or a completed physical mutation
+    /// may lack durable recovery evidence. This is not a confirmed failure and
     /// must remain recoverable until the receipt is reconciled.
     case mutationIndeterminate(ProviderMutationReceipt)
 }

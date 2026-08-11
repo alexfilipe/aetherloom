@@ -158,10 +158,14 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         registry: LocalRootIORegistry
     ) async -> LocalRootOwnership {
         let configuredRootPath = rootURL.standardizedFileURL.path
+        let resolvedCanonicalRootPath = resolvedExistingRootPath(rootURL)
         return await registry.ownership(
             configuredRootPath: configuredRootPath,
-            resolvedCanonicalRootPath: resolvedExistingRootPath(rootURL),
-            expectedVolumeIdentity: expectedVolumeIdentity
+            resolvedCanonicalRootPath: resolvedCanonicalRootPath,
+            expectedVolumeIdentity: expectedVolumeIdentity,
+            unresolvedCanonicalRootPathHint: resolvedCanonicalRootPath == nil
+                ? unresolvedRootPathHint(rootURL)
+                : nil
         )
     }
 
@@ -882,6 +886,23 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         return url.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
+    private static func unresolvedRootPathHint(_ url: URL) -> String? {
+        if let target = try? FileManager.default.destinationOfSymbolicLink(
+            atPath: url.path
+        ) {
+            let destination: URL
+            if target.hasPrefix("/") {
+                destination = URL(fileURLWithPath: target, isDirectory: true)
+            } else {
+                destination = url.deletingLastPathComponent()
+                    .appendingPathComponent(target, isDirectory: true)
+            }
+            return canonicalizingExistingAncestors(destination)?
+                .standardizedFileURL.path
+        }
+        return canonicalizingExistingAncestors(url)?.standardizedFileURL.path
+    }
+
     static func contains(_ url: URL, in root: URL) -> Bool {
         let rootPath = root.standardizedFileURL.path
         let path = url.standardizedFileURL.path
@@ -1511,7 +1532,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     }
                     do {
                         try relocation.beforeSourceTrash(at: source)
-                        try await trashCurrent(current, source: source)
+                        try await trashCurrent(
+                            current,
+                            source: source,
+                            mutationReceipt: receipt
+                        )
                     } catch {
                         if filesystemEntryExists(at: destination) {
                             let recovery = try quarantineURL(
@@ -1552,7 +1577,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                             path: expected.path
                         )
                     }
-                    try await trashCurrent(existing.observation, source: existing.url)
+                    try await trashCurrent(
+                        existing.observation,
+                        source: existing.url,
+                        mutationReceipt: receipt
+                    )
                     return .success(())
                 }
                 guard let trashed = try trashedObservation(from: expected),
@@ -1589,7 +1618,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
 
         private func trashCurrent(
             _ current: ItemObservation,
-            source: URL
+            source: URL,
+            mutationReceipt: ProviderMutationReceipt
         ) async throws {
             let immediatelyCurrent: ItemObservation
             do {
@@ -1621,14 +1651,22 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     committedAt: nil
                 )
                 try persistTrashReceipt(trashReceipt)
+                let resultingURL: URL?
                 do {
-                    let resultingURL = try nativeTrash.trashItem(at: source)
-                    guard try existingEntry(at: current.path) == nil else {
-                        throw ProviderError.itemUnavailable(
-                            provider: locationID,
-                            path: current.path
-                        )
-                    }
+                    resultingURL = try nativeTrash.trashItem(at: source)
+                } catch {
+                    resultingURL = nil
+                }
+                let sourceIsAbsent: Bool
+                do {
+                    sourceIsAbsent = try existingEntry(at: current.path) == nil
+                } catch {
+                    // Native trash was already attempted. If its result cannot
+                    // be inspected, ordinary failure is not safe evidence that
+                    // the source stayed in place.
+                    throw ProviderError.mutationIndeterminate(mutationReceipt)
+                }
+                if sourceIsAbsent {
                     if let resultingURL {
                         await artifacts.recordRecovery(
                             resultingURL,
@@ -1637,29 +1675,24 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         trashReceipt.recoveryPath = resultingURL.path
                     }
                     trashReceipt.committedAt = deadlines.now()
-                    try persistTrashReceipt(trashReceipt)
+                    try persistCommittedTrashReceipt(
+                        trashReceipt,
+                        mutationReceipt: mutationReceipt,
+                        retryOnce: true
+                    )
                     return
-                } catch {
-                    // Native trash can move and then throw. Absence plus the
-                    // write-ahead receipt is a recoverable success; never try a
-                    // second destructive fallback against an absent source.
-                    if try existingEntry(at: current.path) == nil {
-                        trashReceipt.committedAt = deadlines.now()
-                        try persistTrashReceipt(trashReceipt)
-                        return
-                    }
-                    let afterFailure = try LocalFolderStorageProvider.observation(
-                        locationID: locationID,
-                        url: source,
+                }
+                let afterFailure = try LocalFolderStorageProvider.observation(
+                    locationID: locationID,
+                    url: source,
+                    path: current.path
+                )
+                guard afterFailure.kind == current.kind,
+                      afterFailure.version.isSameVersion(as: current.version) else {
+                    throw ProviderError.preconditionFailed(
+                        provider: locationID,
                         path: current.path
                     )
-                    guard afterFailure.kind == current.kind,
-                          afterFailure.version.isSameVersion(as: current.version) else {
-                        throw ProviderError.preconditionFailed(
-                            provider: locationID,
-                            path: current.path
-                        )
-                    }
                 }
             }
 
@@ -1676,14 +1709,23 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             try persistTrashReceipt(quarantineReceipt)
             do {
                 try FileManager.default.moveItem(at: source, to: recoveryURL)
-            } catch {
-                guard try existingEntry(at: current.path) == nil,
+            } catch let moveError {
+                let sourceIsAbsent: Bool
+                do {
+                    sourceIsAbsent = try existingEntry(at: current.path) == nil
+                } catch {
+                    throw ProviderError.mutationIndeterminate(mutationReceipt)
+                }
+                guard sourceIsAbsent,
                       filesystemEntryExists(at: recoveryURL) else {
-                    throw error
+                    throw moveError
                 }
             }
             quarantineReceipt.committedAt = deadlines.now()
-            try persistTrashReceipt(quarantineReceipt)
+            try persistCommittedTrashReceipt(
+                quarantineReceipt,
+                mutationReceipt: mutationReceipt
+            )
             await artifacts.recordRecovery(recoveryURL, for: current.path)
         }
 
@@ -1819,6 +1861,27 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 CanonicalCoding.encoder().encode(receipt),
                 at: receiptURL
             )
+        }
+
+        private func persistCommittedTrashReceipt(
+            _ receipt: LocalTrashReceipt,
+            mutationReceipt: ProviderMutationReceipt,
+            retryOnce: Bool = false
+        ) throws {
+            if retryOnce {
+                do {
+                    try persistTrashReceipt(receipt)
+                    return
+                } catch {
+                    // Retry once. If that also fails, the physical mutation
+                    // has already happened and must remain indeterminate.
+                }
+            }
+            do {
+                try persistTrashReceipt(receipt)
+            } catch {
+                throw ProviderError.mutationIndeterminate(mutationReceipt)
+            }
         }
 
         private func trashedObservation(

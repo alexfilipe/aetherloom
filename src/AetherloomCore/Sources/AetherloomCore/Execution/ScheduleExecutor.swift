@@ -514,7 +514,7 @@ public struct ScheduleExecutor: Sendable {
                     && operation.kind.targetPath == path
                     ? ""
                     : " Destination operation: \(operation.location.rawValue.uuidString) \(operation.kind.targetPath.rawValue)."
-                let detail = "Filesystem mutation exceeded its deadline after starting; recovery must reconcile receipt \(receipt.id.uuidString).\(destinationContext)"
+                let detail = "Filesystem mutation outcome is uncertain; recovery must reconcile receipt \(receipt.id.uuidString).\(destinationContext)"
                 try await appendJournal(
                     .mutationIndeterminate(
                         operationID: operation.id,

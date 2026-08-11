@@ -99,6 +99,7 @@ actor LocalRootIORegistry {
 
     private struct AliasEntry: Sendable {
         var canonicalRootPath: String?
+        var unresolvedCanonicalRootPathHint: String?
         var ownership: LocalRootOwnership
     }
 
@@ -108,7 +109,8 @@ actor LocalRootIORegistry {
     func ownership(
         configuredRootPath: String,
         resolvedCanonicalRootPath: String?,
-        expectedVolumeIdentity: String?
+        expectedVolumeIdentity: String?,
+        unresolvedCanonicalRootPathHint: String? = nil
     ) -> LocalRootOwnership {
         let aliasKey = AliasKey(
             configuredRootPath: configuredRootPath,
@@ -116,6 +118,12 @@ actor LocalRootIORegistry {
         )
         if var existing = entriesByAlias[aliasKey] {
             if let resolvedCanonicalRootPath {
+                if let expected = existing.unresolvedCanonicalRootPathHint,
+                   expected != resolvedCanonicalRootPath {
+                    return rejectedOwnership(
+                        "The configured local root resolved somewhere other than its enrolled directory."
+                    )
+                }
                 if let previous = existing.canonicalRootPath,
                    previous != resolvedCanonicalRootPath {
                     return rejectedOwnership(
@@ -126,15 +134,34 @@ actor LocalRootIORegistry {
                     canonicalRootPath: resolvedCanonicalRootPath,
                     expectedVolumeIdentity: expectedVolumeIdentity
                 )
-                if let canonicalOwner = entriesByCanonical[canonicalKey],
-                   canonicalOwner.mutations !== existing.ownership.mutations {
-                    return rejectedOwnership(
-                        "The configured local root conflicts with another in-process root owner."
+                if let canonicalOwner = entriesByCanonical[canonicalKey] {
+                    guard canonicalOwner.mutations === existing.ownership.mutations else {
+                        return rejectedOwnership(
+                            "The configured local root conflicts with another in-process root owner."
+                        )
+                    }
+                    existing.ownership = canonicalOwner
+                } else if existing.ownership.canonicalRootPath == nil {
+                    let promoted = LocalRootOwnership(
+                        mutations: existing.ownership.mutations,
+                        artifacts: existing.ownership.artifacts,
+                        canonicalRootPath: resolvedCanonicalRootPath,
+                        admissionIssue: existing.ownership.admissionIssue
                     )
+                    replaceOwnership(existing.ownership, with: promoted)
+                    existing.ownership = promoted
                 }
                 existing.canonicalRootPath = resolvedCanonicalRootPath
+                existing.unresolvedCanonicalRootPathHint = nil
                 entriesByAlias[aliasKey] = existing
                 entriesByCanonical[canonicalKey] = existing.ownership
+            } else if existing.canonicalRootPath == nil,
+                      let enrolledHint = existing.unresolvedCanonicalRootPathHint,
+                      let unresolvedCanonicalRootPathHint,
+                      enrolledHint != unresolvedCanonicalRootPathHint {
+                return rejectedOwnership(
+                    "The unavailable local root no longer points to its enrolled directory."
+                )
             }
             return existing.ownership
         }
@@ -147,6 +174,7 @@ actor LocalRootIORegistry {
             if let existing = entriesByCanonical[canonicalKey] {
                 entriesByAlias[aliasKey] = AliasEntry(
                     canonicalRootPath: resolvedCanonicalRootPath,
+                    unresolvedCanonicalRootPathHint: nil,
                     ownership: existing
                 )
                 return existing
@@ -161,6 +189,7 @@ actor LocalRootIORegistry {
             )
             entriesByAlias[aliasKey] = AliasEntry(
                 canonicalRootPath: resolvedCanonicalRootPath,
+                unresolvedCanonicalRootPathHint: nil,
                 ownership: created
             )
             entriesByCanonical[canonicalKey] = created
@@ -180,6 +209,7 @@ actor LocalRootIORegistry {
         let created = makeOwnership(canonicalRootPath: nil)
         entriesByAlias[aliasKey] = AliasEntry(
             canonicalRootPath: nil,
+            unresolvedCanonicalRootPathHint: unresolvedCanonicalRootPathHint,
             ownership: created
         )
         return created
@@ -227,6 +257,20 @@ actor LocalRootIORegistry {
         entriesByAlias.contains { key, entry in
             key.expectedVolumeIdentity == expectedVolumeIdentity
                 && entry.canonicalRootPath == nil
+        }
+    }
+
+    private func replaceOwnership(
+        _ previous: LocalRootOwnership,
+        with replacement: LocalRootOwnership
+    ) {
+        let aliases = entriesByAlias.keys.filter { key in
+            entriesByAlias[key]?.ownership.mutations === previous.mutations
+        }
+        for alias in aliases {
+            guard var entry = entriesByAlias[alias] else { continue }
+            entry.ownership = replacement
+            entriesByAlias[alias] = entry
         }
     }
 }
@@ -672,10 +716,22 @@ actor LocalMutationCoordinator {
         activeID = nil
 
         switch lifecycle {
-        case .started:
-            lifecycleByID[id] = nil
-            await gate.resolve(.completed(result))
-            grantNextStartIfPossible()
+        case let .started(receipt):
+            if case let .failure(.mutationIndeterminate(uncertainReceipt)) = result,
+               uncertainReceipt == receipt {
+                lifecycleByID[id] = .quiescent(
+                    receipt,
+                    .failed(
+                        detail: "The filesystem mutation completed without durable recovery evidence."
+                    )
+                )
+                await invalidatePendingMutations()
+                await gate.resolve(.indeterminate(receipt))
+            } else {
+                lifecycleByID[id] = nil
+                await gate.resolve(.completed(result))
+                grantNextStartIfPossible()
+            }
 
         case let .indeterminate(receipt):
             let lateOutcome: ProviderLateMutationOutcome

@@ -1606,6 +1606,193 @@ struct LocalFolderStorageProviderTests {
         #expect(await remote.callLog().isEmpty)
     }
 
+    @Test(arguments: PostMoveTrashMode.allCases)
+    func postMoveReceiptFailureRetainsWALAndRootBarrier(
+        mode: PostMoveTrashMode
+    ) async throws {
+        let world = try makeRoot("post-move-receipt-\(mode.rawValue)")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Root", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        let sourceURL = root.appendingPathComponent("Uncommitted.txt")
+        let contents = Data("durable trash evidence is required".utf8)
+        try contents.write(to: sourceURL)
+
+        let location = localLocation()
+        let remoteLocation = SyncLocation(id: .oneDrive, kind: .oneDrive)
+        let receiptID = UUID(
+            uuidString: mode == .nativeTrash
+                ? "a3000000-0000-0000-0000-000000000011"
+                : "a3000000-0000-0000-0000-000000000012"
+        )!
+        let clock = ProviderMutationManualClock()
+        let hook = RecordingLocalMutationHook()
+        let nativeRecovery = world.appendingPathComponent(
+            "NativeRecovery.txt",
+            isDirectory: false
+        )
+        let provider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(
+                properties: VolumeProperties(
+                    isCaseSensitive: true,
+                    supportsNativeTrash: mode == .nativeTrash,
+                    isNetwork: false
+                )
+            ),
+            deadlines: ProviderDeadlines(
+                ioNanoseconds: 1,
+                clock: clock,
+                now: { Date(timeIntervalSince1970: 1_800_000_210) },
+                makeMutationID: { receiptID }
+            ),
+            nativeTrash: MovingNativeTrashPerformer(
+                destination: nativeRecovery
+            ),
+            mutationHook: hook,
+            trashReceiptPersistence: FailAfterFirstTrashReceiptPersister()
+        )
+        await clock.waitUntilIdle()
+        let observation = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath[
+                "/Uncommitted.txt"
+            ]
+        )
+        await clock.waitUntilIdle()
+
+        let operationID = OperationID(
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000013")!
+        )
+        let operation = AetherloomCore.Operation(
+            id: operationID,
+            location: location.id,
+            kind: .trash(itemRef: ItemRef(observation)),
+            precondition: .versionMatches(observation.version)
+        )
+        let syncSetID = UUID(
+            uuidString: "a3000000-0000-0000-0000-000000000014"
+        )!
+        let plan = SyncPlan(
+            syncSetID: syncSetID,
+            generatedAt: Date(timeIntervalSince1970: 1_800_000_210),
+            decisions: [
+                ItemDecision(
+                    id: UUID(
+                        uuidString: "a3000000-0000-0000-0000-000000000015"
+                    )!,
+                    path: observation.path,
+                    verdict: .propagateDeletion(
+                        to: [location.id],
+                        initiatedBy: remoteLocation.id
+                    ),
+                    operations: [operationID],
+                    explanation: "Exercise post-move receipt persistence."
+                ),
+            ],
+            schedule: OperationSchedule(operations: [operation]),
+            gate: .clear,
+            fingerprint: PlanFingerprint(
+                rawValue: "post-move-receipt-\(mode.rawValue)"
+            )
+        )
+        let stores = EngineStores.inMemory()
+        let runID = UUID(
+            uuidString: "a3000000-0000-0000-0000-000000000016"
+        )!
+        let summary = try await ScheduleExecutor(
+            providers: [location.id: provider],
+            stores: stores,
+            stage: ContentStage(
+                rootDirectory: world.appendingPathComponent("ExecutionStage"),
+                byteLimit: 1_000_000
+            ),
+            environment: ExecutionEnvironment(
+                now: { Date(timeIntervalSince1970: 1_800_000_211) }
+            )
+        ).execute(plan, runID: runID)
+        await clock.waitUntilIdle()
+
+        let replay = try #require(
+            try await stores.journal.unfinishedRun(for: syncSetID)
+        )
+        let receipt = try #require(
+            replay.indeterminateReceiptsByOperation[operationID]
+        )
+        #expect(receipt.id == receiptID)
+        #expect(
+            summary.outcome == .mutationIndeterminate(
+                location: location.id,
+                path: observation.path,
+                receiptID: receiptID
+            )
+        )
+        #expect(summary.appliedOperations.isEmpty)
+        #expect(summary.failedOperations.isEmpty)
+        #expect(replay.pendingOperationIDs == [operationID])
+        #expect(!replay.events.contains { $0.isRunFinished })
+        #expect(!replay.events.contains { $0.resultOperationID == operationID })
+        guard case .quiescent(.failed) = await provider
+            .indeterminateMutationState(for: receipt) else {
+            Issue.record("Post-move uncertainty did not retain a quiescent owner.")
+            return
+        }
+        #expect(await provider.indeterminateMutationReceipt() == receipt)
+        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(hook.kinds() == [.trash])
+        guard case .unavailable = (await provider.scan(.entireDrive)).status else {
+            Issue.record("A fresh scan crossed the unresolved trash barrier.")
+            return
+        }
+        await #expect(throws: ProviderError.self) {
+            _ = try await provider.makeFolder(at: "/MustStayBlocked")
+        }
+        #expect(hook.kinds() == [.trash])
+
+        let remote = FakeStorageProvider(location: remoteLocation)
+        _ = await remote.putFile(
+            path: observation.path,
+            contents: contents,
+            modifiedAt: observation.version.modifiedAt
+                ?? Date(timeIntervalSince1970: 1_800_000_210)
+        )
+        await remote.clearCallLog()
+        let orchestrator = SyncOrchestrator(
+            locations: [
+                location.id: location,
+                remoteLocation.id: remoteLocation,
+            ],
+            providers: [
+                location.id: provider,
+                remoteLocation.id: remote,
+            ],
+            stores: stores,
+            stage: ContentStage(
+                rootDirectory: world.appendingPathComponent("PreparationStage"),
+                byteLimit: 1_000_000
+            ),
+            environment: EngineEnvironment(
+                now: { Date(timeIntervalSince1970: 1_800_000_212) }
+            )
+        )
+        let syncSet = SyncSet(
+            id: syncSetID,
+            name: "Post-move receipt uncertainty",
+            locations: [location.id, remoteLocation.id]
+        )
+
+        await #expect(throws: RunRecoveryError.self) {
+            _ = try await orchestrator.prepare(syncSet)
+        }
+        #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
+        #expect(await provider.indeterminateMutationReceipt() == receipt)
+        #expect(await remote.callLog().isEmpty)
+        #expect(hook.kinds() == [.trash])
+    }
+
     @Test func nativeTrashProducesRecoverableArtifact() async throws {
         let root = try makeRoot("native-trash")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1938,6 +2125,160 @@ struct LocalFolderStorageProviderTests {
             return
         }
         _ = try await reconstructed.makeFolder(at: "/FreshPlan")
+    }
+
+    @Test func initiallyUnavailableRootPromotesItsOriginalOwnerWhenRestored() async throws {
+        let world = try makeRoot("initially-unavailable-owner-promotion")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let target = world.appendingPathComponent(
+            "Initially Missing Root",
+            isDirectory: true
+        )
+        let root = world.appendingPathComponent("Enrolled Alias", isDirectory: true)
+        let unrelated = world.appendingPathComponent("Unrelated Root", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: root.path,
+            withDestinationPath: target.path
+        )
+        let registry = LocalRootIORegistry()
+        let location = localLocation()
+        let first = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            registry: registry
+        )
+        let originalOwner = await registry.ownership(
+            configuredRootPath: root.standardizedFileURL.path,
+            resolvedCanonicalRootPath: nil,
+            expectedVolumeIdentity: "scripted-volume"
+        )
+        #expect(originalOwner.canonicalRootPath == nil)
+        guard case .unavailable = await first.checkAvailability() else {
+            Issue.record("An initially absent root was reported available.")
+            return
+        }
+
+        try FileManager.default.createDirectory(
+            at: unrelated,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.removeItem(at: root)
+        try FileManager.default.createSymbolicLink(
+            atPath: root.path,
+            withDestinationPath: unrelated.path
+        )
+        let rejectedHook = RecordingLocalMutationHook()
+        let rejected = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: rejectedHook,
+            registry: registry
+        )
+        guard case .unavailable = await rejected.checkAvailability() else {
+            Issue.record("An unresolved symlink adopted an unrelated root.")
+            return
+        }
+        await #expect(throws: ProviderError.self) {
+            _ = try await rejected.makeFolder(at: "/Escaped")
+        }
+        #expect(rejectedHook.kinds().isEmpty)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: unrelated.appendingPathComponent("Escaped").path
+            )
+        )
+
+        try FileManager.default.removeItem(at: root)
+        try FileManager.default.createSymbolicLink(
+            atPath: root.path,
+            withDestinationPath: target.path
+        )
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true
+        )
+        let hook = RecordingLocalMutationHook()
+        let reconstructed = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: hook,
+            registry: registry
+        )
+        let canonicalPath = target.resolvingSymlinksInPath().standardizedFileURL.path
+        let promotedOwner = await registry.ownership(
+            configuredRootPath: root.standardizedFileURL.path,
+            resolvedCanonicalRootPath: canonicalPath,
+            expectedVolumeIdentity: "scripted-volume"
+        )
+        #expect(promotedOwner.canonicalRootPath == canonicalPath)
+        #expect(promotedOwner.mutations === originalOwner.mutations)
+        #expect(promotedOwner.artifacts === originalOwner.artifacts)
+
+        let canonicalProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: target,
+            volumes: ScriptedVolumeInspector(),
+            registry: registry
+        )
+        let aliasOwner = await registry.ownership(
+            configuredRootPath: target.standardizedFileURL.path,
+            resolvedCanonicalRootPath: canonicalPath,
+            expectedVolumeIdentity: "scripted-volume"
+        )
+        let canonicalOwner = await registry.ownership(
+            canonicalRootPath: canonicalPath,
+            expectedVolumeIdentity: "scripted-volume"
+        )
+        #expect(aliasOwner.mutations === originalOwner.mutations)
+        #expect(aliasOwner.artifacts === originalOwner.artifacts)
+        #expect(canonicalOwner.mutations === originalOwner.mutations)
+        #expect(canonicalOwner.artifacts === originalOwner.artifacts)
+
+        // Providers pin the ownership returned at construction. The original
+        // unavailable instance stays fail-closed, while reconstruction binds
+        // the same owner to the restored physical root.
+        guard case .unavailable = await first.checkAvailability() else {
+            Issue.record("The unbound provider changed roots after construction.")
+            return
+        }
+        #expect(await reconstructed.checkAvailability() == .available)
+        guard case .complete = (await reconstructed.scan(.entireDrive)).status else {
+            Issue.record("The reconstructed provider did not resume scanning.")
+            return
+        }
+        let created = try await reconstructed.makeFolder(at: "/Recovered")
+        #expect(hook.kinds() == [.makeFolder])
+
+        let recoveryReceipt = ProviderMutationReceipt(
+            id: UUID(uuidString: "a2000000-0000-0000-0000-000000000031")!,
+            provider: location.id,
+            kind: .makeFolder,
+            affectedPaths: [created.path],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_300)
+        )
+        guard case let .claimed(claim) = await reconstructed
+            .beginIndeterminateMutationRecovery(for: recoveryReceipt) else {
+            Issue.record("The promoted owner could not begin recovery.")
+            return
+        }
+        guard case .unavailable = (await canonicalProvider.scan(.entireDrive)).status else {
+            Issue.record("A compatible alias escaped the promoted recovery owner.")
+            return
+        }
+        let recovered = try await canonicalProvider.currentStateForRecovery(
+            of: created,
+            claim: claim
+        )
+        #expect(recovered.path == created.path)
+        #expect(recovered.kind == .folder)
+        await canonicalProvider.finishIndeterminateMutationRecovery(claim)
+        guard case .complete = (await reconstructed.scan(.entireDrive)).status else {
+            Issue.record("The promoted owner did not resume after recovery.")
+            return
+        }
     }
 
     @Test func rootRegistrySeparatesDifferentRootsAndVolumeIdentities() async {
@@ -2450,6 +2791,11 @@ struct LocalFolderStorageProviderTests {
             ]
         )
     }
+}
+
+private enum PostMoveTrashMode: String, CaseIterable, Sendable {
+    case nativeTrash
+    case quarantine
 }
 
 private actor BlockingReadVolumeInspector: VolumeInspecting {
