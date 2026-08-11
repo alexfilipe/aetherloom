@@ -947,7 +947,7 @@ import Testing
     #expect(try await journal.unfinishedRun(for: syncSetID) == nil)
 }
 
-@Test func runRecoveryProbesPendingIntentAndRecordsObservedTruth() async throws {
+@Test func runRecoveryProbesPendingIntentWithoutPromotingOperationTruth() async throws {
     let baseRecords = InMemoryBaseRecordStore()
     let journal = InMemoryRunJournalStore()
     let stores = engineStores(baseRecords: baseRecords, journal: journal)
@@ -972,7 +972,8 @@ import Testing
     ).recover(replay)
 
     #expect(report.reconciledOperations == [makeFolder.id])
-    #expect(try await baseRecords.records(for: syncSetID).map(\.path) == ["/RecoveredFolder"])
+    #expect(report.restoredRecords == 0)
+    #expect(try await baseRecords.records(for: syncSetID).isEmpty)
 }
 
 @Test func heldPlansAreNotExecutableInPhase06() async throws {

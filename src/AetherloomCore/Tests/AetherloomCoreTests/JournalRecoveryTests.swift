@@ -14,7 +14,7 @@ import Testing
     #expect(try await store.unfinishedRun(for: syncSetID) == nil)
 }
 
-@Test func recoveryMarksPendingTrashIntentOnlyAfterProviderTruthConfirmsTrash() async throws {
+@Test func recoveryClosesConfirmedTrashWithoutPromotingSingleOperation() async throws {
     let baseRecords = InMemoryBaseRecordStore()
     let journal = InMemoryRunJournalStore()
     let stores = EngineStores(
@@ -45,10 +45,10 @@ import Testing
         stores: stores,
         environment: ExecutionEnvironment(now: { journalDate }, makeID: { journalUUID("000000000106") })
     ).recover(replay)
-    let record = try #require(try await baseRecords.records(for: syncSetID).first)
 
     #expect(report.reconciledOperations == [trash.id])
-    #expect(record.tombstone?.deletedAt == journalDate)
+    #expect(report.restoredRecords == 0)
+    #expect(try await baseRecords.records(for: syncSetID).isEmpty)
 }
 
 @Test func recoveryKeepsJournalUnfinishedWhileIndeterminateMutationRuns() async throws {
@@ -341,12 +341,7 @@ func relocateRecoveryRequiresTwoEndpointVersionProof(
         let report = try await recovery.recover(replay)
         #expect(report.reconciledOperations == [operation.id])
         #expect(await provider.finishCount() == 1)
-        let record = try #require(
-            try await baseRecords.records(for: syncSetID).first
-        )
-        #expect(record.path == destinationPath)
-        #expect(record.kind == .file)
-        #expect(record.version == expectedVersion)
+        #expect(try await baseRecords.records(for: syncSetID).isEmpty)
         #expect(try await journal.unfinishedRun(for: syncSetID) == nil)
     } else {
         await #expect(throws: RunRecoveryError.self) {
@@ -359,6 +354,279 @@ func relocateRecoveryRequiresTwoEndpointVersionProof(
     #expect(await provider.probedPaths() == [destinationPath, sourcePath])
 }
 
+@Test func recoveryDoesNotPromoteOneSuccessfulDestinationPastFailedSibling() async throws {
+    let syncSetID = journalUUID("000000000401")
+    let runID = journalUUID("000000000402")
+    let oldVersion = ItemVersion(contentHash: "old")
+    let newVersion = ItemVersion(contentHash: "new")
+    let original = journalBaseRecord(
+        id: journalUUID("000000000403"),
+        syncSetID: syncSetID,
+        path: "/Shared.txt",
+        version: oldVersion,
+        locations: [.googleDrive, .oneDrive, .localFolder]
+    )
+    let baseRecords = InMemoryBaseRecordStore(records: [original])
+    let journal = InMemoryRunJournalStore()
+    let stores = EngineStores(
+        baseRecords: baseRecords,
+        journal: journal,
+        conflicts: InMemoryConflictStore(),
+        adviceCache: InMemoryAdviceCacheStore(),
+        activity: InMemoryActivityStore(),
+        locations: InMemoryLocationRegistry()
+    )
+    let content = ContentRef(
+        sourceLocation: .googleDrive,
+        itemID: "source-item",
+        path: "/Shared.txt",
+        kind: .file,
+        expectedVersion: newVersion
+    )
+    let confirmed = Operation(
+        id: OperationID(journalUUID("000000000404")),
+        location: .oneDrive,
+        kind: .transfer(
+            content: content,
+            to: "/Shared.txt",
+            overwrite: .ifVersionMatches(oldVersion)
+        ),
+        precondition: .versionMatches(oldVersion)
+    )
+    let failedSibling = Operation(
+        id: OperationID(journalUUID("000000000405")),
+        location: .localFolder,
+        kind: .transfer(
+            content: content,
+            to: "/Shared.txt",
+            overwrite: .ifVersionMatches(oldVersion)
+        ),
+        precondition: .versionMatches(oldVersion)
+    )
+    let receipt = ProviderMutationReceipt(
+        id: journalUUID("000000000406"),
+        provider: .oneDrive,
+        kind: .store,
+        affectedPaths: ["/Shared.txt"],
+        startedAt: journalDate,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: confirmed.id
+        )
+    )
+    let confirmedProvider = ScriptedIndeterminateRecoveryProvider(
+        locationID: .oneDrive,
+        state: .quiescent(.succeeded),
+        recoveryResult: .success(
+            ItemObservation(
+                location: .oneDrive,
+                itemID: "destination-item",
+                path: "/Shared.txt",
+                kind: .file,
+                version: newVersion
+            )
+        )
+    )
+    let unappliedProvider = FakeStorageProvider(locationID: .localFolder)
+
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "multi-destination-recovery")
+    )
+    try await journal.append(.intent(confirmed), runID: runID)
+    try await journal.append(.intent(failedSibling), runID: runID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: confirmed.id,
+            receipt: receipt,
+            occurredAt: journalDate
+        ),
+        runID: runID
+    )
+    let replay = try #require(try await journal.unfinishedRun(for: syncSetID))
+
+    let report = try await RunRecovery(
+        providers: [
+            .oneDrive: confirmedProvider,
+            .localFolder: unappliedProvider,
+        ],
+        stores: stores
+    ).recover(replay)
+
+    #expect(report.reconciledOperations == [confirmed.id, failedSibling.id])
+    #expect(report.restoredRecords == 0)
+    #expect(try await baseRecords.records(for: syncSetID) == [original])
+    #expect(try await journal.unfinishedRun(for: syncSetID) == nil)
+}
+
+@Test func recoveryRetryAfterJournalCommitFailureLeavesBaseIdentical() async throws {
+    let syncSetID = journalUUID("000000000411")
+    let runID = journalUUID("000000000412")
+    let original = journalBaseRecord(
+        id: journalUUID("000000000413"),
+        syncSetID: syncSetID,
+        path: "/Stable",
+        kind: .folder,
+        version: ItemVersion(),
+        locations: [.oneDrive]
+    )
+    let baseRecords = InMemoryBaseRecordStore(records: [original])
+    let journal = FailOnceMarkReconciledJournalStore()
+    let stores = EngineStores(
+        baseRecords: baseRecords,
+        journal: journal,
+        conflicts: InMemoryConflictStore(),
+        adviceCache: InMemoryAdviceCacheStore(),
+        activity: InMemoryActivityStore(),
+        locations: InMemoryLocationRegistry()
+    )
+    let operation = Operation(
+        id: OperationID(journalUUID("000000000414")),
+        location: .oneDrive,
+        kind: .makeFolder(at: "/Stable"),
+        precondition: .pathAbsent
+    )
+    let receipt = ProviderMutationReceipt(
+        id: journalUUID("000000000415"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/Stable"],
+        startedAt: journalDate
+    )
+    let provider = ScriptedIndeterminateRecoveryProvider(
+        locationID: .oneDrive,
+        state: .quiescent(.succeeded),
+        recoveryResult: .success(
+            ItemObservation(
+                location: .oneDrive,
+                path: "/Stable",
+                kind: .folder
+            )
+        )
+    )
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "retry-stable-base")
+    )
+    try await journal.append(.intent(operation), runID: runID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: journalDate
+        ),
+        runID: runID
+    )
+    let firstReplay = try #require(
+        try await journal.unfinishedRun(for: syncSetID)
+    )
+
+    await #expect(throws: FailOnceMarkReconciledJournalStore.ExpectedFailure.self) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores
+        ).recover(firstReplay)
+    }
+    #expect(try await baseRecords.records(for: syncSetID) == [original])
+
+    let retryReplay = try #require(
+        try await journal.unfinishedRun(for: syncSetID)
+    )
+    _ = try await RunRecovery(
+        providers: [.oneDrive: provider],
+        stores: stores
+    ).recover(retryReplay)
+
+    #expect(try await baseRecords.records(for: syncSetID) == [original])
+    #expect(try await journal.unfinishedRun(for: syncSetID) == nil)
+}
+
+@Test func relocateRecoveryPreservesExistingRecordIdentityAndTimestamps() async throws {
+    let syncSetID = journalUUID("000000000421")
+    let runID = journalUUID("000000000422")
+    let sourcePath: SyncPath = "/Before.txt"
+    let destinationPath: SyncPath = "/After.txt"
+    let version = ItemVersion(contentHash: "stable-relocate")
+    let original = journalBaseRecord(
+        id: journalUUID("000000000423"),
+        syncSetID: syncSetID,
+        path: sourcePath,
+        version: version,
+        locations: [.oneDrive]
+    )
+    let baseRecords = InMemoryBaseRecordStore(records: [original])
+    let journal = InMemoryRunJournalStore()
+    let stores = EngineStores(
+        baseRecords: baseRecords,
+        journal: journal,
+        conflicts: InMemoryConflictStore(),
+        adviceCache: InMemoryAdviceCacheStore(),
+        activity: InMemoryActivityStore(),
+        locations: InMemoryLocationRegistry()
+    )
+    let expected = ItemObservation(
+        location: .oneDrive,
+        path: sourcePath,
+        kind: .file,
+        version: version
+    )
+    let operation = Operation(
+        id: OperationID(journalUUID("000000000424")),
+        location: .oneDrive,
+        kind: .relocate(itemRef: ItemRef(expected), to: destinationPath),
+        precondition: .versionMatches(version)
+    )
+    let receipt = ProviderMutationReceipt(
+        id: journalUUID("000000000425"),
+        provider: .oneDrive,
+        kind: .relocate,
+        affectedPaths: [sourcePath, destinationPath],
+        startedAt: journalDate
+    )
+    let provider = PathScriptedRelocateRecoveryProvider(
+        locationID: .oneDrive,
+        results: [
+            sourcePath: .success(nil),
+            destinationPath: .success(
+                ItemObservation(
+                    location: .oneDrive,
+                    path: destinationPath,
+                    kind: .file,
+                    version: version
+                )
+            ),
+        ]
+    )
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "stable-relocate-record")
+    )
+    try await journal.append(.intent(operation), runID: runID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: journalDate
+        ),
+        runID: runID
+    )
+    let replay = try #require(try await journal.unfinishedRun(for: syncSetID))
+
+    _ = try await RunRecovery(
+        providers: [.oneDrive: provider],
+        stores: stores
+    ).recover(replay)
+
+    let records = try await baseRecords.records(for: syncSetID)
+    #expect(records == [original])
+    #expect(records.map(\.id) == [original.id])
+    #expect(records.map(\.createdAt) == [original.createdAt])
+    #expect(records.map(\.updatedAt) == [original.updatedAt])
+}
+
 private func recoveryStores(journal: any RunJournalStore) -> EngineStores {
     EngineStores(
         baseRecords: InMemoryBaseRecordStore(),
@@ -367,6 +635,71 @@ private func recoveryStores(journal: any RunJournalStore) -> EngineStores {
         adviceCache: InMemoryAdviceCacheStore(),
         activity: InMemoryActivityStore(),
         locations: InMemoryLocationRegistry()
+    )
+}
+
+private actor FailOnceMarkReconciledJournalStore: RunJournalStore {
+    struct ExpectedFailure: Error {}
+
+    private let delegate = InMemoryRunJournalStore()
+    private var shouldFail = true
+
+    func begin(
+        runID: UUID,
+        syncSetID: UUID,
+        fingerprint: PlanFingerprint
+    ) async throws {
+        try await delegate.begin(
+            runID: runID,
+            syncSetID: syncSetID,
+            fingerprint: fingerprint
+        )
+    }
+
+    func append(_ event: JournalEvent, runID: UUID) async throws {
+        try await delegate.append(event, runID: runID)
+    }
+
+    func unfinishedRun(for syncSetID: UUID) async throws -> JournalReplay? {
+        try await delegate.unfinishedRun(for: syncSetID)
+    }
+
+    func markReconciled(runID: UUID) async throws {
+        if shouldFail {
+            shouldFail = false
+            throw ExpectedFailure()
+        }
+        try await delegate.markReconciled(runID: runID)
+    }
+}
+
+private func journalBaseRecord(
+    id: UUID,
+    syncSetID: UUID,
+    path: SyncPath,
+    kind: ItemKind = .file,
+    version: ItemVersion,
+    locations: [LocationID]
+) -> BaseRecord {
+    BaseRecord(
+        id: id,
+        syncSetID: syncSetID,
+        path: path,
+        kind: kind,
+        version: version,
+        perLocation: Dictionary(uniqueKeysWithValues: locations.map {
+            (
+                $0,
+                LocationMemory(
+                    itemID: "item-\($0.rawValue.uuidString)",
+                    revisionToken: version.revisionToken,
+                    lastSeenAt: journalDate
+                )
+            )
+        }),
+        lastConvergedAt: journalDate,
+        createdAt: journalDate.addingTimeInterval(-20),
+        updatedAt: journalDate.addingTimeInterval(-10)
     )
 }
 

@@ -50,8 +50,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
     private let nativeTrash: any LocalNativeTrashPerforming
     private let relocation: any LocalRelocationPerforming
     private let mutationHook: any LocalMutationStarting
+    private let trashReceiptPersistence: any LocalTrashReceiptPersisting
     private let mutations: LocalMutationCoordinator
     private let mutationArtifacts: LocalMutationArtifacts
+    private let ownedCanonicalRootURL: URL?
     private let rootOwnershipIssue: String?
     private let quarantineTimestamp: String
 
@@ -95,6 +97,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             nativeTrash: SystemLocalNativeTrashPerformer(),
             relocation: SystemLocalRelocationPerformer(),
             mutationHook: NoOpLocalMutationHook(),
+            trashReceiptPersistence: AtomicLocalTrashReceiptPersister(),
             ownership: ownership
         )
     }
@@ -108,6 +111,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         nativeTrash: any LocalNativeTrashPerforming = SystemLocalNativeTrashPerformer(),
         relocation: any LocalRelocationPerforming = SystemLocalRelocationPerformer(),
         mutationHook: any LocalMutationStarting = NoOpLocalMutationHook(),
+        trashReceiptPersistence: any LocalTrashReceiptPersisting = AtomicLocalTrashReceiptPersister(),
         registry: LocalRootIORegistry = .shared
     ) async -> LocalFolderStorageProvider {
         let expectedVolumeIdentity = location.configuration[
@@ -143,6 +147,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             nativeTrash: nativeTrash,
             relocation: relocation,
             mutationHook: mutationHook,
+            trashReceiptPersistence: trashReceiptPersistence,
             ownership: ownership
         )
     }
@@ -171,6 +176,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             nanoseconds: deadlines.probeNanoseconds,
             clock: deadlines.clock
         ) {
+            guard let canonicalRootPath = ownership.canonicalRootPath,
+                  resolvedExistingRootPath(rootURL) == canonicalRootPath else {
+                return nil
+            }
             await volumes.properties(for: rootURL)
         }
         switch result {
@@ -192,6 +201,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         nativeTrash: any LocalNativeTrashPerforming,
         relocation: any LocalRelocationPerforming,
         mutationHook: any LocalMutationStarting,
+        trashReceiptPersistence: any LocalTrashReceiptPersisting,
         ownership: LocalRootOwnership
     ) {
         self.locationID = location.id
@@ -204,8 +214,12 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         self.nativeTrash = nativeTrash
         self.relocation = relocation
         self.mutationHook = mutationHook
+        self.trashReceiptPersistence = trashReceiptPersistence
         self.mutations = ownership.mutations
         self.mutationArtifacts = ownership.artifacts
+        self.ownedCanonicalRootURL = ownership.canonicalRootPath.map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        }
         self.rootOwnershipIssue = ownership.admissionIssue
         self.quarantineTimestamp = Self.timestampString(for: deadlines.now())
     }
@@ -559,6 +573,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             locationID: locationID,
             capabilities: capabilities,
             rootURL: rootURL,
+            ownedCanonicalRootURL: ownedCanonicalRootURL,
             volumes: volumes,
             expectedVolumeIdentity: expectedVolumeIdentity,
             deadlines: deadlines,
@@ -566,6 +581,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             nativeTrash: nativeTrash,
             relocation: relocation,
             hook: mutationHook,
+            trashReceiptPersistence: trashReceiptPersistence,
             artifacts: mutationArtifacts,
             quarantineTimestamp: quarantineTimestamp
         )
@@ -576,6 +592,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             locationID: locationID,
             capabilities: capabilities,
             rootURL: rootURL,
+            ownedCanonicalRootURL: ownedCanonicalRootURL,
             volumes: volumes,
             expectedVolumeIdentity: expectedVolumeIdentity
         )
@@ -889,10 +906,18 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let locationID: LocationID
         let capabilities: ProviderCapabilities
         let rootURL: URL
+        let ownedCanonicalRootURL: URL?
         let volumes: any VolumeInspecting
         let expectedVolumeIdentity: String?
 
         func checkAvailability() async -> LocationAvailability {
+            guard currentOwnedCanonicalRoot() != nil else {
+                return .unavailable(
+                    .unknown(
+                        detail: "The configured local root no longer resolves to its enrolled directory."
+                    )
+                )
+            }
             switch await volumes.mountState(for: rootURL) {
             case let .notMounted(detail):
                 return .unavailable(.volumeNotMounted(detail: detail))
@@ -1091,8 +1116,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         private func trashedObservation(
             from expected: ItemObservation
         ) throws -> ItemObservation? {
-            guard let canonicalRoot = LocalFolderStorageProvider
-                .canonicalizingExistingAncestors(rootURL) else {
+            guard let canonicalRoot = currentOwnedCanonicalRoot() else {
                 return nil
             }
             let directory = canonicalRoot
@@ -1119,12 +1143,17 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 LocalTrashReceipt.self,
                 from: Data(contentsOf: receiptURL)
             )
-            guard receipt.committedAt != nil,
-                  receipt.observation.location == locationID,
+            guard receipt.observation.location == locationID,
                   receipt.observation.path == expected.path,
                   receipt.observation.kind == expected.kind,
                   receipt.observation.version.isSameVersion(as: expected.version) else {
                 return nil
+            }
+            guard receipt.committedAt != nil else {
+                throw ProviderError.unavailable(
+                    provider: locationID,
+                    reason: "Trash outcome is prepared but lacks committed recoverable-trash proof."
+                )
             }
             if receipt.method == .quarantine {
                 guard let recoveryPath = receipt.recoveryPath,
@@ -1147,8 +1176,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             followingFinalSymlink: Bool
         ) -> URL? {
             guard !path.components.contains(where: { $0 == "." || $0 == ".." }),
-                  let canonicalRoot = LocalFolderStorageProvider
-                    .canonicalizingExistingAncestors(rootURL) else {
+                  let canonicalRoot = currentOwnedCanonicalRoot() else {
                 return nil
             }
             let candidate = path.components.reduce(canonicalRoot) { partial, component in
@@ -1168,6 +1196,15 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 return nil
             }
             return checked
+        }
+
+        private func currentOwnedCanonicalRoot() -> URL? {
+            guard let ownedCanonicalRootURL,
+                  LocalFolderStorageProvider.resolvedExistingRootPath(rootURL)
+                    == ownedCanonicalRootURL.standardizedFileURL.path else {
+                return nil
+            }
+            return ownedCanonicalRootURL
         }
 
         private func isInternalPath(_ path: SyncPath) -> Bool {
@@ -1203,6 +1240,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let locationID: LocationID
         let capabilities: ProviderCapabilities
         let rootURL: URL
+        let ownedCanonicalRootURL: URL?
         let volumes: any VolumeInspecting
         let expectedVolumeIdentity: String?
         let deadlines: ProviderDeadlines
@@ -1210,6 +1248,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let nativeTrash: any LocalNativeTrashPerforming
         let relocation: any LocalRelocationPerforming
         let hook: any LocalMutationStarting
+        let trashReceiptPersistence: any LocalTrashReceiptPersisting
         let artifacts: LocalMutationArtifacts
         let quarantineTimestamp: String
 
@@ -1720,6 +1759,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 locationID: locationID,
                 capabilities: capabilities,
                 rootURL: rootURL,
+                ownedCanonicalRootURL: ownedCanonicalRootURL,
                 volumes: volumes,
                 expectedVolumeIdentity: expectedVolumeIdentity
             ).checkAvailability()
@@ -1730,8 +1770,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             followingFinalSymlink: Bool
         ) -> URL? {
             guard !path.components.contains(where: { $0 == "." || $0 == ".." }),
-                  let canonicalRoot = LocalFolderStorageProvider
-                    .canonicalizingExistingAncestors(rootURL) else {
+                  let canonicalRoot = currentOwnedCanonicalRoot() else {
                 return nil
             }
             let candidate = path.components.reduce(canonicalRoot) { partial, component in
@@ -1753,6 +1792,15 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             return checked
         }
 
+        private func currentOwnedCanonicalRoot() -> URL? {
+            guard let ownedCanonicalRootURL,
+                  LocalFolderStorageProvider.resolvedExistingRootPath(rootURL)
+                    == ownedCanonicalRootURL.standardizedFileURL.path else {
+                return nil
+            }
+            return ownedCanonicalRootURL
+        }
+
         private func isInternalPath(_ path: SyncPath) -> Bool {
             LocalFolderStorageProvider.isInternal(
                 path,
@@ -1766,9 +1814,9 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 try trashReceiptFilename(for: receipt.observation),
                 isDirectory: false
             )
-            try CanonicalCoding.encoder().encode(receipt).write(
-                to: receiptURL,
-                options: .atomic
+            try trashReceiptPersistence.persist(
+                CanonicalCoding.encoder().encode(receipt),
+                at: receiptURL
             )
         }
 
@@ -1785,12 +1833,17 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 LocalTrashReceipt.self,
                 from: Data(contentsOf: receiptURL)
             )
-            guard receipt.committedAt != nil,
-                  receipt.observation.location == locationID,
+            guard receipt.observation.location == locationID,
                   receipt.observation.path == expected.path,
                   receipt.observation.kind == expected.kind,
                   receipt.observation.version.isSameVersion(as: expected.version) else {
                 return nil
+            }
+            guard receipt.committedAt != nil else {
+                throw ProviderError.unavailable(
+                    provider: locationID,
+                    reason: "Trash outcome is prepared but lacks committed recoverable-trash proof."
+                )
             }
             if receipt.method == .quarantine {
                 guard let recoveryPath = receipt.recoveryPath,
@@ -1822,8 +1875,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         }
 
         private func trashReceiptDirectory(create: Bool) throws -> URL {
-            guard let canonicalRoot = LocalFolderStorageProvider
-                .canonicalizingExistingAncestors(rootURL) else {
+            guard let canonicalRoot = currentOwnedCanonicalRoot() else {
                 throw ProviderError.itemUnavailable(provider: locationID, path: .root)
             }
             let directory = canonicalRoot
@@ -1863,8 +1915,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         private func quarantineDestinationURL(
             originalPath: SyncPath
         ) throws -> URL {
-            guard let canonicalRoot = LocalFolderStorageProvider
-                .canonicalizingExistingAncestors(rootURL) else {
+            guard let canonicalRoot = currentOwnedCanonicalRoot() else {
                 throw ProviderError.itemUnavailable(
                     provider: locationID,
                     path: originalPath
@@ -2022,6 +2073,16 @@ struct SystemLocalFetchPerformer: LocalFetchPerforming {
 
 protocol LocalNativeTrashPerforming: Sendable {
     func trashItem(at url: URL) throws -> URL?
+}
+
+protocol LocalTrashReceiptPersisting: Sendable {
+    func persist(_ data: Data, at url: URL) throws
+}
+
+struct AtomicLocalTrashReceiptPersister: LocalTrashReceiptPersisting {
+    func persist(_ data: Data, at url: URL) throws {
+        try data.write(to: url, options: .atomic)
+    }
 }
 
 struct SystemLocalNativeTrashPerformer: LocalNativeTrashPerforming {

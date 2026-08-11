@@ -126,27 +126,21 @@ public struct RunRecovery: Sendable {
                                 operationID: operation.id
                             )
                     }
-                    if let record = try await confirmedRecord(
+                    try await confirmPendingOperation(
                         for: operation,
-                        syncSetID: replay.syncSetID,
                         recoveryProvider: provider,
                         recoveryClaim: claim
-                    ) {
-                        try await stores.baseRecords.apply(.upsert(record))
-                        restoredRecords += 1
-                    }
+                    )
                     reconciled.append(operation.id)
                     continue
                 }
 
-                if let record = try await confirmedRecord(
+                try await confirmPendingOperation(
                     for: operation,
-                    syncSetID: replay.syncSetID
-                ) {
-                    try await stores.baseRecords.apply(.upsert(record))
-                    restoredRecords += 1
-                    reconciled.append(operation.id)
-                }
+                    recoveryProvider: nil,
+                    recoveryClaim: nil
+                )
+                reconciled.append(operation.id)
             }
 
             await stores.activity.append(
@@ -211,19 +205,23 @@ public struct RunRecovery: Sendable {
         return discovered
     }
 
-    private func confirmedRecord(
+    /// Proves whether one pending filesystem operation applied or remained
+    /// unapplied. Recovery deliberately does not turn that operation-level
+    /// truth into a base record: only an `itemConverged` journal event proves
+    /// that every sibling operation for the item succeeded. A fresh scan and
+    /// plan incorporates any individually applied operation after the old WAL
+    /// has been closed.
+    private func confirmPendingOperation(
         for operation: Operation,
-        syncSetID: UUID,
-        recoveryProvider: (any IndeterminateMutationRecovering)? = nil,
-        recoveryClaim: ProviderMutationRecoveryClaim? = nil
-    ) async throws -> BaseRecord? {
+        recoveryProvider: (any IndeterminateMutationRecovering)?,
+        recoveryClaim: ProviderMutationRecoveryClaim?
+    ) async throws {
         guard let provider = providers[operation.location] else {
             throw RunRecoveryError.providerTruthUnavailable(
                 operationID: operation.id,
                 detail: "The operation's provider is missing."
             )
         }
-        let now = environment.now()
 
         switch operation.kind {
         case let .makeFolder(path):
@@ -239,24 +237,14 @@ public struct RunRecovery: Sendable {
                 recoveryClaim: recoveryClaim,
                 operationID: operation.id
             )
-            guard let current else { return nil }
+            guard let current else { return }
             try requireRecoveryAttribution(
                 current,
                 expected: expected,
                 operationID: operation.id,
                 permitsTrashed: false
             )
-            return BaseRecord(
-                id: environment.makeID(),
-                syncSetID: syncSetID,
-                path: current.path,
-                kind: current.kind,
-                version: current.version,
-                perLocation: [operation.location: LocationMemory(itemID: current.itemID, revisionToken: current.version.revisionToken, lastSeenAt: now)],
-                lastConvergedAt: now,
-                createdAt: now,
-                updatedAt: now
-            )
+            return
 
         case let .transfer(content, path, _):
             let expected = ItemObservation(
@@ -271,7 +259,7 @@ public struct RunRecovery: Sendable {
                 recoveryClaim: recoveryClaim,
                 operationID: operation.id
             )
-            guard let current else { return nil }
+            guard let current else { return }
             try requireRecoveryAttribution(
                 current,
                 expected: expected,
@@ -282,30 +270,9 @@ public struct RunRecovery: Sendable {
                 current.version,
                 content.expectedVersion
             ) else {
-                return nil
+                return
             }
-            return BaseRecord(
-                id: environment.makeID(),
-                syncSetID: syncSetID,
-                path: current.path,
-                kind: current.kind,
-                version: current.version,
-                perLocation: [
-                    content.sourceLocation: LocationMemory(
-                        itemID: content.itemID,
-                        revisionToken: content.expectedVersion.revisionToken,
-                        lastSeenAt: now
-                    ),
-                    operation.location: LocationMemory(
-                        itemID: current.itemID,
-                        revisionToken: current.version.revisionToken,
-                        lastSeenAt: now
-                    )
-                ],
-                lastConvergedAt: now,
-                createdAt: now,
-                updatedAt: now
-            )
+            return
 
         case let .relocate(itemRef, newPath):
             var destinationProbe = itemRef.observation
@@ -356,7 +323,7 @@ public struct RunRecovery: Sendable {
                 // The old relocate definitely did not apply. Recovery may
                 // close the intent only into a fresh scan/replan; it never
                 // reissues the old schedule.
-                return nil
+                return
             }
             guard let current = destination,
                   destinationMatches,
@@ -372,17 +339,7 @@ public struct RunRecovery: Sendable {
                     )
                 )
             }
-            return BaseRecord(
-                id: environment.makeID(),
-                syncSetID: syncSetID,
-                path: current.path,
-                kind: current.kind,
-                version: current.version,
-                perLocation: [operation.location: LocationMemory(itemID: current.itemID, revisionToken: current.version.revisionToken, lastSeenAt: now)],
-                lastConvergedAt: now,
-                createdAt: now,
-                updatedAt: now
-            )
+            return
 
         case let .trash(itemRef):
             let current = try await recoveryState(
@@ -392,14 +349,19 @@ public struct RunRecovery: Sendable {
                 recoveryClaim: recoveryClaim,
                 operationID: operation.id
             )
-            guard let current else { return nil }
+            guard let current else {
+                throw RunRecoveryError.providerTruthUnavailable(
+                    operationID: operation.id,
+                    detail: "Trash absence has no committed recoverable-trash proof."
+                )
+            }
             try requireRecoveryAttribution(
                 current,
                 expected: itemRef.observation,
                 operationID: operation.id,
                 permitsTrashed: true
             )
-            guard current.isTrashed else { return nil }
+            guard current.isTrashed else { return }
             guard observation(
                 current,
                 matches: itemRef,
@@ -411,18 +373,7 @@ public struct RunRecovery: Sendable {
                     detail: "Trash proof does not match the intended item identity or version."
                 )
             }
-            return BaseRecord(
-                id: environment.makeID(),
-                syncSetID: syncSetID,
-                path: itemRef.path,
-                kind: itemRef.kind,
-                version: itemRef.expectedVersion,
-                perLocation: [operation.location: LocationMemory(itemID: itemRef.itemID, revisionToken: itemRef.expectedVersion.revisionToken, lastSeenAt: now)],
-                tombstone: Tombstone(deletedAt: now),
-                lastConvergedAt: now,
-                createdAt: now,
-                updatedAt: now
-            )
+            return
         }
     }
 

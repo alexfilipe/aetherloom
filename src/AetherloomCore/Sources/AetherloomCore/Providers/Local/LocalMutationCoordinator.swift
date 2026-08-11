@@ -58,15 +58,21 @@ private actor LocalReadResultGate<Value: Sendable> {
 struct LocalRootOwnership: Sendable {
     let mutations: LocalMutationCoordinator
     let artifacts: LocalMutationArtifacts
+    /// The physical root this owner was admitted for. Providers must keep
+    /// resolving their configured path to this exact root for the lifetime of
+    /// the owner; a live symlink retarget never transfers ownership.
+    let canonicalRootPath: String?
     let admissionIssue: String?
 
     init(
         mutations: LocalMutationCoordinator,
         artifacts: LocalMutationArtifacts,
+        canonicalRootPath: String?,
         admissionIssue: String? = nil
     ) {
         self.mutations = mutations
         self.artifacts = artifacts
+        self.canonicalRootPath = canonicalRootPath
         self.admissionIssue = admissionIssue
     }
 }
@@ -150,7 +156,9 @@ actor LocalRootIORegistry {
                     "This local root cannot be distinguished from an unavailable in-process root."
                 )
             }
-            let created = makeOwnership()
+            let created = makeOwnership(
+                canonicalRootPath: resolvedCanonicalRootPath
+            )
             entriesByAlias[aliasKey] = AliasEntry(
                 canonicalRootPath: resolvedCanonicalRootPath,
                 ownership: created
@@ -169,7 +177,7 @@ actor LocalRootIORegistry {
                 "The unavailable local root cannot be matched to its in-process owner."
             )
         }
-        let created = makeOwnership()
+        let created = makeOwnership(canonicalRootPath: nil)
         entriesByAlias[aliasKey] = AliasEntry(
             canonicalRootPath: nil,
             ownership: created
@@ -188,10 +196,13 @@ actor LocalRootIORegistry {
         )
     }
 
-    private func makeOwnership() -> LocalRootOwnership {
+    private func makeOwnership(
+        canonicalRootPath: String?
+    ) -> LocalRootOwnership {
         LocalRootOwnership(
             mutations: LocalMutationCoordinator(),
-            artifacts: LocalMutationArtifacts()
+            artifacts: LocalMutationArtifacts(),
+            canonicalRootPath: canonicalRootPath
         )
     }
 
@@ -199,6 +210,7 @@ actor LocalRootIORegistry {
         LocalRootOwnership(
             mutations: LocalMutationCoordinator(),
             artifacts: LocalMutationArtifacts(),
+            canonicalRootPath: nil,
             admissionIssue: issue
         )
     }
