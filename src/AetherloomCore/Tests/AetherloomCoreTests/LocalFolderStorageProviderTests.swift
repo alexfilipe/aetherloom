@@ -82,7 +82,9 @@ struct LocalFolderStorageProviderTests {
                     .mount,
                     .volumeIdentity(root.resolvingSymlinksInPath().standardizedFileURL.path),
                     .responsiveness,
+                    .volumeIdentity(root.resolvingSymlinksInPath().standardizedFileURL.path),
                     .directory(root.standardizedFileURL.path),
+                    .volumeIdentity(root.resolvingSymlinksInPath().standardizedFileURL.path),
                 ]
         )
 
@@ -1209,7 +1211,8 @@ struct LocalFolderStorageProviderTests {
             correlation: ProviderMutationCorrelation(
                 runID: runID,
                 operationID: operationID
-            )
+            ),
+            rootIdentity: mutationRootIdentity(for: root)
         )
         try await firstStores.journal.append(
             .mutationIndeterminate(
@@ -2687,7 +2690,8 @@ struct LocalFolderStorageProviderTests {
             correlation: ProviderMutationCorrelation(
                 runID: runID,
                 operationID: operationID
-            )
+            ),
+            rootIdentity: mutationRootIdentity(for: root)
         )
         let stores = EngineStores.inMemory()
         try await stores.journal.begin(
@@ -2838,7 +2842,8 @@ struct LocalFolderStorageProviderTests {
             correlation: ProviderMutationCorrelation(
                 runID: runID,
                 operationID: operationID
-            )
+            ),
+            rootIdentity: mutationRootIdentity(for: root)
         )
         let stores = EngineStores.inMemory()
         try await stores.journal.begin(
@@ -3365,7 +3370,8 @@ struct LocalFolderStorageProviderTests {
                         uuidString: "a2000000-0000-0000-0000-000000000033"
                     )!
                 )
-            )
+            ),
+            rootIdentity: mutationRootIdentity(for: target)
         )
         guard case let .claimed(claim) = await reconstructed
             .beginIndeterminateMutationRecovery(for: recoveryReceipt) else {
@@ -3588,15 +3594,12 @@ struct LocalFolderStorageProviderTests {
                 == Data("replacement-volume".utf8)
         )
 
-        guard case let .claimed(claim) = await v1
-            .beginIndeterminateMutationRecovery(for: receipt) else {
-            Issue.record("V1 replacement receipt could not be claimed.")
-            return
-        }
-        #expect(await v2.canPerformRecoveryRead(with: claim) == false)
-        await v1.finishIndeterminateMutationRecovery(claim)
-        guard case .complete = (await v2.scan(.entireDrive)).status else {
-            Issue.record("V2 did not resume after exact V1 barrier release.")
+        #expect(
+            await v1.beginIndeterminateMutationRecovery(for: receipt)
+                == .inFlight
+        )
+        guard case .unavailable = (await v2.scan(.entireDrive)).status else {
+            Issue.record("Replacement V2 borrowed V1 recovery authority.")
             return
         }
     }
@@ -3651,7 +3654,8 @@ struct LocalFolderStorageProviderTests {
                         uuidString: "a2000000-0000-0000-0000-000000000025"
                     )!
                 )
-            )
+            ),
+            rootIdentity: mutationRootIdentity(for: target)
         )
 
         let wrongAliasClaim = await canonicalProvider
@@ -3741,7 +3745,8 @@ struct LocalFolderStorageProviderTests {
             correlation: ProviderMutationCorrelation(
                 runID: runID,
                 operationID: operationA.id
-            )
+            ),
+            rootIdentity: mutationRootIdentity(for: root)
         )
 
         let journalRoot = world.appendingPathComponent("Journal")
@@ -4075,6 +4080,370 @@ struct LocalFolderStorageProviderTests {
         }
     }
 
+    @Test(arguments: DurableRootMismatchMode.allCases)
+    func durableReceiptCannotAuthorizeAReplacementPhysicalRoot(
+        _ mode: DurableRootMismatchMode
+    ) async throws {
+        let world = try makeRoot("durable-root-mismatch-\(mode.rawValue)")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let rootA = world.appendingPathComponent("Root A", isDirectory: true)
+        let rootB = world.appendingPathComponent("Root B", isDirectory: true)
+        let detachedA = world.appendingPathComponent("Detached A", isDirectory: true)
+        let alias = world.appendingPathComponent("Enrolled Alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: rootA.appendingPathComponent("Applied"),
+            withIntermediateDirectories: false
+        )
+        try Data("preserve replacement".utf8).write(
+            to: rootA.appendingPathComponent("Preserve.txt")
+        )
+        try FileManager.default.createDirectory(at: rootB, withIntermediateDirectories: true)
+        try Data("preserve replacement".utf8).write(
+            to: rootB.appendingPathComponent("Preserve.txt")
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: rootA.path
+        )
+
+        let configuredRoot = mode == .symlinkRetarget ? alias : rootA
+        let originalCanonicalPath = rootA.resolvingSymlinksInPath()
+            .standardizedFileURL.path
+        let location = localLocation(
+            id: LocationID(
+                UUID(uuidString: "ab000000-0000-0000-0000-000000000001")!
+            ),
+            expectedVolumeIdentity: mode.currentVolumeIdentity
+        )
+        let operationID = OperationID(
+            UUID(uuidString: "ab000000-0000-0000-0000-000000000002")!
+        )
+        let operation = AetherloomCore.Operation(
+            id: operationID,
+            location: location.id,
+            kind: .makeFolder(at: "/Applied"),
+            precondition: .pathAbsent
+        )
+        let runID = UUID(uuidString: "ab000000-0000-0000-0000-000000000003")!
+        let syncSetID = UUID(
+            uuidString: "ab000000-0000-0000-0000-000000000004"
+        )!
+        let receipt = ProviderMutationReceipt(
+            id: UUID(uuidString: "ab000000-0000-0000-0000-000000000005")!,
+            provider: location.id,
+            kind: .makeFolder,
+            affectedPaths: ["/Applied"],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_600),
+            correlation: ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationID
+            ),
+            rootIdentity: mode.receiptVolumeIdentity.map {
+                ProviderMutationRootIdentity(
+                    canonicalRootPath: originalCanonicalPath,
+                    volumeIdentity: $0
+                )
+            }
+        )
+        let journalRoot = world.appendingPathComponent("Journal", isDirectory: true)
+        let writer = try FileRunJournalStore(rootURL: journalRoot)
+        try await writer.begin(
+            runID: runID,
+            syncSetID: syncSetID,
+            fingerprint: PlanFingerprint(rawValue: mode.rawValue)
+        )
+        try await writer.append(.intent(operation), runID: runID)
+        try await writer.append(
+            .mutationIndeterminate(
+                operationID: operationID,
+                receipt: receipt,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_601)
+            ),
+            runID: runID
+        )
+
+        if mode == .replacementVolume {
+            try FileManager.default.moveItem(at: rootA, to: detachedA)
+            try FileManager.default.moveItem(at: rootB, to: rootA)
+        } else if mode == .symlinkRetarget {
+            try FileManager.default.removeItem(at: alias)
+            try FileManager.default.createSymbolicLink(
+                atPath: alias.path,
+                withDestinationPath: rootB.path
+            )
+        }
+
+        let inspector = ScriptedVolumeInspector()
+        await inspector.setVolumeIdentity(mode.currentVolumeIdentity)
+        let hook = RecordingLocalMutationHook()
+        let provider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: configuredRoot,
+            volumes: inspector,
+            mutationHook: hook,
+            registry: LocalRootIORegistry()
+        )
+        let journal = try FileRunJournalStore(rootURL: journalRoot)
+        let stores = recoveryStores(journal: journal)
+        let replay = try #require(try await journal.unfinishedRun(for: syncSetID))
+
+        await #expect(
+            throws: RunRecoveryError.indeterminateMutationStillRunning(
+                operationID: operationID,
+                receiptID: receipt.id
+            )
+        ) {
+            _ = try await RunRecovery(
+                providers: [location.id: provider],
+                stores: stores
+            ).recover(replay)
+        }
+        #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
+        guard case .unavailable = (await provider.scan(.entireDrive)).status else {
+            Issue.record("A mismatched durable receipt did not retain its barrier.")
+            return
+        }
+        await #expect(throws: ProviderError.self) {
+            _ = try await provider.makeFolder(at: "/MustNotMutate")
+        }
+        #expect(hook.kinds().isEmpty)
+        let currentRoot = mode == .symlinkRetarget ? rootB : rootA
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: currentRoot.appendingPathComponent("MustNotMutate").path
+            )
+        )
+        #expect(
+            try Data(contentsOf: currentRoot.appendingPathComponent("Preserve.txt"))
+                == Data("preserve replacement".utf8)
+        )
+    }
+
+    @Test func durableReceiptRecoversThroughSameRootAliasAfterRestart() async throws {
+        let world = try makeRoot("durable-root-alias-restart")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Root", isDirectory: true)
+        let alias = world.appendingPathComponent("Alias", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Applied"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: root.path
+        )
+        let location = localLocation(
+            id: LocationID(
+                UUID(uuidString: "ac000000-0000-0000-0000-000000000001")!
+            )
+        )
+        let operationID = OperationID(
+            UUID(uuidString: "ac000000-0000-0000-0000-000000000002")!
+        )
+        let operation = AetherloomCore.Operation(
+            id: operationID,
+            location: location.id,
+            kind: .makeFolder(at: "/Applied"),
+            precondition: .pathAbsent
+        )
+        let runID = UUID(uuidString: "ac000000-0000-0000-0000-000000000003")!
+        let syncSetID = UUID(
+            uuidString: "ac000000-0000-0000-0000-000000000004"
+        )!
+        let receipt = ProviderMutationReceipt(
+            id: UUID(uuidString: "ac000000-0000-0000-0000-000000000005")!,
+            provider: location.id,
+            kind: .makeFolder,
+            affectedPaths: ["/Applied"],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_610),
+            correlation: ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationID
+            ),
+            rootIdentity: mutationRootIdentity(for: root)
+        )
+        let journalRoot = world.appendingPathComponent("Journal", isDirectory: true)
+        let writer = try FileRunJournalStore(rootURL: journalRoot)
+        try await writer.begin(
+            runID: runID,
+            syncSetID: syncSetID,
+            fingerprint: PlanFingerprint(rawValue: "same-root-alias-restart")
+        )
+        try await writer.append(.intent(operation), runID: runID)
+        try await writer.append(
+            .mutationIndeterminate(
+                operationID: operationID,
+                receipt: receipt,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_611)
+            ),
+            runID: runID
+        )
+
+        let provider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: alias,
+            volumes: ScriptedVolumeInspector(),
+            registry: LocalRootIORegistry()
+        )
+        let journal = try FileRunJournalStore(rootURL: journalRoot)
+        let report = try await RunRecovery(
+            providers: [location.id: provider],
+            stores: recoveryStores(journal: journal)
+        ).recover(try #require(try await journal.unfinishedRun(for: syncSetID)))
+
+        #expect(report.reconciledOperations == [operationID])
+        #expect(try await journal.unfinishedRun(for: syncSetID) == nil)
+        guard case .complete = (await provider.scan(.entireDrive)).status else {
+            Issue.record("The same physical root alias did not resume after recovery.")
+            return
+        }
+    }
+
+    @Test(arguments: RootIdentitySwapPoint.allCases)
+    func identitySwapAfterAwaitedProbeStopsReadAndMutation(
+        _ point: RootIdentitySwapPoint
+    ) async throws {
+        let root = try makeRoot("identity-swap-after-\(point.rawValue)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("preserve".utf8).write(to: root.appendingPathComponent("Present.txt"))
+        let inspector = BlockingRootIdentityInspector()
+        let hook = RecordingLocalMutationHook()
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: inspector,
+            mutationHook: hook,
+            registry: LocalRootIORegistry()
+        )
+
+        await inspector.arm(point)
+        let scan = Task { await provider.scan(.entireDrive) }
+        await inspector.waitUntilBlocked()
+        await inspector.setVolumeIdentity("replacement-volume")
+        await inspector.release()
+        let snapshot = await scan.value
+        guard case .unavailable = snapshot.status else {
+            Issue.record("A read returned truth after the physical root changed.")
+            return
+        }
+        #expect(snapshot.observations.all.isEmpty)
+
+        await inspector.setVolumeIdentity("scripted-volume")
+        await inspector.arm(point)
+        let mutation = Task { () -> Bool in
+            do {
+                _ = try await provider.makeFolder(at: "/MustNotMutate")
+                return false
+            } catch is ProviderError {
+                return true
+            } catch {
+                return false
+            }
+        }
+        await inspector.waitUntilBlocked()
+        await inspector.setVolumeIdentity("replacement-volume")
+        await inspector.release()
+        #expect(await mutation.value)
+        #expect(hook.kinds().isEmpty)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("MustNotMutate").path
+            )
+        )
+
+        await inspector.setVolumeIdentity("scripted-volume")
+        await inspector.arm(point)
+        let control = Task {
+            try await provider.makeFolder(at: "/UnchangedControl")
+        }
+        await inspector.waitUntilBlocked()
+        await inspector.release()
+        let controlled = try await control.value
+        #expect(controlled.path == "/UnchangedControl")
+        #expect(hook.kinds() == [.makeFolder])
+    }
+
+    @Test func symlinkRetargetBeforeCrossVolumeTrashRetainsExactReceipt() async throws {
+        let world = try makeRoot("cross-volume-pre-trash-retarget")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let rootA = world.appendingPathComponent("Root A", isDirectory: true)
+        let rootB = world.appendingPathComponent("Root B", isDirectory: true)
+        let alias = world.appendingPathComponent("Alias", isDirectory: true)
+        let destinationFolder = rootA.appendingPathComponent(
+            "Destination",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: destinationFolder,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: rootB, withIntermediateDirectories: true)
+        let sourceURL = rootA.appendingPathComponent("Source.txt")
+        try Data("cross-volume".utf8).write(to: sourceURL)
+        try Data("preserve-b".utf8).write(to: rootB.appendingPathComponent("Preserve.txt"))
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: rootA.path
+        )
+        let inspector = ScriptedVolumeInspector()
+        await inspector.setVolumeIdentity("scripted-volume", at: sourceURL)
+        await inspector.setVolumeIdentity("destination-volume", at: destinationFolder)
+        let relocation = RetargetingBeforeSourceTrashRelocationPerformer(
+            alias: alias,
+            replacementRoot: rootB
+        )
+        let quarantine = RecordingQuarantinePerformer()
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: alias,
+            volumes: inspector,
+            relocation: relocation,
+            quarantine: quarantine,
+            registry: LocalRootIORegistry()
+        )
+        let source = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
+        )
+
+        let receipt: ProviderMutationReceipt
+        do {
+            _ = try await provider.relocate(source, to: "/Destination/Moved.txt")
+            Issue.record("Retargeted relocation unexpectedly completed.")
+            return
+        } catch let ProviderError.mutationIndeterminate(value) {
+            receipt = value
+        }
+        #expect(
+            receipt.rootIdentity == ProviderMutationRootIdentity(
+                canonicalRootPath: rootA.resolvingSymlinksInPath()
+                    .standardizedFileURL.path,
+                volumeIdentity: "scripted-volume"
+            )
+        )
+        #expect(relocation.sourceTrashChecks() == 1)
+        #expect(quarantine.moveCount() == 0)
+        #expect(FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: destinationFolder.appendingPathComponent("Moved.txt").path
+            )
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: rootA.appendingPathComponent(".aetherloom").path
+            )
+        )
+        #expect(
+            try Data(contentsOf: rootB.appendingPathComponent("Preserve.txt"))
+                == Data("preserve-b".utf8)
+        )
+        guard case .unavailable = (await provider.scan(.entireDrive)).status else {
+            Issue.record("The retargeted relocation did not retain its barrier.")
+            return
+        }
+    }
+
     @Test func mutationDeadlineBeforeStartHasNoFilesystemSideEffect() async throws {
         let root = try makeRoot("mutation-pre-start-timeout")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -4279,6 +4648,28 @@ struct LocalFolderStorageProviderTests {
         )
     }
 
+    private func recoveryStores(journal: any RunJournalStore) -> EngineStores {
+        EngineStores(
+            baseRecords: InMemoryBaseRecordStore(),
+            journal: journal,
+            conflicts: InMemoryConflictStore(),
+            adviceCache: InMemoryAdviceCacheStore(),
+            activity: InMemoryActivityStore(),
+            locations: InMemoryLocationRegistry()
+        )
+    }
+
+    private func mutationRootIdentity(
+        for root: URL,
+        volumeIdentity: String = "scripted-volume"
+    ) -> ProviderMutationRootIdentity {
+        ProviderMutationRootIdentity(
+            canonicalRootPath: root.resolvingSymlinksInPath()
+                .standardizedFileURL.path,
+            volumeIdentity: volumeIdentity
+        )
+    }
+
     private func writeLegacyTrashReceipt(
         root: URL,
         observation: ItemObservation,
@@ -4381,6 +4772,39 @@ enum PostMoveTrashMode: String, CaseIterable, Sendable {
             false
         }
     }
+}
+
+enum DurableRootMismatchMode: String, CaseIterable, Sendable {
+    case replacementVolume
+    case symlinkRetarget
+    case legacyMissingIdentity
+
+    var currentVolumeIdentity: String {
+        switch self {
+        case .replacementVolume:
+            "volume-b"
+        case .symlinkRetarget:
+            "shared-volume"
+        case .legacyMissingIdentity:
+            "scripted-volume"
+        }
+    }
+
+    var receiptVolumeIdentity: String? {
+        switch self {
+        case .replacementVolume:
+            "volume-a"
+        case .symlinkRetarget:
+            "shared-volume"
+        case .legacyMissingIdentity:
+            nil
+        }
+    }
+}
+
+enum RootIdentitySwapPoint: String, CaseIterable, Sendable {
+    case responsiveness
+    case directoryInspection
 }
 
 enum PostPhysicalCommitMode: String, CaseIterable, Sendable {
@@ -4657,6 +5081,74 @@ private actor BlockingReadVolumeInspector: VolumeInspecting {
         .present(isReadable: true)
     }
     func volumeIdentity(for _: URL) async -> String? { "scripted-volume" }
+}
+
+private actor BlockingRootIdentityInspector: VolumeInspecting {
+    private var volumeIdentity = "scripted-volume"
+    private var armedPoint: RootIdentitySwapPoint?
+    private var isBlocked = false
+    private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func arm(_ point: RootIdentitySwapPoint) {
+        armedPoint = point
+    }
+
+    func setVolumeIdentity(_ identity: String) {
+        volumeIdentity = identity
+    }
+
+    func waitUntilBlocked() async {
+        if isBlocked { return }
+        await withCheckedContinuation { continuation in
+            blockedWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isBlocked = false
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func mountState(for _: URL) async -> VolumeMountState { .mounted }
+
+    func responsiveness(for _: URL) async -> VolumeResponsiveness {
+        await blockIfArmed(.responsiveness)
+        return .responsive
+    }
+
+    func properties(for _: URL) async -> VolumeProperties? {
+        VolumeProperties(
+            isCaseSensitive: false,
+            supportsNativeTrash: false,
+            isNetwork: false
+        )
+    }
+
+    func directoryState(at _: URL) async -> InspectedDirectoryState {
+        await blockIfArmed(.directoryInspection)
+        return .present(isReadable: true)
+    }
+
+    func volumeIdentity(for _: URL) async -> String? { volumeIdentity }
+
+    private func blockIfArmed(_ point: RootIdentitySwapPoint) async {
+        guard armedPoint == point else { return }
+        armedPoint = nil
+        isBlocked = true
+        let observers = blockedWaiters
+        blockedWaiters.removeAll()
+        for observer in observers {
+            observer.resume()
+        }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
 }
 
 private struct SourceMutatingFetchPerformer: LocalFetchPerforming {
@@ -4950,6 +5442,58 @@ private final class ScriptedCrossVolumeCopyFailurePerformer:
             ? .present
             : .missing
     }
+}
+
+private final class RetargetingBeforeSourceTrashRelocationPerformer:
+    LocalRelocationPerforming,
+    @unchecked Sendable
+{
+    private let alias: URL
+    private let replacementRoot: URL
+    private let lock = NSLock()
+    private var checks = 0
+
+    init(alias: URL, replacementRoot: URL) {
+        self.alias = alias
+        self.replacementRoot = replacementRoot
+    }
+
+    func copyItem(at source: URL, to destination: URL) throws {
+        try FileManager.default.copyItem(at: source, to: destination)
+    }
+
+    func beforeSourceTrash(at _: URL) throws {
+        lock.withLock { checks += 1 }
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: replacementRoot.path
+        )
+    }
+
+    func sourceTrashChecks() -> Int {
+        lock.withLock { checks }
+    }
+}
+
+private final class RecordingQuarantinePerformer:
+    LocalQuarantinePerforming,
+    @unchecked Sendable
+{
+    struct UnexpectedMove: Error {}
+    private let lock = NSLock()
+    private var moves = 0
+
+    func moveItem(at _: URL, to _: URL) throws {
+        lock.withLock { moves += 1 }
+        throw UnexpectedMove()
+    }
+
+    func moveCount() -> Int {
+        lock.withLock { moves }
+    }
+
+    func artifactState(at _: URL) -> LocalRecoveryArtifactState { .missing }
 }
 
 private final class RecordingLocalMutationHook:

@@ -502,6 +502,28 @@ actor LocalMutationCoordinator {
         return claimRecovery(receipt, origin: .unknownAfterRestart)
     }
 
+    /// Retains a durable WAL barrier that this physical root cannot safely
+    /// claim. This blocks fresh reads and mutations without granting probe or
+    /// release authority to a replacement or retargeted root.
+    func retainUnclaimableRecoveryBarrier(
+        for receipt: ProviderMutationReceipt,
+        expectedVolumeIdentity: String?
+    ) {
+        guard receipt.correlation != nil,
+              let expectedVolumeIdentity else {
+            return
+        }
+        if lifecycleByID[receipt.id] != nil {
+            return
+        }
+        guard lifecycleByID.isEmpty, pendingIDs.isEmpty, activeID == nil,
+              activeReadIDs.isEmpty, activeRecoveryRead == nil else {
+            return
+        }
+        enrolledVolumeIdentityByReceiptID[receipt.id] = expectedVolumeIdentity
+        lifecycleByID[receipt.id] = .awaitingRecovery(receipt)
+    }
+
     func barrierReceipt() -> ProviderMutationReceipt? {
         if let activeID,
            let lifecycle = lifecycleByID[activeID] {

@@ -472,7 +472,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         for receipt: ProviderMutationReceipt
     ) async -> ProviderIndeterminateMutationState {
         guard rootOwnershipIssue == nil,
-              receipt.provider == locationID else {
+              receipt.provider == locationID,
+              receiptBelongsToOwnedRoot(receipt) else {
             return .inFlight
         }
         return await mutations.state(for: receipt)
@@ -485,6 +486,14 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
               receipt.provider == locationID else {
             return .inFlight
         }
+        guard receiptBelongsToOwnedRoot(receipt),
+              await currentRootMatchesOwnedIdentity() else {
+            await mutations.retainUnclaimableRecoveryBarrier(
+                for: receipt,
+                expectedVolumeIdentity: expectedVolumeIdentity
+            )
+            return .inFlight
+        }
         return await mutations.beginRecovery(
             for: receipt,
             expectedVolumeIdentity: expectedVolumeIdentity
@@ -494,7 +503,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
     public func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
         guard rootOwnershipIssue == nil else { return nil }
         guard let receipt = await mutations.indeterminateReceipt(),
-              receipt.provider == locationID else {
+              receipt.provider == locationID,
+              receiptBelongsToOwnedRoot(receipt) else {
             return nil
         }
         return receipt
@@ -505,6 +515,13 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         claim: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation {
         try requireRootOwnership(for: observation.path)
+        guard receiptBelongsToOwnedRoot(claim.receipt),
+              await currentRootMatchesOwnedIdentity() else {
+            throw ProviderError.unavailable(
+                provider: locationID,
+                reason: "The recovery receipt does not belong to the current physical root."
+            )
+        }
         let context = readContext()
         let result = await mutations.performRecoveryRead(
             claim: claim,
@@ -541,7 +558,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
     public func canPerformRecoveryRead(
         with claim: ProviderMutationRecoveryClaim
     ) async -> Bool {
-        guard rootOwnershipIssue == nil else { return false }
+        guard rootOwnershipIssue == nil,
+              receiptBelongsToOwnedRoot(claim.receipt),
+              await currentRootMatchesOwnedIdentity() else {
+            return false
+        }
         return await mutations.ownsRecoveryClaim(
             claim,
             expectedVolumeIdentity: expectedVolumeIdentity
@@ -552,7 +573,9 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         _ claim: ProviderMutationRecoveryClaim
     ) async {
         guard rootOwnershipIssue == nil,
-              claim.receipt.provider == locationID else {
+              claim.receipt.provider == locationID,
+              receiptBelongsToOwnedRoot(claim.receipt),
+              await currentRootMatchesOwnedIdentity() else {
             return
         }
         await mutations.finishRecovery(claim)
@@ -562,7 +585,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         _ claim: ProviderMutationRecoveryClaim
     ) async {
         guard rootOwnershipIssue == nil,
-              claim.receipt.provider == locationID else {
+              claim.receipt.provider == locationID,
+              receiptBelongsToOwnedRoot(claim.receipt) else {
             return
         }
         await mutations.abandonRecovery(claim)
@@ -573,6 +597,12 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             throw ProviderError.unavailable(
                 provider: locationID,
                 reason: rootOwnershipIssue
+            )
+        }
+        guard ownedRootIdentity != nil else {
+            throw ProviderError.unavailable(
+                provider: locationID,
+                reason: "The physical root identity is unavailable."
             )
         }
     }
@@ -587,8 +617,42 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             kind: kind,
             affectedPaths: paths,
             startedAt: deadlines.now(),
-            correlation: ProviderMutationExecutionContext.correlation
+            correlation: ProviderMutationExecutionContext.correlation,
+            rootIdentity: ownedRootIdentity
         )
+    }
+
+    private var ownedRootIdentity: ProviderMutationRootIdentity? {
+        guard let canonicalRootPath = ownedCanonicalRootURL?
+            .standardizedFileURL.path,
+              let expectedVolumeIdentity else {
+            return nil
+        }
+        return ProviderMutationRootIdentity(
+            canonicalRootPath: canonicalRootPath,
+            volumeIdentity: expectedVolumeIdentity
+        )
+    }
+
+    private func receiptBelongsToOwnedRoot(
+        _ receipt: ProviderMutationReceipt
+    ) -> Bool {
+        guard let ownedRootIdentity else { return false }
+        return receipt.rootIdentity == ownedRootIdentity
+    }
+
+    private func currentRootMatchesOwnedIdentity() async -> Bool {
+        guard let ownedRootIdentity,
+              Self.resolvedExistingRootPath(rootURL)
+                == ownedRootIdentity.canonicalRootPath else {
+            return false
+        }
+        let currentVolumeIdentity = await volumes.volumeIdentity(for: rootURL)
+        guard currentVolumeIdentity == ownedRootIdentity.volumeIdentity else {
+            return false
+        }
+        return Self.resolvedExistingRootPath(rootURL)
+            == ownedRootIdentity.canonicalRootPath
     }
 
     private func mutationContext() -> MutationContext {
@@ -1065,7 +1129,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 break
             }
 
-            if let unavailable = await volumeIdentityUnavailability() {
+            if let unavailable = await exactRootIdentityUnavailability() {
                 return .unavailable(unavailable)
             }
 
@@ -1074,6 +1138,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 return .unavailable(.volumeUnreachable(detail: detail))
             case .responsive:
                 break
+            }
+
+            if let unavailable = await exactRootIdentityUnavailability() {
+                return .unavailable(unavailable)
             }
 
             return await availabilityForDirectory(rootURL)
@@ -1183,7 +1251,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         }
 
         private func availabilityForDirectory(_ url: URL) async -> LocationAvailability {
-            switch await volumes.directoryState(at: url) {
+            let directoryState = await volumes.directoryState(at: url)
+            if let unavailable = await exactRootIdentityUnavailability() {
+                return .unavailable(unavailable)
+            }
+            switch directoryState {
             case .missing:
                 return await availabilityAfterConfirmedMissingDirectory()
             case let .unknown(detail):
@@ -1204,26 +1276,41 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             case .mounted:
                 break
             }
-            if let unavailable = await volumeIdentityUnavailability() {
+            if let unavailable = await exactRootIdentityUnavailability() {
                 return .unavailable(unavailable)
             }
             switch await volumes.responsiveness(for: rootURL) {
             case let .unreachable(detail):
                 return .unavailable(.volumeUnreachable(detail: detail))
             case .responsive:
-                return .unavailable(
-                    .scopeMissing(detail: "The selected folder is missing.")
-                )
+                break
             }
+            if let unavailable = await exactRootIdentityUnavailability() {
+                return .unavailable(unavailable)
+            }
+            return .unavailable(
+                .scopeMissing(detail: "The selected folder is missing.")
+            )
         }
 
-        private func volumeIdentityUnavailability() async -> LocationUnavailabilityReason? {
+        func exactRootIdentityUnavailability() async -> LocationUnavailabilityReason? {
+            guard currentOwnedCanonicalRoot() != nil else {
+                return .unknown(
+                    detail: "The configured local root no longer resolves to its enrolled directory."
+                )
+            }
             guard let expectedVolumeIdentity else {
                 return .unknown(
                     detail: "The selected volume identity could not be recorded safely."
                 )
             }
-            switch await volumes.volumeIdentity(for: rootURL) {
+            let currentIdentity = await volumes.volumeIdentity(for: rootURL)
+            guard currentOwnedCanonicalRoot() != nil else {
+                return .unknown(
+                    detail: "The configured local root no longer resolves to its enrolled directory."
+                )
+            }
+            switch currentIdentity {
             case nil:
                 return .volumeNotMounted(
                     detail: "The selected volume is no longer mounted."
@@ -1405,6 +1492,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         path: expected.path
                     )
                 }
+                try await requireCurrentRootIdentity()
                 try fetching.copyItem(at: sourceURL, to: stagingURL)
                 try await requireAvailable()
                 _ = try matchingCurrentState(of: expected)
@@ -1486,6 +1574,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
 
                 let replacementTarget = existing?.url ?? destination
+                try await requireCurrentRootIdentity()
                 let replacementDirectory = try FileManager.default.url(
                     for: .itemReplacementDirectory,
                     in: .userDomainMask,
@@ -1501,11 +1590,13 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     // can never race a late copy/replace after the deadline.
                     try? FileManager.default.removeItem(at: temporary)
                 }
+                try await requireCurrentRootIdentity()
                 try FileManager.default.copyItem(at: stagingURL, to: temporary)
                 try await requireAvailable()
                 let committedURL: URL
                 let committedPath: SyncPath
                 if let existing {
+                    try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     _ = try FileManager.default.replaceItemAt(
                         existing.url,
@@ -1516,6 +1607,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     committedURL = existing.url
                     committedPath = existing.observation.path
                 } else {
+                    try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     try FileManager.default.moveItem(at: temporary, to: destination)
                     committedURL = destination
@@ -1568,6 +1660,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     }
                     throw ProviderError.itemAlreadyExists(provider: locationID, path: path)
                 }
+                try await requireCurrentRootIdentity()
                 physicalCommitMayHaveApplied = true
                 try FileManager.default.createDirectory(
                     at: destination,
@@ -1645,10 +1738,12 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
 
                 if isSameVolume {
+                    try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     try FileManager.default.moveItem(at: source, to: destination)
                     try hook.afterPhysicalCommit(receipt)
                 } else {
+                    try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     do {
                         try relocation.copyItem(at: source, to: destination)
@@ -1673,8 +1768,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                             path: newPath
                         )
                     }
+                    try await requireCurrentRootIdentity()
                     do {
                         try relocation.beforeSourceTrash(at: source)
+                        try await requireCurrentRootIdentity()
                         try await trashCurrent(
                             current,
                             source: source,
@@ -1735,6 +1832,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                             path: expected.path
                         )
                     }
+                    try await requireCurrentRootIdentity()
                     try await trashCurrent(
                         existing.observation,
                         source: existing.url,
@@ -1790,6 +1888,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             source: URL,
             mutationReceipt: ProviderMutationReceipt
         ) async throws {
+            try await requireCurrentRootIdentity()
             let immediatelyCurrent: ItemObservation
             do {
                 immediatelyCurrent = try LocalFolderStorageProvider.observation(
@@ -1819,15 +1918,22 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     startedAt: deadlines.now(),
                     committedAt: nil
                 )
+                try await requireCurrentRootIdentity()
                 try persistTrashReceipt(trashReceipt)
                 let resultingURL: URL?
                 let nativeTrashFailed: Bool
                 do {
+                    try await requireCurrentRootIdentity()
                     resultingURL = try nativeTrash.trashItem(at: source)
                     nativeTrashFailed = false
                 } catch {
                     resultingURL = nil
                     nativeTrashFailed = true
+                }
+                do {
+                    try await requireCurrentRootIdentity()
+                } catch {
+                    throw ProviderError.mutationIndeterminate(mutationReceipt)
                 }
                 let remainingSource: LocalExistingEntry?
                 do {
@@ -1861,6 +1967,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         resultingURL,
                         for: current.path
                     )
+                    do {
+                        try await requireCurrentRootIdentity()
+                    } catch {
+                        throw ProviderError.mutationIndeterminate(mutationReceipt)
+                    }
                     trashReceipt.recoveryPath = resultingURL.path
                     trashReceipt.committedAt = deadlines.now()
                     try persistCommittedTrashReceipt(
@@ -1872,6 +1983,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
             }
 
+            try await requireCurrentRootIdentity()
             let recoveryURL = try quarantineDestinationURL(
                 originalPath: current.path
             )
@@ -1882,10 +1994,17 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 startedAt: deadlines.now(),
                 committedAt: nil
             )
+            try await requireCurrentRootIdentity()
             try persistTrashReceipt(quarantineReceipt)
             do {
+                try await requireCurrentRootIdentity()
                 try quarantine.moveItem(at: source, to: recoveryURL)
             } catch let moveError {
+                do {
+                    try await requireCurrentRootIdentity()
+                } catch {
+                    throw ProviderError.mutationIndeterminate(mutationReceipt)
+                }
                 let remainingSource: LocalExistingEntry?
                 do {
                     remainingSource = try existingEntry(at: current.path)
@@ -1907,6 +2026,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 case .missing, .unavailable:
                     throw ProviderError.mutationIndeterminate(mutationReceipt)
                 }
+            }
+            do {
+                try await requireCurrentRootIdentity()
+            } catch {
+                throw ProviderError.mutationIndeterminate(mutationReceipt)
             }
             quarantineReceipt.committedAt = deadlines.now()
             try persistCommittedTrashReceipt(
@@ -1963,20 +2087,46 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             _ source: URL,
             _ destinationParent: URL
         ) async throws -> Bool {
-            guard let sourceIdentity = await volumes.volumeIdentity(for: source),
-                  let destinationIdentity = await volumes.volumeIdentity(
-                      for: destinationParent
-                  ) else {
+            guard let sourceIdentity = await volumes.volumeIdentity(for: source) else {
                 throw ProviderError.unavailable(
                     provider: locationID,
                     reason: "A volume identity could not be determined before relocation."
                 )
             }
+            try await requireCurrentRootIdentity()
+            guard let destinationIdentity = await volumes.volumeIdentity(
+                for: destinationParent
+            ) else {
+                throw ProviderError.unavailable(
+                    provider: locationID,
+                    reason: "A volume identity could not be determined before relocation."
+                )
+            }
+            try await requireCurrentRootIdentity()
             return sourceIdentity == destinationIdentity
         }
 
         private func requireAvailable() async throws {
             if case let .unavailable(reason) = await availability() {
+                throw ProviderError.unavailable(
+                    provider: locationID,
+                    reason: reason.detail
+                )
+            }
+        }
+
+        private func requireCurrentRootIdentity() async throws {
+            let context = ReadContext(
+                locationID: locationID,
+                capabilities: capabilities,
+                rootURL: rootURL,
+                ownedCanonicalRootURL: ownedCanonicalRootURL,
+                volumes: volumes,
+                expectedVolumeIdentity: expectedVolumeIdentity,
+                nativeTrash: nativeTrash,
+                quarantine: quarantine
+            )
+            if let reason = await context.exactRootIdentityUnavailability() {
                 throw ProviderError.unavailable(
                     provider: locationID,
                     reason: reason.detail
@@ -2161,6 +2311,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             destinationPath: SyncPath,
             mutationReceipt: ProviderMutationReceipt
         ) async throws {
+            try await requireCurrentRootIdentity()
             do {
                 _ = try matchingCurrentState(of: source)
             } catch {
@@ -2176,10 +2327,12 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 break
             }
 
+            try await requireCurrentRootIdentity()
             let recovery = try quarantineDestinationURL(
                 originalPath: destinationPath
             )
             do {
+                try await requireCurrentRootIdentity()
                 try relocation.moveItemToRecovery(
                     at: destination,
                     to: recovery

@@ -211,6 +211,10 @@ import Testing
         correlation: ProviderMutationCorrelation(
             runID: runID,
             operationID: operation.id
+        ),
+        rootIdentity: ProviderMutationRootIdentity(
+            canonicalRootPath: "/Volumes/Archive/Enrolled Root",
+            volumeIdentity: "00000000-0000-0000-0000-000000000815"
         )
     )
     let event = JournalEvent.mutationIndeterminate(
@@ -241,6 +245,7 @@ import Testing
     #expect(durableReceipt.identity == receipt.identity)
     #expect(durableReceipt == receipt)
     #expect(durableReceipt.correlation == receipt.correlation)
+    #expect(durableReceipt.rootIdentity == receipt.rootIdentity)
     #expect(durableReceipt.startedAt != receipt.startedAt)
 }
 

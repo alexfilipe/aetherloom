@@ -22,17 +22,33 @@ public struct ProviderMutationIdentity: Codable, Hashable, Sendable {
     public var provider: LocationID
     public var kind: ProviderMutationKind
     public var affectedPaths: [SyncPath]
+    public var rootIdentity: ProviderMutationRootIdentity?
 
     public init(
         id: UUID,
         provider: LocationID,
         kind: ProviderMutationKind,
-        affectedPaths: [SyncPath]
+        affectedPaths: [SyncPath],
+        rootIdentity: ProviderMutationRootIdentity? = nil
     ) {
         self.id = id
         self.provider = provider
         self.kind = kind
         self.affectedPaths = affectedPaths
+        self.rootIdentity = rootIdentity
+    }
+}
+
+/// Durable physical-root evidence for local filesystem mutation recovery.
+/// The canonical path admits aliases of one directory while the persistent
+/// volume identity prevents a replacement volume from borrowing old authority.
+public struct ProviderMutationRootIdentity: Codable, Hashable, Sendable {
+    public var canonicalRootPath: String
+    public var volumeIdentity: String
+
+    public init(canonicalRootPath: String, volumeIdentity: String) {
+        self.canonicalRootPath = canonicalRootPath
+        self.volumeIdentity = volumeIdentity
     }
 }
 
@@ -69,6 +85,9 @@ public struct ProviderMutationReceipt: Codable, Hashable, Sendable {
     /// Optional only so legacy/unbound diagnostic receipts remain decodable.
     /// A nil value never authorizes WAL recovery or releases an I/O owner.
     public var correlation: ProviderMutationCorrelation?
+    /// Local providers require this exact durable binding for recovery. It is
+    /// optional only so non-local and legacy receipts remain decodable.
+    public var rootIdentity: ProviderMutationRootIdentity?
 
     public init(
         id: UUID,
@@ -76,7 +95,8 @@ public struct ProviderMutationReceipt: Codable, Hashable, Sendable {
         kind: ProviderMutationKind,
         affectedPaths: [SyncPath],
         startedAt: Date,
-        correlation: ProviderMutationCorrelation? = nil
+        correlation: ProviderMutationCorrelation? = nil,
+        rootIdentity: ProviderMutationRootIdentity? = nil
     ) {
         self.id = id
         self.provider = provider
@@ -84,6 +104,7 @@ public struct ProviderMutationReceipt: Codable, Hashable, Sendable {
         self.affectedPaths = affectedPaths
         self.startedAt = startedAt
         self.correlation = correlation
+        self.rootIdentity = rootIdentity
     }
 
     public var identity: ProviderMutationIdentity {
@@ -91,7 +112,8 @@ public struct ProviderMutationReceipt: Codable, Hashable, Sendable {
             id: id,
             provider: provider,
             kind: kind,
-            affectedPaths: affectedPaths
+            affectedPaths: affectedPaths,
+            rootIdentity: rootIdentity
         )
     }
 
