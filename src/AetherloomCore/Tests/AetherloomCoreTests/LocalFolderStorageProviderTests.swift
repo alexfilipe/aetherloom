@@ -3519,7 +3519,6 @@ struct LocalFolderStorageProviderTests {
         )
         await inspector.setVolumeIdentity("volume-v2")
 
-        let v2Clock = ProviderMutationManualClock()
         let v2Hook = RecordingLocalMutationHook()
         let v2Location = localLocation(
             id: LocationID(
@@ -3531,10 +3530,6 @@ struct LocalFolderStorageProviderTests {
             location: v2Location,
             rootURL: alias,
             volumes: inspector,
-            deadlines: ProviderDeadlines(
-                ioNanoseconds: 1,
-                clock: v2Clock
-            ),
             mutationHook: v2Hook,
             registry: registry
         )
@@ -3559,8 +3554,6 @@ struct LocalFolderStorageProviderTests {
                 return false
             }
         }
-        await v2Clock.waitUntilSleeping()
-        await v2Clock.fireAll()
         #expect(await v2Attempt.value)
         #expect(v2Hook.kinds().isEmpty)
 
