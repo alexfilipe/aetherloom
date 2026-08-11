@@ -343,7 +343,7 @@ struct RealLocalSyncEndToEndTests {
         try await world.expectEmptyPreview()
     }
 
-    @Test func massDeleteHoldPerformsNoProviderMutationBeforeApproval() async throws {
+    @Test func massDeleteHoldCannotBeApprovedAndPerformsNoProviderMutation() async throws {
         let settings = SyncSettings(
             thresholds: SafetyThresholds(
                 massDeleteAbsolute: 2,
@@ -387,17 +387,15 @@ struct RealLocalSyncEndToEndTests {
             #expect(FileManager.default.fileExists(atPath: localRealE2EURL(path, under: world.rootB).path))
         }
 
-        let approved = try await world.orchestrator.execute(
+        let stillHeld = try await world.orchestrator.execute(
             preparation,
             approval: localE2EApproval(for: plan)
         )
-        #expect(approved.outcome == .completed)
+        #expect(stillHeld.outcome == .held)
+        #expect(await world.providerA.mutationCalls().isEmpty)
+        #expect(await world.providerB.mutationCalls().isEmpty)
         for path in paths {
-            #expect(!FileManager.default.fileExists(atPath: localRealE2EURL(path, under: world.rootB).path))
-            let recoveryURL = try #require(
-                await world.localProviderB.recoveryURL(for: path)
-            )
-            #expect(try Data(contentsOf: recoveryURL) == Data(path.name.utf8))
+            #expect(FileManager.default.fileExists(atPath: localRealE2EURL(path, under: world.rootB).path))
         }
     }
 

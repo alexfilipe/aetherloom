@@ -16,14 +16,16 @@ struct DemoEngineSessionTests {
         #expect(!activity.isEmpty)
     }
 
-    @Test("bootstrap produces the scripted safety world")
-    func bootstrapProducesScriptedSafetyWorld() async throws {
+    @Test("bootstrap produces a neutral internally consistent demo baseline")
+    func bootstrapProducesNeutralBaseline() async throws {
         let session = makeSession()
         let snapshot = try await session.bootstrap()
 
         #expect(snapshot.syncSets.count == 4)
         #expect(snapshot.locations.count == 5)
-        #expect(snapshot.openConflictCount == 1)
+        #expect(snapshot.openConflictCount == 0)
+        #expect(snapshot.status == .allInSync)
+        #expect(try await session.openConflicts(in: nil).isEmpty)
 
         let states = Dictionary(uniqueKeysWithValues: snapshot.syncSets.map { ($0.id, $0) })
         #expect(states[DemoWorld.documentsID]?.trackedItemCount == 39)
@@ -31,21 +33,20 @@ struct DemoEngineSessionTests {
         #expect(states[DemoWorld.photosArchiveID]?.trackedItemCount == 25)
         #expect(states[DemoWorld.wholeDriveMirrorID]?.isPaused == true)
 
-        let documents = try #require(await session.lastPreparation(for: DemoWorld.documentsID))
-        let populatedKinds = Set(documents.preview.sections.filter { !$0.entries.isEmpty }.map(\.kind))
-        #expect(populatedKinds == Set(PreviewSectionKind.allCases))
-        #expect(documents.preview.holds.contains { reasonIsConflict($0.reason) })
-        #expect(documents.preview.holds.contains { reasonIsDeletionReview($0.reason) })
+        for syncSetID in [DemoWorld.documentsID, DemoWorld.projectsID, DemoWorld.photosArchiveID] {
+            let preparation = try #require(await session.lastPreparation(for: syncSetID))
+            #expect(preparation.preview.sections.allSatisfy(\.entries.isEmpty))
+            #expect(preparation.preview.holds.isEmpty)
+            #expect(preparation.preview.refusals.isEmpty)
+        }
 
-        let projects = try #require(await session.lastPreparation(for: DemoWorld.projectsID))
-        #expect(projects.preview.holds.contains { reasonIsMassDeletion($0.reason) })
-
-        let photos = try #require(await session.lastPreparation(for: DemoWorld.photosArchiveID))
-        #expect(photos.preview.planFingerprint == nil)
-        #expect(photos.preview.refusals.contains { notice in
-            guard case let .locationUnavailable(locationID, .volumeNotMounted) = notice.reason else { return false }
-            return locationID == .nasFolder
-        })
+        let locations = Dictionary(uniqueKeysWithValues: snapshot.locations.map { ($0.id, $0) })
+        #expect(locations[.nasFolder]?.availability == .available)
+        let baselineOneDrive = try #require(locations[.oneDrive])
+        guard case .unavailable(.networkUnreachable) = baselineOneDrive.availability else {
+            Issue.record("OneDrive should retain the baseline unreachable state")
+            return
+        }
     }
 
     @Test("bootstrap is deterministic at the display-neutral digest level")
@@ -65,36 +66,42 @@ struct DemoEngineSessionTests {
         }
     }
 
-    @Test("a held mass-deletion plan executes only with disclosed approval and then converges")
-    func approvalRoundTripConvergesProjects() async throws {
+    @Test("mass-deletion demo is a visible non-approvable hold with no execution")
+    func massDeletionIsNonApprovableAndDoesNotExecute() async throws {
         let session = makeSession()
         _ = try await session.bootstrap()
-        let preparation = try #require(await session.lastPreparation(for: DemoWorld.projectsID))
+        await session.scenarioControls.makeMassDeletion()
+        #expect(await session.lastPreparation(for: DemoWorld.projectsID) == nil)
+        let preparation = try await session.prepare(syncSetID: DemoWorld.projectsID)
         let plan = try #require(preparation.outcome.planValue)
+        let display = previewDisplay(for: preparation, locations: await session.locationStates())
 
-        let approval = makeApproval(
-            ApprovalRequirement(
-                fingerprint: plan.fingerprint,
-                trashCount: plan.approvalTrashCount,
-                conflictCount: plan.approvalConflictCount
-            ),
-            at: preparation.preview.generatedAt
+        #expect(preparation.preview.headline == "Paused for safety")
+        #expect(preparation.preview.holds.contains { reasonIsMassDeletion($0.reason) })
+        #expect(display.approvalRequirement == nil)
+        #expect(plan.gate.permitsApproval == false)
+        await session.clearProviderCalls()
+
+        let attemptedApproval = PlanApproval(
+            planFingerprint: plan.fingerprint,
+            approvedAt: preparation.preview.generatedAt,
+            acknowledgedTrashCount: plan.approvalTrashCount,
+            acknowledgedConflictCount: plan.approvalConflictCount
         )
-        let summary = try await session.execute(preparation, approval: approval)
-        #expect(summary.outcome == .completed)
-        #expect(summary.appliedOperations.contains { record in
-            record.path.isDescendant(of: "/Projects/Archive")
-        })
-
-        let second = try await session.prepare(syncSetID: DemoWorld.projectsID)
-        #expect(second.preview.sections.allSatisfy { $0.entries.isEmpty })
+        #expect(attemptedApproval.validate(against: plan, at: preparation.preview.generatedAt) == .rejected(.safetyHoldNotApprovable))
+        let summary = try await session.execute(preparation, approval: attemptedApproval)
+        #expect(summary.outcome == .held)
+        #expect(summary.appliedOperations.isEmpty)
+        let calls = await session.providerCallLogs().values.flatMap { $0 }
+        #expect(calls.allSatisfy { !mutationOperations.contains($0.operation) })
     }
 
     @Test("expired approvals are rejected without provider mutations")
     func expiredApprovalIsRejected() async throws {
         let session = makeSession()
         _ = try await session.bootstrap()
-        let preparation = try #require(await session.lastPreparation(for: DemoWorld.projectsID))
+        await session.scenarioControls.makeConflict()
+        let preparation = try await session.prepare(syncSetID: DemoWorld.documentsID)
         let plan = try #require(preparation.outcome.planValue)
         await session.clearProviderCalls()
 
@@ -117,25 +124,19 @@ struct DemoEngineSessionTests {
         #expect(calls.allSatisfy { !mutationOperations.contains($0.operation) })
     }
 
-    @Test("conflict demo control makes a cached preview stop for replan")
-    func conflictControlStopsCachedPreviewForReplan() async throws {
+    @Test("conflict demo control invalidates the baseline and creates one visible conflict")
+    func conflictControlCreatesOneConflict() async throws {
         let session = makeSession()
         _ = try await session.bootstrap()
-        let preparation = try #require(await session.lastPreparation(for: DemoWorld.documentsID))
-        let display = previewDisplay(for: preparation, locations: await session.locationStates())
-        let requirement = try #require(display.approvalRequirement)
-
         await session.scenarioControls.makeConflict()
-        let summary = try await session.execute(
-            preparation,
-            approval: makeApproval(requirement, at: preparation.preview.generatedAt)
-        )
+        #expect(await session.lastPreparation(for: DemoWorld.documentsID) == nil)
+        let preparation = try await session.prepare(syncSetID: DemoWorld.documentsID)
+        let conflicts = try await session.openConflicts(in: DemoWorld.documentsID)
 
-        guard case let .stoppedForReplan(_, path) = summary.outcome else {
-            Issue.record("Expected the cached preview to stop for replan, got \(summary.outcome)")
-            return
-        }
-        #expect(path == "/Documents/Notes/Meeting.txt")
+        #expect(conflicts.count == 1)
+        #expect(conflicts.first?.path == "/Documents/Notes/Meeting.txt")
+        #expect(preparation.preview.conflicts.count == 1)
+        #expect(preparation.preview.holds.contains { reasonIsConflict($0.reason) })
     }
 
     @Test("pause blocks preparation and resume restores it")
@@ -159,7 +160,8 @@ struct DemoEngineSessionTests {
     func suggestionsToggleControlsNextPreparation() async throws {
         let session = makeSession()
         _ = try await session.bootstrap()
-        let initial = try #require(await session.lastPreparation(for: DemoWorld.documentsID))
+        await session.scenarioControls.makeConflict()
+        let initial = try await session.prepare(syncSetID: DemoWorld.documentsID)
         #expect(!initial.advice.isEmpty)
         #expect(await session.suggestionsEnabled())
 
@@ -186,6 +188,7 @@ struct DemoEngineSessionTests {
     func configurationChangesReachNextPlan() async throws {
         let session = makeSession()
         _ = try await session.bootstrap()
+        await session.scenarioControls.makeMassDeletion()
 
         let noDeletes = SyncSettings(
             thresholds: SafetyThresholds(
@@ -249,6 +252,8 @@ struct DemoEngineSessionTests {
     func conflictResolutionConvergesOnNextRun() async throws {
         let session = makeSession()
         _ = try await session.bootstrap()
+        await session.scenarioControls.makeConflict()
+        _ = try await session.prepare(syncSetID: DemoWorld.documentsID)
         let conflict = try #require(try await session.openConflicts(in: DemoWorld.documentsID).first)
         try await session.resolveConflict(id: conflict.id, as: .makeCanonical(.iCloudDrive))
 
@@ -270,7 +275,7 @@ struct DemoEngineSessionTests {
         #expect(summary.outcome == .completed)
 
         let hashes = await [.iCloudDrive, .googleDrive, .localFolder].asyncCompactMap { locationID in
-            await session.providerItems(at: locationID).first { $0.path == "/Documents/Budget.xlsx" }?.contentHash
+            await session.providerItems(at: locationID).first { $0.path == "/Documents/Notes/Meeting.txt" }?.contentHash
         }
         #expect(Set(hashes).count == 1)
         #expect(try await session.openConflicts(in: DemoWorld.documentsID).isEmpty)
@@ -280,6 +285,8 @@ struct DemoEngineSessionTests {
     func resolvedConflictRecordsAreExposed() async throws {
         let session = makeSession()
         _ = try await session.bootstrap()
+        await session.scenarioControls.makeConflict()
+        _ = try await session.prepare(syncSetID: DemoWorld.documentsID)
         let conflict = try #require(try await session.openConflicts(in: DemoWorld.documentsID).first)
 
         try await session.resolveConflict(id: conflict.id, as: .preserveAll)
@@ -307,15 +314,25 @@ struct DemoEngineSessionTests {
         #expect(secondEvent == .syncSetChanged(DemoWorld.documentsID))
     }
 
-    @Test("scenario controls change engine-visible state and reset restores faults")
-    func scenarioControlsAndReset() async throws {
+    @Test("NAS and OneDrive toggles transition and reset restores the intentional baseline")
+    func availabilityControlsAndReset() async throws {
         let session = makeSession()
         _ = try await session.bootstrap()
         let controls = session.scenarioControls
 
+        let initialNAS = try #require(await session.locationStates().first { $0.id == .nasFolder })
+        #expect(initialNAS.availability == .available)
+
+        await controls.setNASMounted(false)
+        #expect(await session.lastPreparation(for: DemoWorld.photosArchiveID) == nil)
+        let unavailableNAS = try #require(await session.locationStates().first { $0.id == .nasFolder })
+        guard case .unavailable(.volumeNotMounted) = unavailableNAS.availability else {
+            Issue.record("NAS should become unavailable after unmount")
+            return
+        }
+
         await controls.setNASMounted(true)
-        let availablePreparation = try await session.prepare(syncSetID: DemoWorld.photosArchiveID)
-        #expect(availablePreparation.preview.refusals.isEmpty)
+        #expect(await session.locationStates().first { $0.id == .nasFolder }?.availability == .available)
 
         await controls.setOneDriveReachable(true)
         let oneDrive = try #require(await session.locationStates().first { $0.id == .oneDrive })
@@ -323,10 +340,15 @@ struct DemoEngineSessionTests {
 
         try await controls.reset()
         let resetNAS = try #require(await session.locationStates().first { $0.id == .nasFolder })
-        guard case .unavailable(.volumeNotMounted) = resetNAS.availability else {
-            Issue.record("Reset should restore the scripted NAS fault")
+        #expect(resetNAS.availability == .available)
+        let resetOneDrive = try #require(await session.locationStates().first { $0.id == .oneDrive })
+        guard case .unavailable(.networkUnreachable) = resetOneDrive.availability else {
+            Issue.record("Reset should restore the OneDrive baseline fault")
             return
         }
+        let snapshot = await session.workspace()
+        #expect(snapshot.openConflictCount == 0)
+        #expect(snapshot.status == .allInSync)
     }
 
     @Test("unfinished journal runs recover on the next prepare")
@@ -334,10 +356,46 @@ struct DemoEngineSessionTests {
         let session = makeSession()
         _ = try await session.bootstrap()
         try await session.scenarioControls.simulateInterruptedRun()
-        _ = try await session.prepare(syncSetID: DemoWorld.documentsID)
+        #expect(await session.lastPreparation(for: DemoWorld.documentsID) == nil)
+        await session.clearProviderCalls()
+        let preparation = try await session.prepare(syncSetID: DemoWorld.documentsID)
 
         let activity = await session.activity(matching: ActivityQuery(categories: [.safety], limit: 500))
         #expect(activity.contains { $0.message == ActivityMessageCatalog.recoveryPerformed })
+        #expect(preparation.preview.sections.allSatisfy(\.entries.isEmpty))
+        #expect(preparation.preview.holds.isEmpty)
+        let calls = await session.providerCallLogs().values.flatMap { $0 }
+        #expect(calls.allSatisfy { !mutationOperations.contains($0.operation) })
+    }
+
+    @Test("reset and scenario cycles do not accumulate stale state")
+    func resetCyclesDoNotAccumulateState() async throws {
+        let session = makeSession()
+        _ = try await session.bootstrap()
+
+        for _ in 0 ..< 2 {
+            await session.scenarioControls.makeConflict()
+            _ = try await session.prepare(syncSetID: DemoWorld.documentsID)
+            #expect(try await session.openConflicts(in: nil).count == 1)
+
+            await session.scenarioControls.makeMassDeletion()
+            _ = try await session.prepare(syncSetID: DemoWorld.projectsID)
+            try await session.scenarioControls.simulateInterruptedRun()
+
+            try await session.scenarioControls.reset()
+            let snapshot = await session.workspace()
+            #expect(snapshot.openConflictCount == 0)
+            #expect(snapshot.status == .allInSync)
+            #expect(await session.locationStates().first { $0.id == .nasFolder }?.availability == .available)
+            for syncSetID in [DemoWorld.documentsID, DemoWorld.projectsID, DemoWorld.photosArchiveID] {
+                let preparation = try #require(await session.lastPreparation(for: syncSetID))
+                #expect(preparation.preview.sections.allSatisfy(\.entries.isEmpty))
+                #expect(preparation.preview.holds.isEmpty)
+                #expect(preparation.preview.refusals.isEmpty)
+            }
+            let activity = await session.activity(matching: ActivityQuery(limit: 500))
+            #expect(!activity.contains { $0.message == ActivityMessageCatalog.recoveryPerformed })
+        }
     }
 
     @Test("read paths never mutate fake providers")
