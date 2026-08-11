@@ -320,35 +320,97 @@ struct DemoEngineSessionTests {
         _ = try await session.bootstrap()
         let controls = session.scenarioControls
 
-        let initialNAS = try #require(await session.locationStates().first { $0.id == .nasFolder })
-        #expect(initialNAS.availability == .available)
+        await expectProviderControls(
+            session,
+            oneDriveIsReachable: false,
+            oneDriveActionTitle: "Make OneDrive Reachable",
+            nasIsMounted: true,
+            nasActionTitle: "Unmount NAS “Tank”"
+        )
 
         await controls.setNASMounted(false)
         #expect(await session.lastPreparation(for: DemoWorld.photosArchiveID) == nil)
-        let unavailableNAS = try #require(await session.locationStates().first { $0.id == .nasFolder })
-        guard case .unavailable(.volumeNotMounted) = unavailableNAS.availability else {
-            Issue.record("NAS should become unavailable after unmount")
-            return
-        }
+        try await scanUnpausedSyncSets(session)
+        await expectProviderControls(
+            session,
+            oneDriveIsReachable: false,
+            oneDriveActionTitle: "Make OneDrive Reachable",
+            nasIsMounted: false,
+            nasActionTitle: "Mount NAS “Tank”"
+        )
 
         await controls.setNASMounted(true)
-        #expect(await session.locationStates().first { $0.id == .nasFolder }?.availability == .available)
+        try await scanUnpausedSyncSets(session)
+        await expectProviderControls(
+            session,
+            oneDriveIsReachable: false,
+            oneDriveActionTitle: "Make OneDrive Reachable",
+            nasIsMounted: true,
+            nasActionTitle: "Unmount NAS “Tank”"
+        )
 
         await controls.setOneDriveReachable(true)
-        let oneDrive = try #require(await session.locationStates().first { $0.id == .oneDrive })
-        #expect(oneDrive.availability == .available)
+        try await scanUnpausedSyncSets(session)
+        await expectProviderControls(
+            session,
+            oneDriveIsReachable: true,
+            oneDriveActionTitle: "Make OneDrive Unreachable",
+            nasIsMounted: true,
+            nasActionTitle: "Unmount NAS “Tank”"
+        )
+
+        await controls.setOneDriveReachable(false)
+        try await scanUnpausedSyncSets(session)
+        await expectProviderControls(
+            session,
+            oneDriveIsReachable: false,
+            oneDriveActionTitle: "Make OneDrive Reachable",
+            nasIsMounted: true,
+            nasActionTitle: "Unmount NAS “Tank”"
+        )
+
+        await controls.setOneDriveReachable(true)
+        await controls.setNASMounted(false)
 
         try await controls.reset()
-        let resetNAS = try #require(await session.locationStates().first { $0.id == .nasFolder })
-        #expect(resetNAS.availability == .available)
-        let resetOneDrive = try #require(await session.locationStates().first { $0.id == .oneDrive })
-        guard case .unavailable(.networkUnreachable) = resetOneDrive.availability else {
-            Issue.record("Reset should restore the OneDrive baseline fault")
-            return
-        }
+        await expectProviderControls(
+            session,
+            oneDriveIsReachable: false,
+            oneDriveActionTitle: "Make OneDrive Reachable",
+            nasIsMounted: true,
+            nasActionTitle: "Unmount NAS “Tank”"
+        )
         let snapshot = await session.workspace()
         #expect(snapshot.openConflictCount == 0)
         #expect(snapshot.status == .allInSync)
+    }
+
+    @Test("repeated provider toggle and reset cycles keep cards and commands consistent")
+    func repeatedProviderToggleAndResetCyclesStayConsistent() async throws {
+        let session = makeSession()
+        _ = try await session.bootstrap()
+
+        for _ in 0 ..< 2 {
+            await session.scenarioControls.setOneDriveReachable(true)
+            await session.scenarioControls.setNASMounted(false)
+            try await scanUnpausedSyncSets(session)
+            await expectProviderControls(
+                session,
+                oneDriveIsReachable: true,
+                oneDriveActionTitle: "Make OneDrive Unreachable",
+                nasIsMounted: false,
+                nasActionTitle: "Mount NAS “Tank”"
+            )
+
+            try await session.scenarioControls.reset()
+            await expectProviderControls(
+                session,
+                oneDriveIsReachable: false,
+                oneDriveActionTitle: "Make OneDrive Reachable",
+                nasIsMounted: true,
+                nasActionTitle: "Unmount NAS “Tank”"
+            )
+        }
     }
 
     @Test("unfinished journal runs recover on the next prepare")
@@ -484,6 +546,38 @@ private func reasonIsDeletionReview(_ reason: HoldReason) -> Bool {
 private func reasonIsMassDeletion(_ reason: HoldReason) -> Bool {
     if case .massDeletion = reason { return true }
     return false
+}
+
+private func scanUnpausedSyncSets(_ session: DemoEngineSession) async throws {
+    let states = await session.syncSetStates()
+    for state in states where !state.isPaused {
+        _ = try await session.prepare(syncSetID: state.id)
+    }
+    _ = await session.workspace()
+}
+
+private func expectProviderControls(
+    _ session: DemoEngineSession,
+    oneDriveIsReachable: Bool,
+    oneDriveActionTitle: String,
+    nasIsMounted: Bool,
+    nasActionTitle: String
+) async {
+    let workspace = await session.workspace()
+    let display = DemoProviderControlDisplay(locations: workspace.locations)
+    let oneDriveCardIsAvailable = workspace.locations.first {
+        $0.location.kind == .oneDrive
+    }?.availability == .available
+    let nasCardIsAvailable = workspace.locations.first {
+        $0.location.kind == .nasFolder
+    }?.availability == .available
+
+    #expect(oneDriveCardIsAvailable == display.oneDriveIsReachable)
+    #expect(nasCardIsAvailable == display.nasIsMounted)
+    #expect(display.oneDriveIsReachable == oneDriveIsReachable)
+    #expect(display.oneDriveActionTitle == oneDriveActionTitle)
+    #expect(display.nasIsMounted == nasIsMounted)
+    #expect(display.nasActionTitle == nasActionTitle)
 }
 
 private final class DeterministicSequence: @unchecked Sendable {

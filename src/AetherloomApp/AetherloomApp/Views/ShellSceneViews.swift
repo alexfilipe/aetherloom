@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 struct AetherloomCommands: Commands {
-    var appModel: AppModel
+    @ObservedObject var appModel: AppModel
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {

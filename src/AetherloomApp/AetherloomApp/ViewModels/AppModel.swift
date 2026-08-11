@@ -190,20 +190,24 @@ final class AppModel: ObservableObject {
 
     var isScanning: Bool { !busySyncSets.isEmpty }
 
+    var demoProviderControls: DemoProviderControlDisplay {
+        DemoProviderControlDisplay(locations: workspace?.locations ?? [])
+    }
+
     var oneDriveIsReachable: Bool {
-        workspace?.locations.first(where: { $0.location.kind == .oneDrive })?.availability == .available
+        demoProviderControls.oneDriveIsReachable
     }
 
     var nasIsMounted: Bool {
-        workspace?.locations.first(where: { $0.location.kind == .nasFolder })?.availability == .available
+        demoProviderControls.nasIsMounted
     }
 
     var oneDriveDemoActionTitle: String {
-        oneDriveIsReachable ? "Make OneDrive Unreachable" : "Make OneDrive Reachable"
+        demoProviderControls.oneDriveActionTitle
     }
 
     var nasDemoActionTitle: String {
-        nasIsMounted ? "Unmount NAS “Tank”" : "Mount NAS “Tank”"
+        demoProviderControls.nasActionTitle
     }
 
     func startBootstrapIfNeeded() {
@@ -480,11 +484,12 @@ final class AppModel: ObservableObject {
     func performDemoAction(_ action: DemoAction) async {
         guard let demoControls else { return }
         do {
+            let providerControls = demoProviderControls
             switch action {
             case .toggleOneDrive:
-                await demoControls.setOneDriveReachable(!oneDriveIsReachable)
+                await demoControls.setOneDriveReachable(!providerControls.oneDriveIsReachable)
             case .toggleNAS:
-                await demoControls.setNASMounted(!nasIsMounted)
+                await demoControls.setNASMounted(!providerControls.nasIsMounted)
             case .makeConflict:
                 await demoControls.makeConflict()
                 preparations.removeValue(forKey: DemoWorld.documentsID)
