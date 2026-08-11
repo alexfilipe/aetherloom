@@ -2,7 +2,10 @@ import Foundation
 import Testing
 @testable import AetherloomCore
 
-@Suite("LocalFolderStorageProvider")
+// This suite intentionally exercises process-wide root ownership and several
+// synchronous Foundation gates. Running its cases concurrently can exhaust
+// cooperative executor threads before the owning test can release a gate.
+@Suite("LocalFolderStorageProvider", .serialized)
 struct LocalFolderStorageProviderTests {
     @Test func filesystemRootContainsDescendants() {
         #expect(
