@@ -2667,7 +2667,7 @@ struct LocalFolderStorageProviderTests {
 
         let operationID = OperationID(recoveryOperation.operationID)
         let operationKind: OperationKind = recoveryOperation == .trash
-            ? .trash(ItemRef(source))
+            ? .trash(itemRef: ItemRef(source))
             : .relocate(itemRef: ItemRef(source), to: destinationPath)
         let operation = AetherloomCore.Operation(
             id: operationID,
@@ -2825,7 +2825,7 @@ struct LocalFolderStorageProviderTests {
         let operation = AetherloomCore.Operation(
             id: operationID,
             location: location.id,
-            kind: .trash(ItemRef(source)),
+            kind: .trash(itemRef: ItemRef(source)),
             precondition: .versionMatches(source.version)
         )
         let runID = failureMode.runID
