@@ -469,6 +469,77 @@ import Testing
     #expect(plan.schedule.operations.isEmpty)
 }
 
+@Test func phase07CommittedMarkErrorReleasesBarrierAndNextPrepareRuns() async throws {
+    let syncSet = phase07SyncSet([.googleDrive])
+    let journal = CommitThenThrowRunJournalStore()
+    let stores = EngineStores(
+        baseRecords: InMemoryBaseRecordStore(),
+        journal: journal,
+        conflicts: InMemoryConflictStore(),
+        adviceCache: InMemoryAdviceCacheStore(),
+        activity: InMemoryActivityStore(),
+        locations: InMemoryLocationRegistry()
+    )
+    let base = FakeStorageProvider(locationID: .googleDrive)
+    let folder = await base.putFolder(
+        path: "/CommittedRecovery",
+        modifiedAt: phase07Date
+    )
+    let provider = RecoveryGatedProvider(
+        base: base,
+        state: .quiescent(.succeeded)
+    )
+    let operation = Operation(
+        id: OperationID(phase07UUID("000000000521")),
+        location: .googleDrive,
+        kind: .makeFolder(at: folder.path),
+        precondition: .pathAbsent
+    )
+    let unfinishedRunID = phase07UUID("000000000523")
+    let receipt = ProviderMutationReceipt(
+        id: phase07UUID("000000000522"),
+        provider: .googleDrive,
+        kind: .makeFolder,
+        affectedPaths: [folder.path],
+        startedAt: phase07Date,
+        correlation: ProviderMutationCorrelation(
+            runID: unfinishedRunID,
+            operationID: operation.id
+        )
+    )
+    try await journal.begin(
+        runID: unfinishedRunID,
+        syncSetID: syncSet.id,
+        fingerprint: PlanFingerprint(rawValue: "committed-mark-error")
+    )
+    try await journal.append(.intent(operation), runID: unfinishedRunID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: phase07Date
+        ),
+        runID: unfinishedRunID
+    )
+    let orchestrator = try phase07Orchestrator(
+        syncSet: syncSet,
+        providerMap: [.googleDrive: provider],
+        stores: stores
+    )
+
+    let first = try await orchestrator.prepare(syncSet)
+    let second = try await orchestrator.prepare(syncSet)
+
+    #expect(first.outcome.planValue?.schedule.operations.isEmpty == true)
+    #expect(second.outcome.planValue?.schedule.operations.isEmpty == true)
+    #expect(try await journal.unfinishedRun(for: syncSet.id) == nil)
+    #expect(await provider.recoveryProbeCount() == 1)
+    #expect(await provider.finishRecoveryCount() == 1)
+    #expect(await provider.availabilityCount() == 2)
+    #expect(await provider.scanCount() == 2)
+    #expect(await provider.mutationCount() == 0)
+}
+
 @Test func phase07ReconstructedLocalOrchestratorSharesLiveRootOwner() async throws {
     let root = try phase07TemporaryDirectory("reconstructed-local-owner")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -860,6 +931,7 @@ private actor RecoveryGatedProvider: IndeterminateMutationRecovering {
     private var scanCalls = 0
     private var recoveryProbes = 0
     private var mutations = 0
+    private var finishedRecoveries = 0
 
     init(
         base: FakeStorageProvider,
@@ -952,7 +1024,9 @@ private actor RecoveryGatedProvider: IndeterminateMutationRecovering {
 
     func finishIndeterminateMutationRecovery(
         _: ProviderMutationRecoveryClaim
-    ) async {}
+    ) async {
+        finishedRecoveries += 1
+    }
 
     func abandonIndeterminateMutationRecovery(
         _: ProviderMutationRecoveryClaim
@@ -965,7 +1039,39 @@ private actor RecoveryGatedProvider: IndeterminateMutationRecovering {
     func availabilityCount() -> Int { availabilityCalls }
     func scanCount() -> Int { scanCalls }
     func recoveryProbeCount() -> Int { recoveryProbes }
+    func finishRecoveryCount() -> Int { finishedRecoveries }
     func mutationCount() -> Int { mutations }
+}
+
+private actor CommitThenThrowRunJournalStore: RunJournalStore {
+    struct ExpectedPostCommitFailure: Error {}
+
+    private let delegate = InMemoryRunJournalStore()
+
+    func begin(
+        runID: UUID,
+        syncSetID: UUID,
+        fingerprint: PlanFingerprint
+    ) async throws {
+        try await delegate.begin(
+            runID: runID,
+            syncSetID: syncSetID,
+            fingerprint: fingerprint
+        )
+    }
+
+    func append(_ event: JournalEvent, runID: UUID) async throws {
+        try await delegate.append(event, runID: runID)
+    }
+
+    func unfinishedRun(for syncSetID: UUID) async throws -> JournalReplay? {
+        try await delegate.unfinishedRun(for: syncSetID)
+    }
+
+    func markReconciled(runID: UUID) async throws {
+        try await delegate.markReconciled(runID: runID)
+        throw ExpectedPostCommitFailure()
+    }
 }
 
 private actor OrchestratorMutationClock: ProviderDeadlineClock {

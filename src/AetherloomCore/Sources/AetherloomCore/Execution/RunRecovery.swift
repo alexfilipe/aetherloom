@@ -55,13 +55,19 @@ public struct RunRecovery: Sendable {
             return operation
         }
 
+        let sortedPendingOperations = pendingOperations.sorted { $0.id < $1.id }
         var reconciled: [OperationID] = []
+        var receiptsByOperation: [OperationID: ProviderMutationReceipt] = [:]
+        var claimsByOperation: [OperationID: ProviderMutationRecoveryClaim] = [:]
         var claimsToFinish: [(
-            any IndeterminateMutationRecovering,
-            ProviderMutationRecoveryClaim
+            provider: any IndeterminateMutationRecovering,
+            claim: ProviderMutationRecoveryClaim
         )] = []
         do {
-            for operation in pendingOperations.sorted(by: { $0.id < $1.id }) {
+            // Discover and durably bind every receipt before claiming or
+            // probing any operation. This makes a same-owner WAL prefix
+            // independent of operation-ID ordering.
+            for operation in sortedPendingOperations {
                 var receipt = replay.indeterminateReceiptsByOperation[operation.id]
                 if receipt == nil,
                    let discovered = try await discoverIndeterminateReceipt(
@@ -81,37 +87,74 @@ public struct RunRecovery: Sendable {
                     )
                     receipt = discovered
                 }
-                if let receipt {
-                    guard receiptMatches(
-                        receipt,
-                        operation: operation,
-                        runID: replay.runID
-                    ) else {
-                        throw RunRecoveryError
-                            .indeterminateMutationProviderCannotRecover(
-                                operationID: operation.id
-                            )
-                    }
-                    guard let provider = providers[receipt.provider]
-                        as? any IndeterminateMutationRecovering else {
-                        throw RunRecoveryError
-                            .indeterminateMutationProviderCannotRecover(
-                                operationID: operation.id
-                            )
-                    }
-                    let claim: ProviderMutationRecoveryClaim
-                    switch await provider.beginIndeterminateMutationRecovery(
-                        for: receipt
-                    ) {
-                    case .inFlight:
-                        throw RunRecoveryError.indeterminateMutationStillRunning(
-                            operationID: operation.id,
-                            receiptID: receipt.id
+                guard let receipt else { continue }
+                guard receiptMatches(
+                    receipt,
+                    operation: operation,
+                    runID: replay.runID
+                ) else {
+                    throw RunRecoveryError
+                        .indeterminateMutationProviderCannotRecover(
+                            operationID: operation.id
                         )
-                    case let .claimed(value):
-                        claim = value
+                }
+                guard (providers[receipt.provider]
+                    as? any IndeterminateMutationRecovering) != nil else {
+                    throw RunRecoveryError
+                        .indeterminateMutationProviderCannotRecover(
+                            operationID: operation.id
+                        )
+                }
+                receiptsByOperation[operation.id] = receipt
+            }
+
+            // Claim every durable receipt before ordinary confirmation begins.
+            // A receipt-less sibling may then read only through an exact claim
+            // that its provider proves belongs to the same ownership domain.
+            for operation in sortedPendingOperations {
+                guard let receipt = receiptsByOperation[operation.id],
+                      let provider = providers[receipt.provider]
+                        as? any IndeterminateMutationRecovering else {
+                    continue
+                }
+                let claim: ProviderMutationRecoveryClaim
+                switch await provider.beginIndeterminateMutationRecovery(
+                    for: receipt
+                ) {
+                case .inFlight:
+                    throw RunRecoveryError.indeterminateMutationStillRunning(
+                        operationID: operation.id,
+                        receiptID: receipt.id
+                    )
+                case let .claimed(value):
+                    claim = value
+                }
+                claimsByOperation[operation.id] = claim
+                claimsToFinish.append((provider, claim))
+            }
+
+            for operation in sortedPendingOperations {
+                var recoveryProvider: (any IndeterminateMutationRecovering)?
+                var recoveryClaim: ProviderMutationRecoveryClaim?
+                if let claim = claimsByOperation[operation.id],
+                   let provider = providers[operation.location]
+                    as? any IndeterminateMutationRecovering {
+                    recoveryProvider = provider
+                    recoveryClaim = claim
+                } else if let provider = providers[operation.location]
+                    as? any IndeterminateMutationRecovering {
+                    for claimed in claimsToFinish {
+                        if await provider.canPerformRecoveryRead(
+                            with: claimed.claim
+                        ) {
+                            recoveryProvider = provider
+                            recoveryClaim = claimed.claim
+                            break
+                        }
                     }
-                    claimsToFinish.append((provider, claim))
+                }
+
+                if let receipt = receiptsByOperation[operation.id] {
                     if receipt.kind == .fetch {
                         // A fetch writes only to the engine's staging area. The
                         // destination mutation could not start until materialize
@@ -128,8 +171,8 @@ public struct RunRecovery: Sendable {
                     }
                     try await confirmPendingOperation(
                         for: operation,
-                        recoveryProvider: provider,
-                        recoveryClaim: claim
+                        recoveryProvider: recoveryProvider,
+                        recoveryClaim: recoveryClaim
                     )
                     reconciled.append(operation.id)
                     continue
@@ -137,8 +180,8 @@ public struct RunRecovery: Sendable {
 
                 try await confirmPendingOperation(
                     for: operation,
-                    recoveryProvider: nil,
-                    recoveryClaim: nil
+                    recoveryProvider: recoveryProvider,
+                    recoveryClaim: recoveryClaim
                 )
                 reconciled.append(operation.id)
             }
@@ -153,16 +196,35 @@ public struct RunRecovery: Sendable {
                     detail: "\(reconciled.count) operations reconciled."
                 )
             )
-            try await stores.journal.markReconciled(runID: replay.runID)
+            do {
+                try await stores.journal.markReconciled(runID: replay.runID)
+            } catch {
+                // Atomic replacement may commit and then surface an I/O error.
+                // Release the exact barriers only when a separate durable read
+                // positively proves that this sync set has no unfinished run.
+                let durablyReconciled: Bool
+                do {
+                    durablyReconciled = try await stores.journal.unfinishedRun(
+                        for: replay.syncSetID
+                    ) == nil
+                } catch {
+                    durablyReconciled = false
+                }
+                guard durablyReconciled else { throw error }
+            }
         } catch {
-            for (provider, claim) in claimsToFinish {
-                await provider.abandonIndeterminateMutationRecovery(claim)
+            for claimed in claimsToFinish {
+                await claimed.provider.abandonIndeterminateMutationRecovery(
+                    claimed.claim
+                )
             }
             throw error
         }
-        for (provider, claim) in claimsToFinish {
-            await stage?.releaseDeferredArtifacts(for: claim.receipt)
-            await provider.finishIndeterminateMutationRecovery(claim)
+        for claimed in claimsToFinish {
+            await stage?.releaseDeferredArtifacts(for: claimed.claim.receipt)
+            await claimed.provider.finishIndeterminateMutationRecovery(
+                claimed.claim
+            )
         }
         return RunRecoveryReport(runID: replay.runID, reconciledOperations: reconciled, restoredRecords: restoredRecords)
     }

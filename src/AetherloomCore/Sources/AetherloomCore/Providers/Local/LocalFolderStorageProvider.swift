@@ -327,6 +327,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let context = mutationContext()
         let result: LocalMutationDeadlineResult<Void> = await mutations.perform(
             receipt: receipt,
+            expectedVolumeIdentity: expectedVolumeIdentity,
             nanoseconds: deadlines.ioNanoseconds,
             clock: deadlines.clock,
             startedAt: deadlines.now
@@ -385,6 +386,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         return try await resolveMutation(
             await mutations.perform(
                 receipt: receipt,
+                expectedVolumeIdentity: expectedVolumeIdentity,
                 nanoseconds: deadlines.ioNanoseconds,
                 clock: deadlines.clock,
                 startedAt: deadlines.now
@@ -407,6 +409,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         return try await resolveMutation(
             await mutations.perform(
                 receipt: receipt,
+                expectedVolumeIdentity: expectedVolumeIdentity,
                 nanoseconds: deadlines.ioNanoseconds,
                 clock: deadlines.clock,
                 startedAt: deadlines.now
@@ -430,6 +433,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         return try await resolveMutation(
             await mutations.perform(
                 receipt: receipt,
+                expectedVolumeIdentity: expectedVolumeIdentity,
                 nanoseconds: deadlines.ioNanoseconds,
                 clock: deadlines.clock,
                 startedAt: deadlines.now
@@ -450,6 +454,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let context = mutationContext()
         let result: LocalMutationDeadlineResult<Void> = await mutations.perform(
             receipt: receipt,
+            expectedVolumeIdentity: expectedVolumeIdentity,
             nanoseconds: deadlines.ioNanoseconds,
             clock: deadlines.clock,
             startedAt: deadlines.now
@@ -480,7 +485,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
               receipt.provider == locationID else {
             return .inFlight
         }
-        return await mutations.beginRecovery(for: receipt)
+        return await mutations.beginRecovery(
+            for: receipt,
+            expectedVolumeIdentity: expectedVolumeIdentity
+        )
     }
 
     public func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
@@ -497,12 +505,6 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         claim: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation {
         try requireRootOwnership(for: observation.path)
-        guard claim.receipt.provider == locationID else {
-            throw ProviderError.preconditionFailed(
-                provider: locationID,
-                path: observation.path
-            )
-        }
         let context = readContext()
         let result = await mutations.performRecoveryRead(
             claim: claim,
@@ -534,6 +536,16 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 reason: "Filesystem recovery probe was cancelled."
             )
         }
+    }
+
+    public func canPerformRecoveryRead(
+        with claim: ProviderMutationRecoveryClaim
+    ) async -> Bool {
+        guard rootOwnershipIssue == nil else { return false }
+        return await mutations.ownsRecoveryClaim(
+            claim,
+            expectedVolumeIdentity: expectedVolumeIdentity
+        )
     }
 
     public func finishIndeterminateMutationRecovery(
@@ -606,7 +618,9 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             rootURL: rootURL,
             ownedCanonicalRootURL: ownedCanonicalRootURL,
             volumes: volumes,
-            expectedVolumeIdentity: expectedVolumeIdentity
+            expectedVolumeIdentity: expectedVolumeIdentity,
+            nativeTrash: nativeTrash,
+            quarantine: quarantine
         )
     }
 
@@ -660,6 +674,99 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 return true
             }
         }
+    }
+
+    private static func recoveredTrashObservation(
+        receipt: LocalTrashReceipt,
+        expected: ItemObservation,
+        locationID: LocationID,
+        canonicalRoot: URL,
+        nativeTrash: any LocalNativeTrashPerforming,
+        quarantine: any LocalQuarantinePerforming
+    ) throws -> ItemObservation? {
+        func unavailable(_ detail: String) -> ProviderError {
+            .unavailable(provider: locationID, reason: detail)
+        }
+
+        guard receipt.committedAt != nil || receipt.isLegacy else {
+            throw unavailable(
+                "Trash outcome is prepared but lacks committed recoverable-trash proof."
+            )
+        }
+        guard let recoveryPath = receipt.recoveryPath else {
+            if receipt.isLegacy {
+                throw unavailable(
+                    "Legacy trash evidence has no exact recoverable artifact path."
+                )
+            }
+            return nil
+        }
+
+        let recoveryURL = URL(fileURLWithPath: recoveryPath)
+        if receipt.method == .quarantine {
+            let trashRoot = canonicalRoot
+                .appendingPathComponent(".aetherloom", isDirectory: true)
+                .appendingPathComponent("trash", isDirectory: true)
+            guard let checked = canonicalizingExistingAncestors(recoveryURL),
+                  contains(checked, in: trashRoot) else {
+                if receipt.isLegacy {
+                    throw unavailable(
+                        "Legacy quarantine evidence is not bound to the owned trash root."
+                    )
+                }
+                return nil
+            }
+        }
+
+        let artifactState: LocalRecoveryArtifactState
+        switch receipt.method {
+        case .nativeTrash:
+            artifactState = nativeTrash.artifactState(at: recoveryURL)
+        case .quarantine:
+            artifactState = quarantine.artifactState(at: recoveryURL)
+        }
+        switch artifactState {
+        case .present:
+            break
+        case .missing:
+            if receipt.isLegacy {
+                throw unavailable(
+                    "Legacy trash artifact is missing and cannot authorize recovery."
+                )
+            }
+            return nil
+        case let .unavailable(detail):
+            throw unavailable(
+                "Recoverable trash artifact could not be inspected: \(detail)"
+            )
+        }
+
+        let recovered: ItemObservation
+        do {
+            recovered = try observation(
+                locationID: locationID,
+                url: recoveryURL,
+                path: expected.path
+            )
+        } catch {
+            throw unavailable(
+                "Recoverable trash artifact metadata could not be inspected."
+            )
+        }
+        guard recovered.kind == receipt.observation.kind,
+              recovered.version.isSameVersion(as: receipt.observation.version)
+        else {
+            if receipt.isLegacy {
+                throw unavailable(
+                    "Legacy trash artifact does not match the intended item."
+                )
+            }
+            return nil
+        }
+
+        var result = receipt.observation
+        result.isTrashed = true
+        return result
     }
 
     private static func equivalentTrees(_ source: URL, _ destination: URL) throws -> Bool {
@@ -938,6 +1045,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let ownedCanonicalRootURL: URL?
         let volumes: any VolumeInspecting
         let expectedVolumeIdentity: String?
+        let nativeTrash: any LocalNativeTrashPerforming
+        let quarantine: any LocalQuarantinePerforming
 
         func checkAvailability() async -> LocationAvailability {
             guard currentOwnedCanonicalRoot() != nil else {
@@ -1178,26 +1287,14 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                   receipt.observation.version.isSameVersion(as: expected.version) else {
                 return nil
             }
-            guard receipt.committedAt != nil else {
-                throw ProviderError.unavailable(
-                    provider: locationID,
-                    reason: "Trash outcome is prepared but lacks committed recoverable-trash proof."
-                )
-            }
-            if receipt.method == .quarantine {
-                guard let recoveryPath = receipt.recoveryPath,
-                      filesystemEntryExists(
-                          at: URL(fileURLWithPath: recoveryPath)
-                      ) else {
-                    return nil
-                }
-            } else if let recoveryPath = receipt.recoveryPath,
-                      !filesystemEntryExists(at: URL(fileURLWithPath: recoveryPath)) {
-                return nil
-            }
-            var observation = receipt.observation
-            observation.isTrashed = true
-            return observation
+            return try LocalFolderStorageProvider.recoveredTrashObservation(
+                receipt: receipt,
+                expected: expected,
+                locationID: locationID,
+                canonicalRoot: canonicalRoot,
+                nativeTrash: nativeTrash,
+                quarantine: quarantine
+            )
         }
 
         private func resolvedURL(
@@ -1290,6 +1387,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             do {
                 try await requireAvailable()
                 try hook.beforeMutation(receipt)
+                try await requireAvailable()
                 let current = try matchingCurrentState(of: expected)
                 if current.isPlaceholder {
                     throw ProviderError.placeholderOnly(
@@ -1308,6 +1406,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     )
                 }
                 try fetching.copyItem(at: sourceURL, to: stagingURL)
+                try await requireAvailable()
                 _ = try matchingCurrentState(of: expected)
                 guard try LocalFolderStorageProvider.filesHaveEqualBytes(
                     sourceURL,
@@ -1344,6 +1443,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             do {
                 try await requireAvailable()
                 try hook.beforeMutation(receipt)
+                try await requireAvailable()
                 guard !path.isRoot,
                       !isInternalPath(path),
                       let destination = resolvedURL(
@@ -1402,6 +1502,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     try? FileManager.default.removeItem(at: temporary)
                 }
                 try FileManager.default.copyItem(at: stagingURL, to: temporary)
+                try await requireAvailable()
                 let committedURL: URL
                 let committedPath: SyncPath
                 if let existing {
@@ -1421,6 +1522,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     committedPath = path
                 }
                 try hook.afterPhysicalCommit(receipt)
+                try await requireAvailable()
                 return .success(
                     try LocalFolderStorageProvider.observation(
                         locationID: locationID,
@@ -1451,6 +1553,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             do {
                 try await requireAvailable()
                 try hook.beforeMutation(receipt)
+                try await requireAvailable()
                 guard !path.isRoot,
                       !isInternalPath(path),
                       let destination = resolvedURL(
@@ -1471,6 +1574,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     withIntermediateDirectories: false
                 )
                 try hook.afterPhysicalCommit(receipt)
+                try await requireAvailable()
                 return .success(
                     try LocalFolderStorageProvider.observation(
                         locationID: locationID,
@@ -1502,6 +1606,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             do {
                 try await requireAvailable()
                 try hook.beforeMutation(receipt)
+                try await requireAvailable()
                 if expected.path == newPath {
                     return .success(try matchingCurrentState(of: expected))
                 }
@@ -1521,6 +1626,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     initialSource,
                     destination.deletingLastPathComponent()
                 )
+                try await requireAvailable()
                 let current = try matchingCurrentState(of: expected)
                 guard let source = resolvedURL(
                     for: current.path,
@@ -1556,6 +1662,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         physicalCommitMayHaveApplied = false
                         throw error
                     }
+                    try await requireAvailable()
                     try hook.afterPhysicalCommit(receipt)
                     guard try LocalFolderStorageProvider.equivalentTrees(
                         source,
@@ -1585,6 +1692,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         throw error
                     }
                 }
+                try await requireAvailable()
                 return .success(
                     try LocalFolderStorageProvider.observation(
                         locationID: locationID,
@@ -1614,9 +1722,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             _ expected: ItemObservation,
             receipt: ProviderMutationReceipt
         ) async -> Result<Void, ProviderError> {
+            var physicalCommitApplied = false
             do {
                 try await requireAvailable()
                 try hook.beforeMutation(receipt)
+                try await requireAvailable()
                 if let existing = try existingEntry(at: expected.path) {
                     guard existing.observation.kind == expected.kind,
                           existing.observation.version.isSameVersion(as: expected.version) else {
@@ -1630,6 +1740,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         source: existing.url,
                         mutationReceipt: receipt
                     )
+                    physicalCommitApplied = true
+                    try await requireAvailable()
                     return .success(())
                 }
                 guard let trashed = try trashedObservation(from: expected),
@@ -1641,10 +1753,19 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
                 return .success(())
             } catch let error as ProviderError {
-                return .failure(error)
+                return .failure(
+                    physicalCommitApplied
+                        ? .mutationIndeterminate(receipt)
+                        : error
+                )
             } catch {
                 return .failure(
-                    .itemUnavailable(provider: locationID, path: expected.path)
+                    physicalCommitApplied
+                        ? .mutationIndeterminate(receipt)
+                        : .itemUnavailable(
+                            provider: locationID,
+                            path: expected.path
+                        )
                 )
             }
         }
@@ -1870,7 +1991,9 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 rootURL: rootURL,
                 ownedCanonicalRootURL: ownedCanonicalRootURL,
                 volumes: volumes,
-                expectedVolumeIdentity: expectedVolumeIdentity
+                expectedVolumeIdentity: expectedVolumeIdentity,
+                nativeTrash: nativeTrash,
+                quarantine: quarantine
             ).checkAvailability()
         }
 
@@ -1969,31 +2092,20 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                   receipt.observation.version.isSameVersion(as: expected.version) else {
                 return nil
             }
-            guard receipt.committedAt != nil else {
+            guard let canonicalRoot = currentOwnedCanonicalRoot() else {
                 throw ProviderError.unavailable(
                     provider: locationID,
-                    reason: "Trash outcome is prepared but lacks committed recoverable-trash proof."
+                    reason: "The configured local root is unavailable."
                 )
             }
-            guard let recoveryPath = receipt.recoveryPath else {
-                return nil
-            }
-            switch SystemLocalRecoveryArtifactInspector.state(
-                at: URL(fileURLWithPath: recoveryPath)
-            ) {
-            case .present:
-                break
-            case .missing:
-                return nil
-            case let .unavailable(detail):
-                throw ProviderError.unavailable(
-                    provider: locationID,
-                    reason: "Recoverable trash artifact could not be inspected: \(detail)"
-                )
-            }
-            var observation = receipt.observation
-            observation.isTrashed = true
-            return observation
+            return try LocalFolderStorageProvider.recoveredTrashObservation(
+                receipt: receipt,
+                expected: expected,
+                locationID: locationID,
+                canonicalRoot: canonicalRoot,
+                nativeTrash: nativeTrash,
+                quarantine: quarantine
+            )
         }
 
         private func trashReceiptFilename(
@@ -2180,6 +2292,8 @@ private struct LocalExistingEntry: Sendable {
 }
 
 private struct LocalTrashReceipt: Codable, Hashable, Sendable {
+    private static let currentSchemaVersion = 2
+
     enum Method: String, Codable, Hashable, Sendable {
         case nativeTrash
         case quarantine
@@ -2192,6 +2306,68 @@ private struct LocalTrashReceipt: Codable, Hashable, Sendable {
     /// Nil means only the write-ahead intent was persisted. Prepared receipts
     /// are never accepted as evidence that user content reached trash.
     var committedAt: Date?
+
+    private var schemaVersion: Int
+
+    var isLegacy: Bool {
+        schemaVersion < Self.currentSchemaVersion
+    }
+
+    init(
+        observation: ItemObservation,
+        method: Method,
+        recoveryPath: String?,
+        startedAt: Date,
+        committedAt: Date?
+    ) {
+        self.observation = observation
+        self.method = method
+        self.recoveryPath = recoveryPath
+        self.startedAt = startedAt
+        self.committedAt = committedAt
+        self.schemaVersion = Self.currentSchemaVersion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case observation
+        case method
+        case recoveryPath
+        case startedAt
+        case committedAt
+        case schemaVersion
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        observation = try container.decode(
+            ItemObservation.self,
+            forKey: .observation
+        )
+        method = try container.decode(Method.self, forKey: .method)
+        recoveryPath = try container.decodeIfPresent(
+            String.self,
+            forKey: .recoveryPath
+        )
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        committedAt = try container.decodeIfPresent(
+            Date.self,
+            forKey: .committedAt
+        )
+        schemaVersion = try container.decodeIfPresent(
+            Int.self,
+            forKey: .schemaVersion
+        ) ?? 1
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(observation, forKey: .observation)
+        try container.encode(method, forKey: .method)
+        try container.encodeIfPresent(recoveryPath, forKey: .recoveryPath)
+        try container.encode(startedAt, forKey: .startedAt)
+        try container.encodeIfPresent(committedAt, forKey: .committedAt)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+    }
 }
 
 private struct LocalTrashReceiptKey: Codable, Hashable, Sendable {

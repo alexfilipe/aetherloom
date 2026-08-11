@@ -173,6 +173,14 @@ public protocol IndeterminateMutationRecovering: StorageProvider {
         claim: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation
 
+    /// Returns true only when this provider can perform a recovery read under
+    /// the exact claim's ownership domain. Local aliases use this to reconcile
+    /// one WAL prefix without opening ordinary read admission; unrelated
+    /// providers must never authorize another provider's claim.
+    func canPerformRecoveryRead(
+        with claim: ProviderMutationRecoveryClaim
+    ) async -> Bool
+
     func finishIndeterminateMutationRecovery(
         _ claim: ProviderMutationRecoveryClaim
     ) async
@@ -187,6 +195,12 @@ public protocol IndeterminateMutationRecovering: StorageProvider {
 public extension IndeterminateMutationRecovering {
     func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
         nil
+    }
+
+    func canPerformRecoveryRead(
+        with claim: ProviderMutationRecoveryClaim
+    ) async -> Bool {
+        claim.receipt.provider == locationID
     }
 }
 

@@ -80,10 +80,14 @@ struct LocalRootOwnership: Sendable {
 /// Process-wide ownership registry. Entries are intentionally retained for the
 /// process lifetime: dropping a root owner is safe only after proving that no
 /// blocking syscall, late result, recovery receipt, or read lease remains.
-/// Canonical roots are indexed together with their stable configured-path
-/// aliases and enrolled volume identity. A broken enrolled symlink therefore
-/// keeps its owner, while an unknown unresolved alias fails closed instead of
-/// creating a possibly duplicate owner.
+/// Canonical roots are indexed by physical mount path together with their
+/// stable configured-path aliases. Volume identity remains part of alias
+/// enrollment and every provider availability check, but deliberately is not
+/// part of the ownership-domain key: replacing a volume at an enrolled mount
+/// path must not create a second coordinator while old I/O is still live.
+/// A broken enrolled symlink therefore keeps its owner, while an unknown
+/// unresolved alias fails closed instead of creating a possibly duplicate
+/// owner.
 actor LocalRootIORegistry {
     static let shared = LocalRootIORegistry()
 
@@ -94,7 +98,6 @@ actor LocalRootIORegistry {
 
     private struct CanonicalKey: Hashable, Sendable {
         var canonicalRootPath: String
-        var expectedVolumeIdentity: String?
     }
 
     private struct AliasEntry: Sendable {
@@ -131,8 +134,7 @@ actor LocalRootIORegistry {
                     )
                 }
                 let canonicalKey = CanonicalKey(
-                    canonicalRootPath: resolvedCanonicalRootPath,
-                    expectedVolumeIdentity: expectedVolumeIdentity
+                    canonicalRootPath: resolvedCanonicalRootPath
                 )
                 if let canonicalOwner = entriesByCanonical[canonicalKey] {
                     guard canonicalOwner.mutations === existing.ownership.mutations else {
@@ -166,10 +168,26 @@ actor LocalRootIORegistry {
             return existing.ownership
         }
 
+        // A replacement volume may be enrolled while the exact configured
+        // mount path is temporarily unavailable. Keep that path in its
+        // original process-wide domain even though the new enrollment has a
+        // different volume identity. The normal existing-alias path below
+        // still rejects a changed canonical target or unresolved-path hint.
+        if let enrolled = entriesByAlias.first(where: { key, _ in
+            key.configuredRootPath == configuredRootPath
+        })?.value {
+            entriesByAlias[aliasKey] = enrolled
+            return ownership(
+                configuredRootPath: configuredRootPath,
+                resolvedCanonicalRootPath: resolvedCanonicalRootPath,
+                expectedVolumeIdentity: expectedVolumeIdentity,
+                unresolvedCanonicalRootPathHint: unresolvedCanonicalRootPathHint
+            )
+        }
+
         if let resolvedCanonicalRootPath {
             let canonicalKey = CanonicalKey(
-                canonicalRootPath: resolvedCanonicalRootPath,
-                expectedVolumeIdentity: expectedVolumeIdentity
+                canonicalRootPath: resolvedCanonicalRootPath
             )
             if let existing = entriesByCanonical[canonicalKey] {
                 entriesByAlias[aliasKey] = AliasEntry(
@@ -316,6 +334,7 @@ actor LocalMutationCoordinator {
     }
 
     private var lifecycleByID: [UUID: Lifecycle] = [:]
+    private var enrolledVolumeIdentityByReceiptID: [UUID: String] = [:]
     private var pendingIDs: [UUID] = []
     private var startContinuations: [
         UUID: CheckedContinuation<ProviderMutationReceipt?, Never>
@@ -334,6 +353,7 @@ actor LocalMutationCoordinator {
 
     func perform<Value: Sendable>(
         receipt: ProviderMutationReceipt,
+        expectedVolumeIdentity: String? = "direct-coordinator-domain",
         nanoseconds: UInt64,
         clock: any ProviderDeadlineClock,
         startedAt: @escaping @Sendable () -> Date,
@@ -346,6 +366,9 @@ actor LocalMutationCoordinator {
             return .deadlineExpiredBeforeStart
         }
 
+        if let expectedVolumeIdentity {
+            enrolledVolumeIdentityByReceiptID[receipt.id] = expectedVolumeIdentity
+        }
         let gate = LocalMutationResultGate<Value>()
         lifecycleByID[receipt.id] = .pending(receipt)
         pendingIDs.append(receipt.id)
@@ -422,14 +445,35 @@ actor LocalMutationCoordinator {
         )
     }
 
+    func ownsRecoveryClaim(
+        _ claim: ProviderMutationRecoveryClaim,
+        expectedVolumeIdentity: String?
+    ) -> Bool {
+        guard lifecycleByID.count == 1,
+              let expectedVolumeIdentity,
+              enrolledVolumeIdentityByReceiptID[claim.receipt.id]
+                == expectedVolumeIdentity,
+              case let .recovering(receipt, claimToken, _) = lifecycleByID[
+                  claim.receipt.id
+              ] else {
+            return false
+        }
+        return receiptsMatchForRecovery(receipt, claim.receipt)
+            && claimToken == claim.token
+    }
+
     func beginRecovery(
-        for receipt: ProviderMutationReceipt
+        for receipt: ProviderMutationReceipt,
+        expectedVolumeIdentity: String? = "direct-coordinator-domain"
     ) -> ProviderMutationRecoveryClaimResult {
-        guard receipt.correlation != nil else {
+        guard receipt.correlation != nil,
+              let expectedVolumeIdentity else {
             return .inFlight
         }
         if let lifecycle = lifecycleByID[receipt.id] {
-            guard receiptsMatchForRecovery(lifecycle.receipt, receipt) else {
+            guard receiptsMatchForRecovery(lifecycle.receipt, receipt),
+                  enrolledVolumeIdentityByReceiptID[receipt.id]
+                    == expectedVolumeIdentity else {
                 return .inFlight
             }
             switch lifecycle {
@@ -454,6 +498,7 @@ actor LocalMutationCoordinator {
               activeReadIDs.isEmpty, activeRecoveryRead == nil else {
             return .inFlight
         }
+        enrolledVolumeIdentityByReceiptID[receipt.id] = expectedVolumeIdentity
         return claimRecovery(receipt, origin: .unknownAfterRestart)
     }
 
@@ -516,6 +561,7 @@ actor LocalMutationCoordinator {
             return
         }
         lifecycleByID[claim.receipt.id] = nil
+        enrolledVolumeIdentityByReceiptID[claim.receipt.id] = nil
         grantNextStartIfPossible()
     }
 
@@ -684,6 +730,7 @@ actor LocalMutationCoordinator {
         switch lifecycle {
         case .pending:
             lifecycleByID[id] = nil
+            enrolledVolumeIdentityByReceiptID[id] = nil
             pendingIDs.removeAll { $0 == id }
             let continuation = startContinuations.removeValue(forKey: id)
             startedAtProviders[id] = nil
@@ -732,6 +779,7 @@ actor LocalMutationCoordinator {
                 await gate.resolve(.indeterminate(receipt))
             } else {
                 lifecycleByID[id] = nil
+                enrolledVolumeIdentityByReceiptID[id] = nil
                 await gate.resolve(.completed(result))
                 grantNextStartIfPossible()
             }
@@ -786,6 +834,7 @@ actor LocalMutationCoordinator {
         for id in invalidated {
             guard case .pending = lifecycleByID[id] else { continue }
             lifecycleByID[id] = nil
+            enrolledVolumeIdentityByReceiptID[id] = nil
             startedAtProviders[id] = nil
             deadlineTasks.removeValue(forKey: id)?.cancel()
             operationTasks[id]?.cancel()

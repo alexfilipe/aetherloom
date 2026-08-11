@@ -2614,6 +2614,269 @@ struct LocalFolderStorageProviderTests {
         _ = try await restartedProvider.makeFolder(at: "/AfterRestartRecovery")
     }
 
+    @Test(arguments: LegacyTrashRecoveryOperation.allCases)
+    func legacyReceiptWithExactArtifactRecoversUnfinishedWAL(
+        _ recoveryOperation: LegacyTrashRecoveryOperation
+    ) async throws {
+        let world = try makeRoot("legacy-receipt-\(recoveryOperation.rawValue)")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Root", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        let sourceURL = root.appendingPathComponent("Legacy.txt")
+        let contents = Data("legacy exact artifact".utf8)
+        try contents.write(to: sourceURL)
+        let location = localLocation(
+            id: LocationID(recoveryOperation.locationID)
+        )
+        let initial = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            registry: LocalRootIORegistry()
+        )
+        let source = try #require(
+            (await initial.scan(.entireDrive)).observations.byPath["/Legacy.txt"]
+        )
+
+        let destinationPath: SyncPath = "/Recovered.txt"
+        if recoveryOperation == .relocate {
+            try FileManager.default.copyItem(
+                at: sourceURL,
+                to: root.appendingPathComponent("Recovered.txt")
+            )
+        }
+        let artifact = root
+            .appendingPathComponent(".aetherloom", isDirectory: true)
+            .appendingPathComponent("trash", isDirectory: true)
+            .appendingPathComponent("legacy", isDirectory: true)
+            .appendingPathComponent("Legacy.txt")
+        try FileManager.default.createDirectory(
+            at: artifact.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: sourceURL, to: artifact)
+        try writeLegacyTrashReceipt(
+            root: root,
+            observation: source,
+            method: .quarantine,
+            recoveryPath: artifact.path
+        )
+
+        let operationID = OperationID(recoveryOperation.operationID)
+        let operationKind: OperationKind = recoveryOperation == .trash
+            ? .trash(ItemRef(source))
+            : .relocate(itemRef: ItemRef(source), to: destinationPath)
+        let operation = AetherloomCore.Operation(
+            id: operationID,
+            location: location.id,
+            kind: operationKind,
+            precondition: .versionMatches(source.version)
+        )
+        let runID = recoveryOperation.runID
+        let receipt = ProviderMutationReceipt(
+            id: recoveryOperation.receiptID,
+            provider: location.id,
+            kind: recoveryOperation == .trash ? .trash : .relocate,
+            affectedPaths: recoveryOperation == .trash
+                ? [source.path]
+                : [source.path, destinationPath],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_500),
+            correlation: ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationID
+            )
+        )
+        let stores = EngineStores.inMemory()
+        try await stores.journal.begin(
+            runID: runID,
+            syncSetID: recoveryOperation.syncSetID,
+            fingerprint: PlanFingerprint(rawValue: recoveryOperation.rawValue)
+        )
+        try await stores.journal.append(.intent(operation), runID: runID)
+        try await stores.journal.append(
+            .mutationIndeterminate(
+                operationID: operationID,
+                receipt: receipt,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_501)
+            ),
+            runID: runID
+        )
+        let recoveryHook = RecordingLocalMutationHook()
+        let recoveryProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: recoveryHook,
+            registry: LocalRootIORegistry()
+        )
+        let replay = try #require(
+            try await stores.journal.unfinishedRun(
+                for: recoveryOperation.syncSetID
+            )
+        )
+
+        let report = try await RunRecovery(
+            providers: [location.id: recoveryProvider],
+            stores: stores
+        ).recover(replay)
+
+        #expect(report.reconciledOperations == [operationID])
+        #expect(
+            try await stores.journal.unfinishedRun(
+                for: recoveryOperation.syncSetID
+            ) == nil
+        )
+        #expect(recoveryHook.kinds().isEmpty)
+        #expect(try Data(contentsOf: artifact) == contents)
+        if recoveryOperation == .relocate {
+            #expect(
+                try Data(
+                    contentsOf: root.appendingPathComponent("Recovered.txt")
+                ) == contents
+            )
+        }
+        guard case .complete = (await recoveryProvider.scan(.entireDrive)).status else {
+            Issue.record("Legacy recovery did not release its exact owner.")
+            return
+        }
+    }
+
+    @Test(arguments: LegacyTrashFailureMode.allCases)
+    func legacyTrashWithoutExactArtifactProofFailsClosed(
+        _ failureMode: LegacyTrashFailureMode
+    ) async throws {
+        let world = try makeRoot("legacy-receipt-failure-\(failureMode.rawValue)")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Root", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        let sourceURL = root.appendingPathComponent("Legacy.txt")
+        try Data("legacy original".utf8).write(to: sourceURL)
+        let location = localLocation(id: LocationID(failureMode.locationID))
+        let initial = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            registry: LocalRootIORegistry()
+        )
+        let source = try #require(
+            (await initial.scan(.entireDrive)).observations.byPath["/Legacy.txt"]
+        )
+        let holding = world.appendingPathComponent("Holding.txt")
+        try FileManager.default.moveItem(at: sourceURL, to: holding)
+
+        let artifact = root
+            .appendingPathComponent(".aetherloom", isDirectory: true)
+            .appendingPathComponent("trash", isDirectory: true)
+            .appendingPathComponent("legacy", isDirectory: true)
+            .appendingPathComponent("Legacy.txt")
+        let method: LegacyTrashReceiptMethod
+        let recoveryPath: String?
+        switch failureMode {
+        case .missingArtifact:
+            method = .quarantine
+            recoveryPath = artifact.path
+        case .unavailableArtifact:
+            method = .quarantine
+            recoveryPath = artifact.path
+            try FileManager.default.createDirectory(
+                at: artifact.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.copyItem(at: holding, to: artifact)
+        case .mismatchedArtifact:
+            method = .quarantine
+            recoveryPath = artifact.path
+            try FileManager.default.createDirectory(
+                at: artifact.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("different artifact".utf8).write(to: artifact)
+        case .nativeWithoutArtifactPath:
+            method = .nativeTrash
+            recoveryPath = nil
+        }
+        try writeLegacyTrashReceipt(
+            root: root,
+            observation: source,
+            method: method,
+            recoveryPath: recoveryPath
+        )
+
+        let quarantine: any LocalQuarantinePerforming
+        if failureMode == .unavailableArtifact {
+            quarantine = UnavailableLegacyQuarantinePerformer()
+        } else {
+            quarantine = SystemLocalQuarantinePerformer()
+        }
+        let provider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            quarantine: quarantine,
+            registry: LocalRootIORegistry()
+        )
+        let operationID = OperationID(failureMode.operationID)
+        let operation = AetherloomCore.Operation(
+            id: operationID,
+            location: location.id,
+            kind: .trash(ItemRef(source)),
+            precondition: .versionMatches(source.version)
+        )
+        let runID = failureMode.runID
+        let receipt = ProviderMutationReceipt(
+            id: failureMode.receiptID,
+            provider: location.id,
+            kind: .trash,
+            affectedPaths: [source.path],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_510),
+            correlation: ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationID
+            )
+        )
+        let stores = EngineStores.inMemory()
+        try await stores.journal.begin(
+            runID: runID,
+            syncSetID: failureMode.syncSetID,
+            fingerprint: PlanFingerprint(rawValue: failureMode.rawValue)
+        )
+        try await stores.journal.append(.intent(operation), runID: runID)
+        try await stores.journal.append(
+            .mutationIndeterminate(
+                operationID: operationID,
+                receipt: receipt,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_511)
+            ),
+            runID: runID
+        )
+        let replay = try #require(
+            try await stores.journal.unfinishedRun(for: failureMode.syncSetID)
+        )
+
+        await #expect(throws: RunRecoveryError.self) {
+            _ = try await RunRecovery(
+                providers: [location.id: provider],
+                stores: stores
+            ).recover(replay)
+        }
+
+        #expect(
+            try await stores.journal.unfinishedRun(for: failureMode.syncSetID)
+                != nil
+        )
+        guard case .unavailable = (await provider.scan(.entireDrive)).status else {
+            Issue.record("Unproven legacy trash evidence released its owner.")
+            return
+        }
+        #expect(try Data(contentsOf: holding) == Data("legacy original".utf8))
+    }
+
     @Test func nativeTrashProducesRecoverableArtifact() async throws {
         let root = try makeRoot("native-trash")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -3126,7 +3389,7 @@ struct LocalFolderStorageProviderTests {
         }
     }
 
-    @Test func rootRegistrySeparatesDifferentRootsAndVolumeIdentities() async {
+    @Test func rootRegistrySeparatesPathsButUnifiesReplacementVolumes() async {
         let registry = LocalRootIORegistry()
         let first = await registry.ownership(
             canonicalRootPath: "/Volumes/One/Root",
@@ -3149,12 +3412,20 @@ struct LocalFolderStorageProviderTests {
             resolvedCanonicalRootPath: "/Volumes/One/Root",
             expectedVolumeIdentity: "volume-one"
         )
+        let unavailableReplacement = await registry.ownership(
+            configuredRootPath: "/Volumes/One/Root",
+            resolvedCanonicalRootPath: nil,
+            expectedVolumeIdentity: "volume-three",
+            unresolvedCanonicalRootPathHint: "/Volumes/One/Root"
+        )
 
         #expect(first.mutations === same.mutations)
         #expect(first.artifacts === same.artifacts)
         #expect(first.mutations === resolvedAlias.mutations)
         #expect(first.mutations !== differentRoot.mutations)
-        #expect(first.mutations !== differentVolume.mutations)
+        #expect(first.mutations === differentVolume.mutations)
+        #expect(first.artifacts === differentVolume.artifacts)
+        #expect(first.mutations === unavailableReplacement.mutations)
 
         let unresolvedUnknownAlias = await registry.ownership(
             configuredRootPath: "/Volumes/One/BrokenAlias",
@@ -3162,6 +3433,179 @@ struct LocalFolderStorageProviderTests {
             expectedVolumeIdentity: "volume-one"
         )
         #expect(unresolvedUnknownAlias.admissionIssue != nil)
+    }
+
+    @Test func replacementVolumeCannotEscapeLiveOwnerOrResumeOldMutation() async throws {
+        let world = try makeRoot("replacement-volume-live-owner")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Mounted Root", isDirectory: true)
+        let detachedV1 = world.appendingPathComponent("Detached V1", isDirectory: true)
+        let alias = world.appendingPathComponent("Mounted Alias", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: root.path
+        )
+
+        let registry = LocalRootIORegistry()
+        let inspector = ScriptedVolumeInspector()
+        await inspector.setVolumeIdentity("volume-v1")
+        let v1Clock = ProviderMutationManualClock()
+        let v1Hook = BlockingLocalMutationHook()
+        let v1Location = localLocation(
+            id: LocationID(
+                UUID(uuidString: "a7000000-0000-0000-0000-000000000001")!
+            ),
+            expectedVolumeIdentity: "volume-v1"
+        )
+        let receiptID = UUID(
+            uuidString: "a7000000-0000-0000-0000-000000000002"
+        )!
+        let v1 = await LocalFolderStorageProvider.make(
+            location: v1Location,
+            rootURL: root,
+            volumes: inspector,
+            deadlines: ProviderDeadlines(
+                ioNanoseconds: 1,
+                clock: v1Clock,
+                makeMutationID: { receiptID }
+            ),
+            mutationHook: v1Hook,
+            registry: registry
+        )
+        await v1Clock.waitUntilIdle()
+        let correlation = ProviderMutationCorrelation(
+            runID: UUID(
+                uuidString: "a7000000-0000-0000-0000-000000000003"
+            )!,
+            operationID: OperationID(
+                UUID(uuidString: "a7000000-0000-0000-0000-000000000004")!
+            )
+        )
+        let liveV1 = Task { () -> ProviderMutationReceipt? in
+            do {
+                _ = try await ProviderMutationExecutionContext.$correlation
+                    .withValue(correlation) {
+                        try await v1.makeFolder(at: "/MustNotReachV2")
+                    }
+                return nil
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                return receipt
+            } catch {
+                Issue.record("Unexpected V1 caller result: \(error)")
+                return nil
+            }
+        }
+        await v1Hook.waitUntilStarted(count: 1)
+        await v1Clock.waitUntilSleeping()
+        await v1Clock.fireAll()
+        let receipt = try #require(await liveV1.value)
+
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.moveItem(at: root, to: detachedV1)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        try Data("replacement-volume".utf8).write(
+            to: root.appendingPathComponent("Preserve.txt")
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: root.path
+        )
+        await inspector.setVolumeIdentity("volume-v2")
+
+        let v2Clock = ProviderMutationManualClock()
+        let v2Hook = RecordingLocalMutationHook()
+        let v2Location = localLocation(
+            id: LocationID(
+                UUID(uuidString: "a7000000-0000-0000-0000-000000000005")!
+            ),
+            expectedVolumeIdentity: "volume-v2"
+        )
+        let v2 = await LocalFolderStorageProvider.make(
+            location: v2Location,
+            rootURL: alias,
+            volumes: inspector,
+            deadlines: ProviderDeadlines(
+                ioNanoseconds: 1,
+                clock: v2Clock
+            ),
+            mutationHook: v2Hook,
+            registry: registry
+        )
+        guard case .unavailable = (await v2.scan(.entireDrive)).status else {
+            Issue.record("Replacement alias escaped the live V1 owner.")
+            v1Hook.release()
+            return
+        }
+
+        let v2Attempt = Task { () -> Bool in
+            do {
+                _ = try await v2.makeFolder(at: "/MustNotStartOnV2")
+                return false
+            } catch let error as ProviderError {
+                if case .mutationDeadlineExpiredBeforeStart = error {
+                    return true
+                }
+                Issue.record("Unexpected V2 admission result: \(error)")
+                return false
+            } catch {
+                Issue.record("Unexpected V2 admission result: \(error)")
+                return false
+            }
+        }
+        await v2Clock.waitUntilSleeping()
+        await v2Clock.fireAll()
+        #expect(await v2Attempt.value)
+        #expect(v2Hook.kinds().isEmpty)
+
+        v1Hook.release()
+        await waitForProviderMutationQuiescence(v1, receipt: receipt)
+        guard case .quiescent(.failed) = await v1
+            .indeterminateMutationState(for: receipt) else {
+            Issue.record("V1 replacement detection did not retain recovery ownership.")
+            return
+        }
+        guard case .unavailable = (await v2.scan(.entireDrive)).status else {
+            Issue.record("Replacement root escaped the retained V1 receipt.")
+            return
+        }
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("MustNotReachV2").path
+            )
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("MustNotStartOnV2").path
+            )
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: detachedV1.appendingPathComponent("MustNotReachV2").path
+            )
+        )
+        #expect(
+            try Data(contentsOf: root.appendingPathComponent("Preserve.txt"))
+                == Data("replacement-volume".utf8)
+        )
+
+        guard case let .claimed(claim) = await v1
+            .beginIndeterminateMutationRecovery(for: receipt) else {
+            Issue.record("V1 replacement receipt could not be claimed.")
+            return
+        }
+        #expect(await v2.canPerformRecoveryRead(with: claim) == false)
+        await v1.finishIndeterminateMutationRecovery(claim)
+        guard case .complete = (await v2.scan(.entireDrive)).status else {
+            Issue.record("V2 did not resume after exact V1 barrier release.")
+            return
+        }
     }
 
     @Test func sharedRegistryUnifiesCanonicalAndSymlinkAliasesAcrossLocations() async throws {
@@ -3240,6 +3684,183 @@ struct LocalFolderStorageProviderTests {
         await aliasProvider.finishIndeterminateMutationRecovery(claim)
         guard case .complete = (await canonicalProvider.scan(.entireDrive)).status else {
             Issue.record("Canonical alias stayed blocked after reconciliation.")
+            return
+        }
+    }
+
+    @Test(arguments: MultiAliasRecoveryScenario.allCases)
+    func multiAliasWALPrefixRecoversUnderOneExactOwner(
+        _ scenario: MultiAliasRecoveryScenario
+    ) async throws {
+        let world = try makeRoot("multi-alias-recovery-\(scenario.rawValue)")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Root", isDirectory: true)
+        let alias = world.appendingPathComponent("Alias", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("AppliedByA"),
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: root.path
+        )
+
+        let locationA = localLocation(
+            id: LocationID(
+                UUID(uuidString: "a8000000-0000-0000-0000-000000000001")!
+            )
+        )
+        let locationB = localLocation(
+            id: LocationID(
+                UUID(uuidString: "a8000000-0000-0000-0000-000000000002")!
+            )
+        )
+        let operationA = AetherloomCore.Operation(
+            id: scenario.receiptOperationID,
+            location: locationA.id,
+            kind: .makeFolder(at: "/AppliedByA"),
+            precondition: .pathAbsent
+        )
+        let operationB = AetherloomCore.Operation(
+            id: scenario.intentOnlyOperationID,
+            location: locationB.id,
+            kind: .makeFolder(at: "/UnappliedByB"),
+            precondition: .pathAbsent
+        )
+        let syncSetID = UUID(
+            uuidString: "a8000000-0000-0000-0000-000000000003"
+        )!
+        let runID = UUID(
+            uuidString: "a8000000-0000-0000-0000-000000000004"
+        )!
+        let receipt = ProviderMutationReceipt(
+            id: UUID(
+                uuidString: "a8000000-0000-0000-0000-000000000005"
+            )!,
+            provider: locationA.id,
+            kind: .makeFolder,
+            affectedPaths: ["/AppliedByA"],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_400),
+            correlation: ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationA.id
+            )
+        )
+
+        let journalRoot = world.appendingPathComponent("Journal")
+        let writerJournal: any RunJournalStore
+        if scenario.restartsProcess {
+            writerJournal = try FileRunJournalStore(rootURL: journalRoot)
+        } else {
+            writerJournal = InMemoryRunJournalStore()
+        }
+        try await writerJournal.begin(
+            runID: runID,
+            syncSetID: syncSetID,
+            fingerprint: PlanFingerprint(rawValue: scenario.rawValue)
+        )
+        try await writerJournal.append(.intent(operationA), runID: runID)
+        try await writerJournal.append(.intent(operationB), runID: runID)
+        try await writerJournal.append(
+            .mutationIndeterminate(
+                operationID: operationA.id,
+                receipt: receipt,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_401)
+            ),
+            runID: runID
+        )
+        let activeJournal: any RunJournalStore
+        if scenario.restartsProcess {
+            activeJournal = try FileRunJournalStore(rootURL: journalRoot)
+        } else {
+            activeJournal = writerJournal
+        }
+        let stores = EngineStores(
+            baseRecords: InMemoryBaseRecordStore(),
+            journal: activeJournal,
+            conflicts: InMemoryConflictStore(),
+            adviceCache: InMemoryAdviceCacheStore(),
+            activity: InMemoryActivityStore(),
+            locations: InMemoryLocationRegistry()
+        )
+
+        let registry = LocalRootIORegistry()
+        let hookA = RecordingLocalMutationHook()
+        let hookB = RecordingLocalMutationHook()
+        let providerA = await LocalFolderStorageProvider.make(
+            location: locationA,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: hookA,
+            registry: registry
+        )
+        let providerB = await LocalFolderStorageProvider.make(
+            location: locationB,
+            rootURL: alias,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: hookB,
+            registry: registry
+        )
+        if !scenario.restartsProcess {
+            guard case let .claimed(claim) = await providerA
+                .beginIndeterminateMutationRecovery(for: receipt) else {
+                Issue.record("Same-process receipt could not establish its owner.")
+                return
+            }
+            await providerA.abandonIndeterminateMutationRecovery(claim)
+            guard case .unavailable = (await providerB.scan(.entireDrive)).status else {
+                Issue.record("Alias B crossed A's same-process recovery barrier.")
+                return
+            }
+        }
+
+        let syncSet = SyncSet(
+            id: syncSetID,
+            name: "Alias recovery",
+            locations: [locationA.id, locationB.id],
+            createdAt: Date(timeIntervalSince1970: 1_800_000_400),
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_400)
+        )
+        let idSequence = LockedUUIDSequence(
+            (0 ..< 64).map {
+                DeterministicID.uuid(
+                    "multi-alias-recovery",
+                    scenario.rawValue,
+                    String($0)
+                )
+            }
+        )
+        let orchestrator = SyncOrchestrator(
+            locations: [locationA.id: locationA, locationB.id: locationB],
+            providers: [locationA.id: providerA, locationB.id: providerB],
+            stores: stores,
+            stage: ContentStage(
+                rootDirectory: world.appendingPathComponent("Stage"),
+                byteLimit: 1_000_000
+            ),
+            environment: EngineEnvironment(
+                now: { Date(timeIntervalSince1970: 1_800_000_402) },
+                makeID: idSequence.next
+            )
+        )
+        let preparation = try await orchestrator.prepare(syncSet)
+
+        #expect(preparation.outcome.planValue != nil)
+        #expect(try await activeJournal.unfinishedRun(for: syncSetID) == nil)
+        #expect(hookA.kinds().isEmpty)
+        #expect(hookB.kinds().isEmpty)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("UnappliedByB").path
+            )
+        )
+        guard case .complete = (await providerA.scan(.entireDrive)).status,
+              case .complete = (await providerB.scan(.entireDrive)).status else {
+            Issue.record("Aliases did not reopen after exact WAL reconciliation.")
             return
         }
     }
@@ -3665,16 +4286,50 @@ struct LocalFolderStorageProviderTests {
         )
     }
 
+    private func writeLegacyTrashReceipt(
+        root: URL,
+        observation: ItemObservation,
+        method: LegacyTrashReceiptMethod,
+        recoveryPath: String?
+    ) throws {
+        let receiptDirectory = root
+            .appendingPathComponent(".aetherloom", isDirectory: true)
+            .appendingPathComponent("trash-receipts", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: receiptDirectory,
+            withIntermediateDirectories: true
+        )
+        let key = LegacyTrashReceiptKey(
+            location: observation.location,
+            path: observation.path,
+            kind: observation.kind
+        )
+        let keyData = try CanonicalCoding.encoder().encode(key)
+        let receipt = LegacyTrashReceiptFixture(
+            observation: observation,
+            method: method,
+            recoveryPath: recoveryPath,
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        try CanonicalCoding.encoder().encode(receipt).write(
+            to: receiptDirectory.appendingPathComponent(
+                CanonicalCoding.sha256Hex(keyData) + ".json"
+            ),
+            options: .atomic
+        )
+    }
+
     private func localLocation(
         id: LocationID = LocationID(),
-        kind: ProviderKind = .localFolder
+        kind: ProviderKind = .localFolder,
+        expectedVolumeIdentity: String = "scripted-volume"
     ) -> SyncLocation {
         SyncLocation(
             id: id,
             kind: kind,
             configuration: [
                 LocalFolderStorageProvider.expectedVolumeIdentityConfigurationKey:
-                    "scripted-volume",
+                    expectedVolumeIdentity,
             ]
         )
     }
@@ -3831,6 +4486,122 @@ enum CrossVolumeCopyFailureMode: String, CaseIterable, Sendable {
             UUID(uuidString: "a6000000-0000-0000-0000-000000000023")!
         }
     }
+}
+
+enum MultiAliasRecoveryScenario: String, CaseIterable, Sendable {
+    case sameProcessReceiptFirst
+    case sameProcessReceiptLast
+    case restartReceiptFirst
+    case restartReceiptLast
+
+    var restartsProcess: Bool {
+        self == .restartReceiptFirst || self == .restartReceiptLast
+    }
+
+    var receiptOperationID: OperationID {
+        OperationID(
+            UUID(
+                uuidString: self == .sameProcessReceiptFirst
+                    || self == .restartReceiptFirst
+                    ? "a8000000-0000-0000-0000-000000000010"
+                    : "a8000000-0000-0000-0000-000000000012"
+            )!
+        )
+    }
+
+    var intentOnlyOperationID: OperationID {
+        OperationID(
+            UUID(
+                uuidString: self == .sameProcessReceiptFirst
+                    || self == .restartReceiptFirst
+                    ? "a8000000-0000-0000-0000-000000000011"
+                    : "a8000000-0000-0000-0000-000000000009"
+            )!
+        )
+    }
+}
+
+enum LegacyTrashRecoveryOperation: String, CaseIterable, Sendable {
+    case trash
+    case relocate
+
+    private var tail: String {
+        self == .trash ? "1" : "2"
+    }
+
+    var locationID: UUID {
+        UUID(uuidString: "a9000000-0000-0000-0000-00000000000\(tail)")!
+    }
+
+    var operationID: UUID {
+        UUID(uuidString: "a9000000-0000-0000-0000-00000000001\(tail)")!
+    }
+
+    var receiptID: UUID {
+        UUID(uuidString: "a9000000-0000-0000-0000-00000000002\(tail)")!
+    }
+
+    var runID: UUID {
+        UUID(uuidString: "a9000000-0000-0000-0000-00000000003\(tail)")!
+    }
+
+    var syncSetID: UUID {
+        UUID(uuidString: "a9000000-0000-0000-0000-00000000004\(tail)")!
+    }
+}
+
+enum LegacyTrashFailureMode: String, CaseIterable, Sendable {
+    case missingArtifact
+    case unavailableArtifact
+    case mismatchedArtifact
+    case nativeWithoutArtifactPath
+
+    private var tail: String {
+        switch self {
+        case .missingArtifact: "1"
+        case .unavailableArtifact: "2"
+        case .mismatchedArtifact: "3"
+        case .nativeWithoutArtifactPath: "4"
+        }
+    }
+
+    var locationID: UUID {
+        UUID(uuidString: "aa000000-0000-0000-0000-00000000000\(tail)")!
+    }
+
+    var operationID: UUID {
+        UUID(uuidString: "aa000000-0000-0000-0000-00000000001\(tail)")!
+    }
+
+    var receiptID: UUID {
+        UUID(uuidString: "aa000000-0000-0000-0000-00000000002\(tail)")!
+    }
+
+    var runID: UUID {
+        UUID(uuidString: "aa000000-0000-0000-0000-00000000003\(tail)")!
+    }
+
+    var syncSetID: UUID {
+        UUID(uuidString: "aa000000-0000-0000-0000-00000000004\(tail)")!
+    }
+}
+
+private enum LegacyTrashReceiptMethod: String, Codable, Sendable {
+    case nativeTrash
+    case quarantine
+}
+
+private struct LegacyTrashReceiptFixture: Codable, Sendable {
+    var observation: ItemObservation
+    var method: LegacyTrashReceiptMethod
+    var recoveryPath: String?
+    var startedAt: Date
+}
+
+private struct LegacyTrashReceiptKey: Codable, Sendable {
+    var location: LocationID
+    var path: SyncPath
+    var kind: ItemKind
 }
 
 private actor BlockingReadVolumeInspector: VolumeInspecting {
@@ -4054,6 +4825,20 @@ private struct ThrowWithoutMovingQuarantinePerformer: LocalQuarantinePerforming 
 
     func artifactState(at _: URL) -> LocalRecoveryArtifactState {
         .unavailable(detail: "Inspection must not matter while the source remains.")
+    }
+}
+
+private struct UnavailableLegacyQuarantinePerformer:
+    LocalQuarantinePerforming
+{
+    struct UnexpectedMove: Error {}
+
+    func moveItem(at _: URL, to _: URL) throws {
+        throw UnexpectedMove()
+    }
+
+    func artifactState(at _: URL) -> LocalRecoveryArtifactState {
+        .unavailable(detail: "Scripted legacy artifact inspection failure.")
     }
 }
 
