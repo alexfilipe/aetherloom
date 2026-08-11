@@ -686,7 +686,7 @@ import Testing
     )
     #expect(replay.indeterminateReceiptsByOperation[relocate.id] == receipt)
     let intent = try #require(
-        replay.events.compactMap { event -> Operation? in
+        replay.events.compactMap { event -> AetherloomCore.Operation? in
             guard case let .intent(operation) = event else { return nil }
             return operation
         }.first
