@@ -229,12 +229,22 @@ actor LocalRootIORegistry {
 /// only after all physical read work returns. Caller-visible read deadlines
 /// and cancellation never release a lease early.
 actor LocalMutationCoordinator {
+    private enum RecoveryOrigin: Sendable {
+        case quiescent(ProviderLateMutationOutcome)
+        case unknownAfterRestart
+    }
+
     private enum Lifecycle: Sendable {
         case pending(ProviderMutationReceipt)
         case started(ProviderMutationReceipt)
         case indeterminate(ProviderMutationReceipt)
         case quiescent(ProviderMutationReceipt, ProviderLateMutationOutcome)
-        case recovering(ProviderMutationReceipt)
+        case awaitingRecovery(ProviderMutationReceipt)
+        case recovering(
+            ProviderMutationReceipt,
+            claimToken: UUID,
+            origin: RecoveryOrigin
+        )
 
         var receipt: ProviderMutationReceipt {
             switch self {
@@ -242,7 +252,8 @@ actor LocalMutationCoordinator {
                  let .started(receipt),
                  let .indeterminate(receipt),
                  let .quiescent(receipt, _),
-                 let .recovering(receipt):
+                 let .awaitingRecovery(receipt),
+                 let .recovering(receipt, _, _):
                 return receipt
             }
         }
@@ -261,6 +272,7 @@ actor LocalMutationCoordinator {
 
     private var activeReadIDs: Set<UUID> = []
     private var activeRecoveryRead: (id: UUID, receiptID: UUID)?
+    private var pendingRecoveryAbandonmentTokens: Set<UUID> = []
     private var readTasks: [UUID: Task<Void, Never>] = [:]
     private var readDeadlineTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -330,7 +342,7 @@ actor LocalMutationCoordinator {
     }
 
     func performRecoveryRead<Value: Sendable>(
-        for receipt: ProviderMutationReceipt,
+        claim: ProviderMutationRecoveryClaim,
         nanoseconds: UInt64,
         clock: any ProviderDeadlineClock,
         operation: @escaping @Sendable () async -> Value
@@ -339,18 +351,15 @@ actor LocalMutationCoordinator {
         guard nanoseconds > 0 else { return .timedOut }
         guard activeReadIDs.isEmpty, activeRecoveryRead == nil,
               lifecycleByID.count == 1,
-              let lifecycle = lifecycleByID[receipt.id],
-              lifecycle.receipt.identifiesSameMutation(as: receipt) else {
+              case let .recovering(receipt, claimToken, _) = lifecycleByID[
+                  claim.receipt.id
+              ],
+              receipt == claim.receipt,
+              claimToken == claim.token else {
             return .blocked(barrierReceipt())
         }
-        switch lifecycle {
-        case .quiescent, .recovering:
-            break
-        case .pending, .started, .indeterminate:
-            return .blocked(lifecycle.receipt)
-        }
         return await startRead(
-            recoveryReceipt: receipt,
+            recoveryReceipt: claim.receipt,
             nanoseconds: nanoseconds,
             clock: clock,
             operation: operation
@@ -359,18 +368,26 @@ actor LocalMutationCoordinator {
 
     func beginRecovery(
         for receipt: ProviderMutationReceipt
-    ) -> ProviderIndeterminateMutationState {
+    ) -> ProviderMutationRecoveryClaimResult {
         if let lifecycle = lifecycleByID[receipt.id] {
-            guard lifecycle.receipt.identifiesSameMutation(as: receipt) else {
+            guard lifecycle.receipt == receipt else {
                 return .inFlight
             }
             switch lifecycle {
             case .pending, .started, .indeterminate:
                 return .inFlight
             case let .quiescent(_, outcome):
-                return .quiescent(outcome)
+                return claimRecovery(
+                    receipt,
+                    origin: .quiescent(outcome)
+                )
+            case .awaitingRecovery:
+                return claimRecovery(
+                    receipt,
+                    origin: .unknownAfterRestart
+                )
             case .recovering:
-                return activeRecoveryRead == nil ? .unknownAfterRestart : .inFlight
+                return .inFlight
             }
         }
 
@@ -378,8 +395,7 @@ actor LocalMutationCoordinator {
               activeReadIDs.isEmpty, activeRecoveryRead == nil else {
             return .inFlight
         }
-        lifecycleByID[receipt.id] = .recovering(receipt)
-        return .unknownAfterRestart
+        return claimRecovery(receipt, origin: .unknownAfterRestart)
     }
 
     func barrierReceipt() -> ProviderMutationReceipt? {
@@ -402,7 +418,7 @@ actor LocalMutationCoordinator {
                 ? .unknownAfterRestart
                 : .inFlight
         }
-        guard lifecycle.receipt.identifiesSameMutation(as: receipt) else {
+        guard lifecycle.receipt == receipt else {
             return .inFlight
         }
         switch lifecycle {
@@ -410,8 +426,10 @@ actor LocalMutationCoordinator {
             return .inFlight
         case let .quiescent(_, outcome):
             return .quiescent(outcome)
+        case .awaitingRecovery:
+            return .unknownAfterRestart
         case .recovering:
-            return activeRecoveryRead == nil ? .unknownAfterRestart : .inFlight
+            return .inFlight
         }
     }
 
@@ -423,24 +441,53 @@ actor LocalMutationCoordinator {
             switch lifecycle {
             case let .indeterminate(receipt), let .quiescent(receipt, _):
                 return receipt
-            case .pending, .started, .recovering:
+            case .pending, .started, .awaitingRecovery, .recovering:
                 return nil
             }
         }.first
     }
 
-    func finishRecovery(for receipt: ProviderMutationReceipt) {
+    func finishRecovery(_ claim: ProviderMutationRecoveryClaim) {
         guard activeRecoveryRead == nil,
-              let lifecycle = lifecycleByID[receipt.id],
-              lifecycle.receipt.identifiesSameMutation(as: receipt) else {
+              case let .recovering(receipt, claimToken, _) = lifecycleByID[
+                  claim.receipt.id
+              ],
+              receipt == claim.receipt,
+              claimToken == claim.token else {
             return
         }
-        switch lifecycle {
-        case .quiescent, .recovering:
-            lifecycleByID[receipt.id] = nil
-            grantNextStartIfPossible()
-        case .pending, .started, .indeterminate:
-            break
+        lifecycleByID[claim.receipt.id] = nil
+        grantNextStartIfPossible()
+    }
+
+    func abandonRecovery(_ claim: ProviderMutationRecoveryClaim) {
+        guard case let .recovering(receipt, claimToken, origin) = lifecycleByID[
+                  claim.receipt.id
+              ],
+              receipt == claim.receipt,
+              claimToken == claim.token else {
+            return
+        }
+        if let activeRecoveryRead {
+            guard activeRecoveryRead.receiptID == receipt.id else { return }
+            // The caller may time out before the blocking recovery probe
+            // returns. Retain both the read lease and claim until physical
+            // completion, then restore the receipt barrier for retry.
+            pendingRecoveryAbandonmentTokens.insert(claimToken)
+            return
+        }
+        restoreRecoveryBarrier(receipt, origin: origin)
+    }
+
+    private func restoreRecoveryBarrier(
+        _ receipt: ProviderMutationReceipt,
+        origin: RecoveryOrigin
+    ) {
+        switch origin {
+        case let .quiescent(outcome):
+            lifecycleByID[receipt.id] = .quiescent(receipt, outcome)
+        case .unknownAfterRestart:
+            lifecycleByID[receipt.id] = .awaitingRecovery(receipt)
         }
     }
 
@@ -498,7 +545,15 @@ actor LocalMutationCoordinator {
         readDeadlineTasks.removeValue(forKey: id)?.cancel()
         activeReadIDs.remove(id)
         if activeRecoveryRead?.id == id {
+            let receiptID = activeRecoveryRead?.receiptID
             activeRecoveryRead = nil
+            if let receiptID,
+               case let .recovering(receipt, claimToken, origin) = lifecycleByID[
+                   receiptID
+               ],
+               pendingRecoveryAbandonmentTokens.remove(claimToken) != nil {
+                restoreRecoveryBarrier(receipt, origin: origin)
+            }
         }
         await gate.resolve(.completed(value))
         grantNextStartIfPossible()
@@ -554,7 +609,7 @@ actor LocalMutationCoordinator {
     private var hasRecoveryBarrier: Bool {
         lifecycleByID.values.contains { lifecycle in
             switch lifecycle {
-            case .indeterminate, .quiescent, .recovering:
+            case .indeterminate, .quiescent, .awaitingRecovery, .recovering:
                 return true
             case .pending, .started:
                 return false
@@ -586,7 +641,7 @@ actor LocalMutationCoordinator {
             await invalidatePendingMutations()
             await gate.resolve(.indeterminate(receipt))
 
-        case .indeterminate, .quiescent, .recovering:
+        case .indeterminate, .quiescent, .awaitingRecovery, .recovering:
             break
         }
     }
@@ -620,9 +675,22 @@ actor LocalMutationCoordinator {
             }
             lifecycleByID[id] = .quiescent(receipt, lateOutcome)
 
-        case .pending, .quiescent, .recovering:
+        case .pending, .quiescent, .awaitingRecovery, .recovering:
             break
         }
+    }
+
+    private func claimRecovery(
+        _ receipt: ProviderMutationReceipt,
+        origin: RecoveryOrigin
+    ) -> ProviderMutationRecoveryClaimResult {
+        let claim = ProviderMutationRecoveryClaim(receipt: receipt)
+        lifecycleByID[receipt.id] = .recovering(
+            receipt,
+            claimToken: claim.token,
+            origin: origin
+        )
+        return .claimed(claim)
     }
 
     private func abandonTaskThatNeverStarted(_ id: UUID) {

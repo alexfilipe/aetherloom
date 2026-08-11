@@ -918,15 +918,34 @@ private actor RecoveryGatedProvider: IndeterminateMutationRecovering {
         state
     }
 
+    func beginIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderMutationRecoveryClaimResult {
+        switch state {
+        case .inFlight:
+            return .inFlight
+        case .quiescent, .unknownAfterRestart:
+            return .claimed(
+                ProviderMutationRecoveryClaim(receipt: receipt)
+            )
+        }
+    }
+
     func currentStateForRecovery(
         of observation: ItemObservation,
-        receipt _: ProviderMutationReceipt
+        claim _: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation {
         recoveryProbes += 1
         return try await base.currentState(of: observation)
     }
 
-    func finishIndeterminateMutationRecovery(for _: ProviderMutationReceipt) async {}
+    func finishIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {}
+
+    func abandonIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {}
 
     func setState(_ state: ProviderIndeterminateMutationState) {
         self.state = state

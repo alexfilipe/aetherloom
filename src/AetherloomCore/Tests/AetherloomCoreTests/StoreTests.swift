@@ -207,7 +207,11 @@ import Testing
         provider: operation.location,
         kind: .store,
         affectedPaths: [operation.kind.targetPath],
-        startedAt: phaseDate
+        startedAt: Date(timeIntervalSince1970: 1_800_000_000.123_456_7),
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
     )
     let event = JournalEvent.mutationIndeterminate(
         operationID: operation.id,
@@ -231,6 +235,13 @@ import Testing
     #expect(replay.events == [.intent(operation), event])
     #expect(replay.pendingOperationIDs == [operation.id])
     #expect(replay.indeterminateReceiptsByOperation == [operation.id: receipt])
+    let durableReceipt = try #require(
+        replay.indeterminateReceiptsByOperation[operation.id]
+    )
+    #expect(durableReceipt.identity == receipt.identity)
+    #expect(durableReceipt == receipt)
+    #expect(durableReceipt.correlation == receipt.correlation)
+    #expect(durableReceipt.startedAt != receipt.startedAt)
 }
 
 @Test func runJournalRejectsIndeterminateReceiptBeforeIntent() async throws {

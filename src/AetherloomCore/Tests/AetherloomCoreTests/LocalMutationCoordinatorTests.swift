@@ -113,7 +113,13 @@ import Testing
     #expect(await coordinator.retainedOperationCount() == 0)
     #expect(await coordinator.barrierReceipt() == receipt)
 
-    await coordinator.finishRecovery(for: receipt)
+    guard case let .claimed(claim) = await coordinator.beginRecovery(
+        for: receipt
+    ) else {
+        Issue.record("Quiescent mutation could not be claimed for recovery.")
+        return
+    }
+    await coordinator.finishRecovery(claim)
     #expect(await coordinator.barrierReceipt() == nil)
 }
 
@@ -206,7 +212,13 @@ import Testing
     await firstGate.release()
     await waitForQuiescence(coordinator, receipt: firstReceipt)
 
-    await coordinator.finishRecovery(for: firstReceipt)
+    guard case let .claimed(claim) = await coordinator.beginRecovery(
+        for: firstReceipt
+    ) else {
+        Issue.record("Quiescent mutation could not be claimed for recovery.")
+        return
+    }
+    await coordinator.finishRecovery(claim)
     #expect(await secondCalls.count() == 0)
 
     let freshResult = await coordinator.perform(
@@ -365,11 +377,17 @@ import Testing
     let wrongReceipt = mutationReceipt("000000000012", kind: .relocate)
     let recoveryCalls = MutationInvocationCounter()
 
-    #expect(await coordinator.beginRecovery(for: receipt) == .unknownAfterRestart)
+    guard case let .claimed(claim) = await coordinator.beginRecovery(
+        for: receipt
+    ) else {
+        Issue.record("Restart receipt was not claimed.")
+        return
+    }
+    #expect(await coordinator.beginRecovery(for: receipt) == .inFlight)
     #expect(await coordinator.beginRecovery(for: wrongReceipt) == .inFlight)
 
     let wrongRead = await coordinator.performRecoveryRead(
-        for: wrongReceipt,
+        claim: ProviderMutationRecoveryClaim(receipt: wrongReceipt),
         nanoseconds: 1,
         clock: ManualMutationDeadlineClock()
     ) {
@@ -384,7 +402,7 @@ import Testing
     #expect(await recoveryCalls.count() == 0)
 
     let rightRead = await coordinator.performRecoveryRead(
-        for: receipt,
+        claim: claim,
         nanoseconds: 1,
         clock: ManualMutationDeadlineClock()
     ) {
@@ -396,7 +414,138 @@ import Testing
         return
     }
     #expect(await recoveryCalls.count() == 1)
-    await coordinator.finishRecovery(for: receipt)
+    await coordinator.abandonRecovery(claim)
+    #expect(await coordinator.barrierReceipt() == receipt)
+    guard case let .claimed(retryClaim) = await coordinator.beginRecovery(
+        for: receipt
+    ) else {
+        Issue.record("Abandoned recovery could not be reclaimed safely.")
+        return
+    }
+    await coordinator.finishRecovery(retryClaim)
+    #expect(await coordinator.barrierReceipt() == nil)
+}
+
+@Test func recoveryCannotBypassUnrelatedReadOrMutationOwner() async {
+    let coordinator = LocalMutationCoordinator()
+    let recoveryReceipt = mutationReceipt("000000000013", kind: .relocate)
+    let recoveryCalls = MutationInvocationCounter()
+    let readGate = ControlledReadOperation(value: 1)
+
+    let read = Task {
+        await coordinator.performRead(
+            nanoseconds: 1,
+            clock: ManualMutationDeadlineClock()
+        ) {
+            await readGate.run()
+        }
+    }
+    await readGate.waitUntilStarted()
+    #expect(await coordinator.beginRecovery(for: recoveryReceipt) == .inFlight)
+    let readBlocked = await coordinator.performRecoveryRead(
+        claim: ProviderMutationRecoveryClaim(receipt: recoveryReceipt),
+        nanoseconds: 1,
+        clock: ManualMutationDeadlineClock()
+    ) {
+        await recoveryCalls.record()
+        return 2
+    }
+    guard case .blocked = readBlocked else {
+        Issue.record("Recovery bypassed an unrelated ordinary read.")
+        await readGate.release()
+        return
+    }
+    #expect(await recoveryCalls.count() == 0)
+    await readGate.release()
+    _ = await read.value
+
+    let mutationReceipt = mutationReceipt("000000000014", kind: .store)
+    let mutationGate = ControlledMutationOperation<Int>()
+    let mutation = Task {
+        await coordinator.perform(
+            receipt: mutationReceipt,
+            nanoseconds: 1,
+            clock: ManualMutationDeadlineClock(),
+            startedAt: { mutationReceipt.startedAt }
+        ) { _ in
+            await mutationGate.run(returning: .success(3))
+        }
+    }
+    await mutationGate.waitUntilStarted()
+    #expect(await coordinator.beginRecovery(for: recoveryReceipt) == .inFlight)
+    let mutationBlocked = await coordinator.performRecoveryRead(
+        claim: ProviderMutationRecoveryClaim(receipt: recoveryReceipt),
+        nanoseconds: 1,
+        clock: ManualMutationDeadlineClock()
+    ) {
+        await recoveryCalls.record()
+        return 4
+    }
+    guard case .blocked = mutationBlocked else {
+        Issue.record("Recovery bypassed an unrelated live mutation.")
+        await mutationGate.release()
+        _ = await mutation.value
+        return
+    }
+    #expect(await recoveryCalls.count() == 0)
+    await mutationGate.release()
+    _ = await mutation.value
+
+    guard case let .claimed(claim) = await coordinator.beginRecovery(
+        for: recoveryReceipt
+    ) else {
+        Issue.record("Recovery did not become claimable after owners drained.")
+        return
+    }
+    await coordinator.finishRecovery(claim)
+}
+
+@Test func recoveryTimeoutRetainsClaimUntilPhysicalReadReturns() async {
+    let coordinator = LocalMutationCoordinator()
+    let receipt = mutationReceipt("000000000015", kind: .relocate)
+    let clock = ManualMutationDeadlineClock()
+    let readGate = ControlledReadOperation(value: 1)
+    guard case let .claimed(claim) = await coordinator.beginRecovery(
+        for: receipt
+    ) else {
+        Issue.record("Restart receipt was not claimed.")
+        return
+    }
+
+    let read = Task {
+        await coordinator.performRecoveryRead(
+            claim: claim,
+            nanoseconds: 1,
+            clock: clock
+        ) {
+            await readGate.run()
+        }
+    }
+    await readGate.waitUntilStarted()
+    await clock.waitUntilSleeping()
+    await clock.fireAll()
+    guard case .timedOut = await read.value else {
+        Issue.record("Recovery read did not return its caller deadline.")
+        await readGate.release()
+        return
+    }
+
+    await coordinator.abandonRecovery(claim)
+    #expect(await coordinator.beginRecovery(for: receipt) == .inFlight)
+    #expect(await coordinator.retainedReadCount() == 1)
+
+    await readGate.release()
+    while await coordinator.retainedReadCount() != 0 {
+        await Task.yield()
+    }
+    #expect(await coordinator.barrierReceipt() == receipt)
+    guard case let .claimed(retryClaim) = await coordinator.beginRecovery(
+        for: receipt
+    ) else {
+        Issue.record("Completed late recovery read did not restore retry ownership.")
+        return
+    }
+    await coordinator.finishRecovery(retryClaim)
     #expect(await coordinator.barrierReceipt() == nil)
 }
 

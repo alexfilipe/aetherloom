@@ -423,7 +423,15 @@ public struct ScheduleExecutor: Sendable {
                 )
             }
 
-            let applied = try await apply(operation, provider: provider)
+            let applied = try await ProviderMutationExecutionContext.$correlation
+                .withValue(
+                    ProviderMutationCorrelation(
+                        runID: runID,
+                        operationID: operation.id
+                    )
+                ) {
+                    try await apply(operation, provider: provider)
+                }
             switch applied {
             case let .applied(observation, staged):
                 let record = OperationExecutionRecord(

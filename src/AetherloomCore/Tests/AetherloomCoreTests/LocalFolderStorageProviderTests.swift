@@ -717,7 +717,12 @@ struct LocalFolderStorageProviderTests {
         hook.release()
         await waitForProviderMutationQuiescence(provider, receipt: receipt)
         #expect(try Data(contentsOf: staging) == contents)
-        await provider.finishIndeterminateMutationRecovery(for: receipt)
+        guard case let .claimed(claim) = await provider
+            .beginIndeterminateMutationRecovery(for: receipt) else {
+            Issue.record("Fetch recovery could not claim the receipt.")
+            return
+        }
+        await provider.finishIndeterminateMutationRecovery(claim)
         guard case .complete = (await provider.scan(.entireDrive)).status else {
             Issue.record("Provider stayed blocked after fetch reconciliation.")
             return
@@ -1362,6 +1367,54 @@ struct LocalFolderStorageProviderTests {
         )
     }
 
+    @Test func preparedNativeTrashReceiptNeverProvesLaterAbsence() async throws {
+        let root = try makeRoot("prepared-native-trash-receipt")
+        let outside = try makeRoot("prepared-native-trash-outside")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let sourceURL = root.appendingPathComponent("Prepared.txt")
+        try Data("prepared only".utf8).write(to: sourceURL)
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(
+                properties: VolumeProperties(
+                    isCaseSensitive: true,
+                    supportsNativeTrash: true,
+                    isNetwork: false
+                )
+            ),
+            nativeTrash: FailingNativeTrashThatBlocksQuarantine(
+                root: root,
+                outside: outside
+            )
+        )
+        let observation = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath[
+                "/Prepared.txt"
+            ]
+        )
+
+        await #expect(throws: ProviderError.self) {
+            try await provider.trash(observation)
+        }
+        #expect(FileManager.default.fileExists(atPath: sourceURL.path))
+
+        // Simulate a later independent absence. A write-ahead-only receipt
+        // must not let Aetherloom attribute that absence to its failed trash.
+        try FileManager.default.removeItem(at: sourceURL)
+        await #expect(
+            throws: ProviderError.notFound(
+                provider: provider.locationID,
+                path: observation.path
+            )
+        ) {
+            _ = try await provider.currentState(of: observation)
+        }
+    }
+
     @Test func nativeTrashProducesRecoverableArtifact() async throws {
         let root = try makeRoot("native-trash")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1502,6 +1555,77 @@ struct LocalFolderStorageProviderTests {
         #expect(
             FileManager.default.fileExists(
                 atPath: root.appendingPathComponent("AfterRead").path
+            )
+        )
+    }
+
+    @Test func fullScanTimeoutRetainsLeaseThroughFinalValidation() async throws {
+        let root = try makeRoot("final-scan-validation-lease")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = LocalRootIORegistry()
+        let inspector = BlockingReadVolumeInspector()
+        let scanClock = ProviderMutationManualClock()
+        let writerClock = ProviderMutationManualClock()
+        let location = localLocation()
+        let scanner = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: inspector,
+            deadlines: ProviderDeadlines(
+                scanNanoseconds: 1,
+                clock: scanClock
+            ),
+            registry: registry
+        )
+        let hook = RecordingLocalMutationHook()
+        let writer = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            deadlines: ProviderDeadlines(
+                ioNanoseconds: 1,
+                clock: writerClock
+            ),
+            mutationHook: hook,
+            registry: registry
+        )
+        await scanClock.waitUntilIdle()
+        await writerClock.waitUntilIdle()
+        await inspector.blockMountInspection(number: 2)
+
+        let scan = Task { await scanner.scan(.entireDrive) }
+        await inspector.waitUntilBlocked()
+        await scanClock.waitUntilSleeping()
+        await scanClock.fireAll()
+        guard case .incomplete = (await scan.value).status else {
+            Issue.record("The caller did not receive the scan deadline.")
+            await inspector.release()
+            return
+        }
+
+        let mutation = Task {
+            try await writer.makeFolder(at: "/AfterFinalValidation")
+        }
+        await writerClock.waitUntilSleeping()
+        #expect(hook.kinds().isEmpty)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("AfterFinalValidation").path
+            )
+        )
+        guard case .unavailable = (await writer.scan(.entireDrive)).status else {
+            Issue.record("A later read crossed writer-preferred admission.")
+            await inspector.release()
+            _ = try? await mutation.value
+            return
+        }
+
+        await inspector.release()
+        _ = try await mutation.value
+        #expect(hook.kinds() == [.makeFolder])
+        #expect(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("AfterFinalValidation").path
             )
         )
     }
@@ -1661,6 +1785,95 @@ struct LocalFolderStorageProviderTests {
             expectedVolumeIdentity: "volume-one"
         )
         #expect(unresolvedUnknownAlias.admissionIssue != nil)
+    }
+
+    @Test func sharedRegistryUnifiesCanonicalAndSymlinkAliasesAcrossLocations() async throws {
+        let world = try makeRoot("shared-registry-aliases")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let target = world.appendingPathComponent("Target", isDirectory: true)
+        let alias = world.appendingPathComponent("Alias", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: target.path
+        )
+        let clock = ProviderMutationManualClock()
+        let hook = BlockingLocalMutationHook()
+        let aliasLocation = localLocation(
+            id: LocationID(
+                UUID(uuidString: "a2000000-0000-0000-0000-000000000021")!
+            )
+        )
+        let canonicalLocation = localLocation(
+            id: LocationID(
+                UUID(uuidString: "a2000000-0000-0000-0000-000000000022")!
+            )
+        )
+        let aliasProvider = await LocalFolderStorageProvider.make(
+            location: aliasLocation,
+            rootURL: alias,
+            volumes: ScriptedVolumeInspector(),
+            deadlines: ProviderDeadlines(ioNanoseconds: 1, clock: clock),
+            mutationHook: hook
+        )
+        let canonicalProvider = await LocalFolderStorageProvider.make(
+            location: canonicalLocation,
+            rootURL: target,
+            volumes: ScriptedVolumeInspector()
+        )
+        await clock.waitUntilIdle()
+
+        let mutation = Task { () -> ProviderMutationReceipt? in
+            do {
+                _ = try await aliasProvider.makeFolder(at: "/LateAlias")
+                return nil
+            } catch let ProviderError.mutationIndeterminate(receipt) {
+                return receipt
+            } catch {
+                Issue.record("Unexpected alias mutation error: \(error)")
+                return nil
+            }
+        }
+        await hook.waitUntilStarted(count: 1)
+        await clock.waitUntilSleeping()
+        await clock.fireAll()
+        let receipt = try #require(await mutation.value)
+
+        #expect(
+            await canonicalProvider.indeterminateMutationState(for: receipt)
+                == .inFlight
+        )
+        guard case .unavailable = (await canonicalProvider.scan(.entireDrive)).status else {
+            Issue.record("Canonical alias escaped the shared live owner.")
+            hook.release()
+            return
+        }
+
+        hook.release()
+        await waitForProviderMutationQuiescence(aliasProvider, receipt: receipt)
+        #expect(
+            await canonicalProvider.beginIndeterminateMutationRecovery(
+                for: receipt
+            ) == .inFlight
+        )
+        guard case let .claimed(claim) = await aliasProvider
+            .beginIndeterminateMutationRecovery(for: receipt) else {
+            Issue.record("Alias receipt could not be claimed after quiescence.")
+            return
+        }
+        await canonicalProvider.finishIndeterminateMutationRecovery(claim)
+        guard case .unavailable = (await canonicalProvider.scan(.entireDrive)).status else {
+            Issue.record("A differently attributed alias released the recovery claim.")
+            return
+        }
+        await aliasProvider.finishIndeterminateMutationRecovery(claim)
+        guard case .complete = (await canonicalProvider.scan(.entireDrive)).status else {
+            Issue.record("Canonical alias stayed blocked after reconciliation.")
+            return
+        }
     }
 
     @Test func brokenSymlinkReconstructionRetainsLiveCanonicalRootOwner() async throws {
@@ -1877,16 +2090,21 @@ struct LocalFolderStorageProviderTests {
                 == .quiescent(.succeeded)
         )
         #expect(await provider.indeterminateMutationReceipt() == receipt)
+        guard case let .claimed(claim) = await provider
+            .beginIndeterminateMutationRecovery(for: receipt) else {
+            Issue.record("Store recovery could not claim the receipt.")
+            return
+        }
         let recovered = try await provider.currentStateForRecovery(
             of: ItemObservation(
                 location: provider.locationID,
                 path: "/Late.txt",
                 kind: .file
             ),
-            receipt: receipt
+            claim: claim
         )
         #expect(recovered.path == "/Late.txt")
-        await provider.finishIndeterminateMutationRecovery(for: receipt)
+        await provider.finishIndeterminateMutationRecovery(claim)
         #expect(await provider.indeterminateMutationReceipt() == nil)
 
         guard case .complete = (await provider.scan(.entireDrive)).status else {
@@ -1944,7 +2162,12 @@ struct LocalFolderStorageProviderTests {
                 atPath: root.appendingPathComponent("Failure.txt").path
             )
         )
-        await provider.finishIndeterminateMutationRecovery(for: receipt)
+        guard case let .claimed(claim) = await provider
+            .beginIndeterminateMutationRecovery(for: receipt) else {
+            Issue.record("Failed store recovery could not claim the receipt.")
+            return
+        }
+        await provider.finishIndeterminateMutationRecovery(claim)
     }
 
     private func makeRoot(_ name: String) throws -> URL {
@@ -1981,13 +2204,18 @@ struct LocalFolderStorageProviderTests {
 }
 
 private actor BlockingReadVolumeInspector: VolumeInspecting {
-    private var shouldBlockNextMount = false
+    private var mountCallCount = 0
+    private var blockedMountCall: Int?
     private var mountIsBlocked = false
     private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
     func blockNextMountInspection() {
-        shouldBlockNextMount = true
+        blockedMountCall = mountCallCount + 1
+    }
+
+    func blockMountInspection(number: Int) {
+        blockedMountCall = number
     }
 
     func waitUntilBlocked() async {
@@ -2007,8 +2235,9 @@ private actor BlockingReadVolumeInspector: VolumeInspecting {
     }
 
     func mountState(for _: URL) async -> VolumeMountState {
-        if shouldBlockNextMount {
-            shouldBlockNextMount = false
+        mountCallCount += 1
+        if blockedMountCall == mountCallCount {
+            blockedMountCall = nil
             mountIsBlocked = true
             let observers = blockedWaiters
             blockedWaiters.removeAll()
@@ -2063,6 +2292,31 @@ private struct AlwaysFailingNativeTrashPerformer: LocalNativeTrashPerforming {
     struct ExpectedFailure: Error {}
 
     func trashItem(at _: URL) throws -> URL? {
+        throw ExpectedFailure()
+    }
+}
+
+private struct FailingNativeTrashThatBlocksQuarantine:
+    LocalNativeTrashPerforming
+{
+    struct ExpectedFailure: Error {}
+
+    let root: URL
+    let outside: URL
+
+    func trashItem(at _: URL) throws -> URL? {
+        let internalRoot = root.appendingPathComponent(
+            ".aetherloom",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: internalRoot,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: internalRoot.appendingPathComponent("trash"),
+            withDestinationURL: outside
+        )
         throw ExpectedFailure()
     }
 }

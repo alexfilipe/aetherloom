@@ -17,38 +17,91 @@ public protocol StorageProvider: Sendable {
     func currentState(of observation: ItemObservation) async throws -> ItemObservation
 }
 
+public struct ProviderMutationIdentity: Codable, Hashable, Sendable {
+    public var id: UUID
+    public var provider: LocationID
+    public var kind: ProviderMutationKind
+    public var affectedPaths: [SyncPath]
+
+    public init(
+        id: UUID,
+        provider: LocationID,
+        kind: ProviderMutationKind,
+        affectedPaths: [SyncPath]
+    ) {
+        self.id = id
+        self.provider = provider
+        self.kind = kind
+        self.affectedPaths = affectedPaths
+    }
+}
+
+/// Durable engine correlation for repairing a failed indeterminate-event WAL
+/// append. Shape alone is not enough: two sync sets can authorize identical
+/// provider operations against one root.
+public struct ProviderMutationCorrelation: Codable, Hashable, Sendable {
+    public var runID: UUID
+    public var operationID: OperationID
+
+    public init(runID: UUID, operationID: OperationID) {
+        self.runID = runID
+        self.operationID = operationID
+    }
+}
+
+enum ProviderMutationExecutionContext {
+    @TaskLocal static var correlation: ProviderMutationCorrelation?
+}
+
 /// A durable identity for a provider mutation whose caller-visible deadline
 /// expired after the provider had allowed blocking work to start.
+///
+/// Equality and hashing intentionally use `identity` only. `startedAt` is
+/// timestamp evidence and canonical JSON may round it at sub-millisecond
+/// precision; `correlation` proves which engine intent authorized the call but
+/// does not change the provider mutation's stable identity.
 public struct ProviderMutationReceipt: Codable, Hashable, Sendable {
     public var id: UUID
     public var provider: LocationID
     public var kind: ProviderMutationKind
     public var affectedPaths: [SyncPath]
     public var startedAt: Date
+    public var correlation: ProviderMutationCorrelation?
 
     public init(
         id: UUID,
         provider: LocationID,
         kind: ProviderMutationKind,
         affectedPaths: [SyncPath],
-        startedAt: Date
+        startedAt: Date,
+        correlation: ProviderMutationCorrelation? = nil
     ) {
         self.id = id
         self.provider = provider
         self.kind = kind
         self.affectedPaths = affectedPaths
         self.startedAt = startedAt
+        self.correlation = correlation
     }
 
-    /// Compares the durable mutation identity without relying on `startedAt`.
-    /// Canonical JSON preserves wall-clock ordering but may round a `Date` at
-    /// sub-millisecond precision, so the timestamp is evidence rather than an
-    /// identity field during same-process journal recovery.
-    func identifiesSameMutation(as other: ProviderMutationReceipt) -> Bool {
-        id == other.id
-            && provider == other.provider
-            && kind == other.kind
-            && affectedPaths == other.affectedPaths
+    public var identity: ProviderMutationIdentity {
+        ProviderMutationIdentity(
+            id: id,
+            provider: provider,
+            kind: kind,
+            affectedPaths: affectedPaths
+        )
+    }
+
+    public static func == (
+        lhs: ProviderMutationReceipt,
+        rhs: ProviderMutationReceipt
+    ) -> Bool {
+        lhs.identity == rhs.identity
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(identity)
     }
 }
 
@@ -74,6 +127,23 @@ public enum ProviderIndeterminateMutationState: Codable, Hashable, Sendable {
     case unknownAfterRestart
 }
 
+/// An unforgeable in-process claim spanning every recovery probe, durable
+/// reconciliation, and barrier release for one receipt.
+public struct ProviderMutationRecoveryClaim: Hashable, Sendable {
+    public var token: UUID
+    public var receipt: ProviderMutationReceipt
+
+    public init(token: UUID = UUID(), receipt: ProviderMutationReceipt) {
+        self.token = token
+        self.receipt = receipt
+    }
+}
+
+public enum ProviderMutationRecoveryClaimResult: Hashable, Sendable {
+    case inFlight
+    case claimed(ProviderMutationRecoveryClaim)
+}
+
 /// Optional refinement for providers that can retain blocking mutations past a
 /// caller deadline. Recovery uses this seam only for a journaled indeterminate
 /// mutation; normal planning continues to use `StorageProvider`.
@@ -87,35 +157,34 @@ public protocol IndeterminateMutationRecovering: StorageProvider {
         for receipt: ProviderMutationReceipt
     ) async -> ProviderIndeterminateMutationState
 
-    /// Atomically claims recovery ownership for a journaled receipt. A local
-    /// provider uses this to distinguish a genuine process restart from an
-    /// in-process reconstruction that still has another root owner or read.
+    /// Atomically claims recovery ownership for a journaled receipt. A claim
+    /// remains exclusive across every truth probe and the journal commit.
     func beginIndeterminateMutationRecovery(
         for receipt: ProviderMutationReceipt
-    ) async -> ProviderIndeterminateMutationState
+    ) async -> ProviderMutationRecoveryClaimResult
 
     /// Recovery-only metadata read. The provider must keep ordinary scans,
     /// probes, and mutations blocked until `finishIndeterminateMutationRecovery`
     /// is called.
     func currentStateForRecovery(
         of observation: ItemObservation,
-        receipt: ProviderMutationReceipt
+        claim: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation
 
     func finishIndeterminateMutationRecovery(
-        for receipt: ProviderMutationReceipt
+        _ claim: ProviderMutationRecoveryClaim
+    ) async
+
+    /// Releases only the recovery-session claim after a failed probe or WAL
+    /// commit. The receipt barrier remains and a later recovery may retry.
+    func abandonIndeterminateMutationRecovery(
+        _ claim: ProviderMutationRecoveryClaim
     ) async
 }
 
 public extension IndeterminateMutationRecovering {
     func indeterminateMutationReceipt() async -> ProviderMutationReceipt? {
         nil
-    }
-
-    func beginIndeterminateMutationRecovery(
-        for receipt: ProviderMutationReceipt
-    ) async -> ProviderIndeterminateMutationState {
-        await indeterminateMutationState(for: receipt)
     }
 }
 

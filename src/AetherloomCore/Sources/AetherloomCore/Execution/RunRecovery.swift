@@ -56,107 +56,126 @@ public struct RunRecovery: Sendable {
         }
 
         var reconciled: [OperationID] = []
-        var receiptsToFinish: [(any IndeterminateMutationRecovering, ProviderMutationReceipt)] = []
-        for operation in pendingOperations.sorted(by: { $0.id < $1.id }) {
-            var receipt = replay.indeterminateReceiptsByOperation[operation.id]
-            if receipt == nil,
-               let discovered = try await discoverIndeterminateReceipt(
-                   for: operation
-               ) {
-                // Repair the WAL before inspecting or releasing the owned
-                // mutation. A second persistence failure leaves the intent
-                // unfinished and the provider barrier intact.
-                try await stores.journal.append(
-                    .mutationIndeterminate(
-                        operationID: operation.id,
-                        receipt: discovered,
-                        occurredAt: environment.now()
-                    ),
-                    runID: replay.runID
-                )
-                receipt = discovered
-            }
-            if let receipt {
-                guard receiptMatches(receipt, operation: operation) else {
-                    throw RunRecoveryError
-                        .indeterminateMutationProviderCannotRecover(
-                            operationID: operation.id
+        var claimsToFinish: [(
+            any IndeterminateMutationRecovering,
+            ProviderMutationRecoveryClaim
+        )] = []
+        do {
+            for operation in pendingOperations.sorted(by: { $0.id < $1.id }) {
+                var receipt = replay.indeterminateReceiptsByOperation[operation.id]
+                if receipt == nil,
+                   let discovered = try await discoverIndeterminateReceipt(
+                       for: operation,
+                       runID: replay.runID
+                   ) {
+                    // Repair the WAL before inspecting or releasing the owned
+                    // mutation. A second persistence failure leaves the intent
+                    // unfinished and the provider barrier intact.
+                    try await stores.journal.append(
+                        .mutationIndeterminate(
+                            operationID: operation.id,
+                            receipt: discovered,
+                            occurredAt: environment.now()
+                        ),
+                        runID: replay.runID
+                    )
+                    receipt = discovered
+                }
+                if let receipt {
+                    guard receiptMatches(
+                        receipt,
+                        operation: operation,
+                        runID: replay.runID
+                    ) else {
+                        throw RunRecoveryError
+                            .indeterminateMutationProviderCannotRecover(
+                                operationID: operation.id
+                            )
+                    }
+                    guard let provider = providers[receipt.provider]
+                        as? any IndeterminateMutationRecovering else {
+                        throw RunRecoveryError
+                            .indeterminateMutationProviderCannotRecover(
+                                operationID: operation.id
+                            )
+                    }
+                    let claim: ProviderMutationRecoveryClaim
+                    switch await provider.beginIndeterminateMutationRecovery(
+                        for: receipt
+                    ) {
+                    case .inFlight:
+                        throw RunRecoveryError.indeterminateMutationStillRunning(
+                            operationID: operation.id,
+                            receiptID: receipt.id
                         )
-                }
-                guard let provider = providers[receipt.provider]
-                    as? any IndeterminateMutationRecovering else {
-                    throw RunRecoveryError.indeterminateMutationProviderCannotRecover(
-                        operationID: operation.id
-                    )
-                }
-                switch await provider.beginIndeterminateMutationRecovery(for: receipt) {
-                case .inFlight:
-                    throw RunRecoveryError.indeterminateMutationStillRunning(
-                        operationID: operation.id,
-                        receiptID: receipt.id
-                    )
-                case .quiescent, .unknownAfterRestart:
-                    break
-                }
-                if receipt.kind == .fetch {
-                    // A fetch writes only to the engine's staging area. The
-                    // destination mutation could not start until materialize
-                    // returned, so quiescence confirms that the journaled
-                    // operation itself was never applied.
+                    case let .claimed(value):
+                        claim = value
+                    }
+                    claimsToFinish.append((provider, claim))
+                    if receipt.kind == .fetch {
+                        // A fetch writes only to the engine's staging area. The
+                        // destination mutation could not start until materialize
+                        // returned, so quiescence confirms that the journaled
+                        // operation itself was never applied.
+                        reconciled.append(operation.id)
+                        continue
+                    }
+                    guard receipt.provider == operation.location else {
+                        throw RunRecoveryError
+                            .indeterminateMutationProviderCannotRecover(
+                                operationID: operation.id
+                            )
+                    }
+                    if let record = try await confirmedRecord(
+                        for: operation,
+                        syncSetID: replay.syncSetID,
+                        recoveryProvider: provider,
+                        recoveryClaim: claim
+                    ) {
+                        try await stores.baseRecords.apply(.upsert(record))
+                        restoredRecords += 1
+                    }
                     reconciled.append(operation.id)
-                    receiptsToFinish.append((provider, receipt))
                     continue
                 }
-                guard receipt.provider == operation.location else {
-                    throw RunRecoveryError
-                        .indeterminateMutationProviderCannotRecover(
-                            operationID: operation.id
-                        )
-                }
+
                 if let record = try await confirmedRecord(
                     for: operation,
-                    syncSetID: replay.syncSetID,
-                    recoveryProvider: provider,
-                    receipt: receipt
+                    syncSetID: replay.syncSetID
                 ) {
                     try await stores.baseRecords.apply(.upsert(record))
                     restoredRecords += 1
+                    reconciled.append(operation.id)
                 }
-                reconciled.append(operation.id)
-                receiptsToFinish.append((provider, receipt))
-                continue
             }
 
-            if let record = try await confirmedRecord(
-                for: operation,
-                syncSetID: replay.syncSetID
-            ) {
-                try await stores.baseRecords.apply(.upsert(record))
-                restoredRecords += 1
-                reconciled.append(operation.id)
-            }
-        }
-
-        await stores.activity.append(
-            ActivityEntry(
-                occurredAt: environment.now(),
-                syncSetID: replay.syncSetID,
-                runID: replay.runID,
-                category: .safety,
-                message: ActivityMessageCatalog.recoveryPerformed,
-                detail: "\(reconciled.count) operations reconciled."
+            await stores.activity.append(
+                ActivityEntry(
+                    occurredAt: environment.now(),
+                    syncSetID: replay.syncSetID,
+                    runID: replay.runID,
+                    category: .safety,
+                    message: ActivityMessageCatalog.recoveryPerformed,
+                    detail: "\(reconciled.count) operations reconciled."
+                )
             )
-        )
-        try await stores.journal.markReconciled(runID: replay.runID)
-        for (provider, receipt) in receiptsToFinish {
-            await stage?.releaseDeferredArtifacts(for: receipt)
-            await provider.finishIndeterminateMutationRecovery(for: receipt)
+            try await stores.journal.markReconciled(runID: replay.runID)
+        } catch {
+            for (provider, claim) in claimsToFinish {
+                await provider.abandonIndeterminateMutationRecovery(claim)
+            }
+            throw error
+        }
+        for (provider, claim) in claimsToFinish {
+            await stage?.releaseDeferredArtifacts(for: claim.receipt)
+            await provider.finishIndeterminateMutationRecovery(claim)
         }
         return RunRecoveryReport(runID: replay.runID, reconciledOperations: reconciled, restoredRecords: restoredRecords)
     }
 
     private func discoverIndeterminateReceipt(
-        for operation: Operation
+        for operation: Operation,
+        runID: UUID
     ) async throws -> ProviderMutationReceipt? {
         var candidateIDs = [operation.location]
         if case let .transfer(content, _, _) = operation.kind,
@@ -172,7 +191,15 @@ public struct RunRecovery: Sendable {
             else {
                 continue
             }
-            guard receiptMatches(receipt, operation: operation),
+            guard receipt.correlation == ProviderMutationCorrelation(
+                      runID: runID,
+                      operationID: operation.id
+                  ),
+                  receiptMatches(
+                      receipt,
+                      operation: operation,
+                      runID: runID
+                  ),
                   discovered == nil || discovered == receipt else {
                 throw RunRecoveryError
                     .indeterminateMutationProviderCannotRecover(
@@ -188,7 +215,7 @@ public struct RunRecovery: Sendable {
         for operation: Operation,
         syncSetID: UUID,
         recoveryProvider: (any IndeterminateMutationRecovering)? = nil,
-        receipt: ProviderMutationReceipt? = nil
+        recoveryClaim: ProviderMutationRecoveryClaim? = nil
     ) async throws -> BaseRecord? {
         guard let provider = providers[operation.location] else {
             throw RunRecoveryError.providerTruthUnavailable(
@@ -200,14 +227,25 @@ public struct RunRecovery: Sendable {
 
         switch operation.kind {
         case let .makeFolder(path):
+            let expected = ItemObservation(
+                location: operation.location,
+                path: path,
+                kind: .folder
+            )
             let current = try await recoveryState(
-                of: ItemObservation(location: operation.location, path: path, kind: .folder),
+                of: expected,
                 provider: provider,
                 recoveryProvider: recoveryProvider,
-                receipt: receipt,
+                recoveryClaim: recoveryClaim,
                 operationID: operation.id
             )
-            guard let current, current.isFolder, !current.isTrashed else { return nil }
+            guard let current else { return nil }
+            try requireRecoveryAttribution(
+                current,
+                expected: expected,
+                operationID: operation.id,
+                permitsTrashed: false
+            )
             return BaseRecord(
                 id: environment.makeID(),
                 syncSetID: syncSetID,
@@ -221,14 +259,31 @@ public struct RunRecovery: Sendable {
             )
 
         case let .transfer(content, path, _):
+            let expected = ItemObservation(
+                location: operation.location,
+                path: path,
+                kind: content.kind
+            )
             let current = try await recoveryState(
-                of: ItemObservation(location: operation.location, path: path, kind: content.kind),
+                of: expected,
                 provider: provider,
                 recoveryProvider: recoveryProvider,
-                receipt: receipt,
+                recoveryClaim: recoveryClaim,
                 operationID: operation.id
             )
-            guard let current, matchingRecoveredContent(current.version, content.expectedVersion) else { return nil }
+            guard let current else { return nil }
+            try requireRecoveryAttribution(
+                current,
+                expected: expected,
+                operationID: operation.id,
+                permitsTrashed: false
+            )
+            guard matchingRecoveredContent(
+                current.version,
+                content.expectedVersion
+            ) else {
+                return nil
+            }
             return BaseRecord(
                 id: environment.makeID(),
                 syncSetID: syncSetID,
@@ -259,14 +314,14 @@ public struct RunRecovery: Sendable {
                 of: destinationProbe,
                 provider: provider,
                 recoveryProvider: recoveryProvider,
-                receipt: receipt,
+                recoveryClaim: recoveryClaim,
                 operationID: operation.id
             )
             let resolvedSource = await recoveryStateResult(
                 of: itemRef.observation,
                 provider: provider,
                 recoveryProvider: recoveryProvider,
-                receipt: receipt,
+                recoveryClaim: recoveryClaim,
                 operationID: operation.id
             )
             let destination = try resolvedDestination.get()
@@ -334,10 +389,28 @@ public struct RunRecovery: Sendable {
                 of: itemRef.observation,
                 provider: provider,
                 recoveryProvider: recoveryProvider,
-                receipt: receipt,
+                recoveryClaim: recoveryClaim,
                 operationID: operation.id
             )
-            guard current?.isTrashed == true else { return nil }
+            guard let current else { return nil }
+            try requireRecoveryAttribution(
+                current,
+                expected: itemRef.observation,
+                operationID: operation.id,
+                permitsTrashed: true
+            )
+            guard current.isTrashed else { return nil }
+            guard observation(
+                current,
+                matches: itemRef,
+                at: itemRef.path,
+                mayBeTrashed: true
+            ) else {
+                throw RunRecoveryError.providerTruthUnavailable(
+                    operationID: operation.id,
+                    detail: "Trash proof does not match the intended item identity or version."
+                )
+            }
             return BaseRecord(
                 id: environment.makeID(),
                 syncSetID: syncSetID,
@@ -357,14 +430,14 @@ public struct RunRecovery: Sendable {
         of observation: ItemObservation,
         provider: any StorageProvider,
         recoveryProvider: (any IndeterminateMutationRecovering)?,
-        receipt: ProviderMutationReceipt?,
+        recoveryClaim: ProviderMutationRecoveryClaim?,
         operationID: OperationID
     ) async throws -> ItemObservation? {
         do {
-            if let recoveryProvider, let receipt {
+            if let recoveryProvider, let recoveryClaim {
                 return try await recoveryProvider.currentStateForRecovery(
                     of: observation,
-                    receipt: receipt
+                    claim: recoveryClaim
                 )
             }
             return try await provider.currentState(of: observation)
@@ -382,7 +455,7 @@ public struct RunRecovery: Sendable {
         of observation: ItemObservation,
         provider: any StorageProvider,
         recoveryProvider: (any IndeterminateMutationRecovering)?,
-        receipt: ProviderMutationReceipt?,
+        recoveryClaim: ProviderMutationRecoveryClaim?,
         operationID: OperationID
     ) async -> Result<ItemObservation?, RunRecoveryError> {
         do {
@@ -391,7 +464,7 @@ public struct RunRecovery: Sendable {
                     of: observation,
                     provider: provider,
                     recoveryProvider: recoveryProvider,
-                    receipt: receipt,
+                    recoveryClaim: recoveryClaim,
                     operationID: operationID
                 )
             )
@@ -422,6 +495,24 @@ public struct RunRecovery: Sendable {
             && (expected.itemID == nil || observation.itemID == expected.itemID)
     }
 
+    private func requireRecoveryAttribution(
+        _ current: ItemObservation,
+        expected: ItemObservation,
+        operationID: OperationID,
+        permitsTrashed: Bool
+    ) throws {
+        guard current.location == expected.location,
+              current.path == expected.path,
+              current.kind == expected.kind,
+              !current.isPlaceholder,
+              permitsTrashed || !current.isTrashed else {
+            throw RunRecoveryError.providerTruthUnavailable(
+                operationID: operationID,
+                detail: "Provider truth was not bound to the requested location, path, kind, and availability state."
+            )
+        }
+    }
+
     private func relocateUncertaintyDetail(
         destination: ItemObservation?,
         source: ItemObservation?,
@@ -450,8 +541,16 @@ public struct RunRecovery: Sendable {
 
 private func receiptMatches(
     _ receipt: ProviderMutationReceipt,
-    operation: Operation
+    operation: Operation,
+    runID: UUID
 ) -> Bool {
+    if let correlation = receipt.correlation,
+       correlation != ProviderMutationCorrelation(
+           runID: runID,
+           operationID: operation.id
+       ) {
+        return false
+    }
     switch operation.kind {
     case let .makeFolder(path):
         return receipt.provider == operation.location

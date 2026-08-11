@@ -18,24 +18,101 @@ public enum ContentStageError: Error, Equatable, Sendable {
     case cannotCreateRoot(String)
 }
 
+/// Public handle for process-wide stage-root ownership. Reconstructed
+/// orchestrators using the same canonical root share one storage actor, so
+/// startup cleanup, deterministic cache paths, pins, and receipt-bound late
+/// writes cannot race each other.
 public actor ContentStage {
+    private let storage: ContentStageStorage
+
+    public init(rootDirectory: URL, byteLimit: Int64) {
+        self.storage = ContentStageRootRegistry.storage(
+            for: rootDirectory,
+            byteLimit: byteLimit
+        )
+    }
+
+    public func materialize(
+        _ ref: ContentRef,
+        from provider: any StorageProvider
+    ) async throws -> StagedContent {
+        try await storage.materialize(ref, from: provider)
+    }
+
+    public func release(_ content: StagedContent) async {
+        await storage.release(content)
+    }
+
+    func deferRelease(
+        _ content: StagedContent,
+        for receipt: ProviderMutationReceipt
+    ) async {
+        await storage.deferRelease(content, for: receipt)
+    }
+
+    func releaseDeferredArtifacts(
+        for receipt: ProviderMutationReceipt
+    ) async {
+        await storage.releaseDeferredArtifacts(for: receipt)
+    }
+
+    func retainedArtifactCount(
+        for receipt: ProviderMutationReceipt
+    ) async -> Int {
+        await storage.retainedArtifactCount(for: receipt)
+    }
+}
+
+private enum ContentStageRootRegistry {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var storageByCanonicalRoot: [
+        String: ContentStageStorage
+    ] = [:]
+
+    static func storage(
+        for rootDirectory: URL,
+        byteLimit: Int64
+    ) -> ContentStageStorage {
+        let canonicalRoot = rootDirectory
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let key = canonicalRoot.path
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = storageByCanonicalRoot[key] {
+            return existing
+        }
+        let created = ContentStageStorage(
+            rootDirectory: canonicalRoot,
+            byteLimit: byteLimit
+        )
+        storageByCanonicalRoot[key] = created
+        return created
+    }
+}
+
+private actor ContentStageStorage {
     private let rootDirectory: URL
     private let byteLimit: Int64
     private var entries: [StageKey: StageEntry] = [:]
     private var keysByURL: [URL: StageKey] = [:]
     private var inFlight: [StageKey: Task<StageEntry, Error>] = [:]
-    private var deferredContentsByReceipt: [UUID: [StagedContent]] = [:]
-    private var deferredTemporaryURLsByReceipt: [UUID: Set<URL>] = [:]
+    private var deferredContentsByReceipt: [
+        ProviderMutationIdentity: [StagedContent]
+    ] = [:]
+    private var deferredTemporaryURLsByReceipt: [
+        ProviderMutationIdentity: Set<URL>
+    ] = [:]
     private var accessCounter: UInt64 = 0
     private var currentBytes: Int64 = 0
 
-    public init(rootDirectory: URL, byteLimit: Int64) {
+    init(rootDirectory: URL, byteLimit: Int64) {
         self.rootDirectory = rootDirectory
         self.byteLimit = max(byteLimit, 0)
         Self.reclaimAbandonedTemporaryFiles(in: rootDirectory)
     }
 
-    public func materialize(_ ref: ContentRef, from provider: any StorageProvider) async throws -> StagedContent {
+    func materialize(_ ref: ContentRef, from provider: any StorageProvider) async throws -> StagedContent {
         guard ref.kind == .file else {
             throw ContentStageError.unsupportedContentKind(ref.kind)
         }
@@ -62,7 +139,7 @@ public actor ContentStage {
             return pin(entry, for: key)
         } catch let lateWrite as IndeterminateStageWrite {
             inFlight[key] = nil
-            deferredTemporaryURLsByReceipt[lateWrite.receipt.id, default: []]
+            deferredTemporaryURLsByReceipt[lateWrite.receipt.identity, default: []]
                 .insert(lateWrite.temporaryURL)
             try? FileManager.default.removeItem(at: stagingURL)
             throw ProviderError.mutationIndeterminate(lateWrite.receipt)
@@ -73,7 +150,7 @@ public actor ContentStage {
         }
     }
 
-    public func release(_ content: StagedContent) async {
+    func release(_ content: StagedContent) {
         releasePinnedContent(content)
     }
 
@@ -83,19 +160,21 @@ public actor ContentStage {
         _ content: StagedContent,
         for receipt: ProviderMutationReceipt
     ) {
-        deferredContentsByReceipt[receipt.id, default: []].append(content)
+        deferredContentsByReceipt[receipt.identity, default: []].append(content)
     }
 
     /// Called only after the journal has been reconciled and the owned late
     /// operation is quiescent. It releases both destination-store pins and
     /// fetch temporary files without racing blocking filesystem work.
     func releaseDeferredArtifacts(for receipt: ProviderMutationReceipt) {
-        let contents = deferredContentsByReceipt.removeValue(forKey: receipt.id) ?? []
+        let contents = deferredContentsByReceipt.removeValue(
+            forKey: receipt.identity
+        ) ?? []
         for content in contents {
             releasePinnedContent(content)
         }
         let temporaryURLs = deferredTemporaryURLsByReceipt
-            .removeValue(forKey: receipt.id) ?? []
+            .removeValue(forKey: receipt.identity) ?? []
         for url in temporaryURLs {
             try? FileManager.default.removeItem(at: url)
         }
@@ -103,8 +182,8 @@ public actor ContentStage {
     }
 
     func retainedArtifactCount(for receipt: ProviderMutationReceipt) -> Int {
-        (deferredContentsByReceipt[receipt.id]?.count ?? 0)
-            + (deferredTemporaryURLsByReceipt[receipt.id]?.count ?? 0)
+        (deferredContentsByReceipt[receipt.identity]?.count ?? 0)
+            + (deferredTemporaryURLsByReceipt[receipt.identity]?.count ?? 0)
     }
 
     private func releasePinnedContent(_ content: StagedContent) {

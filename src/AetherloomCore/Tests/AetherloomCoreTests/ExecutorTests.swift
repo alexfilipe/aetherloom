@@ -307,22 +307,27 @@ import Testing
 }
 
 @Test func indeterminateJournalFailureNeverWritesTerminalResult() async throws {
-    let receipt = ProviderMutationReceipt(
-        id: uuid("000000000620"),
-        provider: .oneDrive,
-        kind: .makeFolder,
-        affectedPaths: ["/JournalFailure"],
-        startedAt: phase06Date
-    )
-    let provider = DeadlineMakeFolderProvider(
-        base: FakeStorageProvider(locationID: .oneDrive),
-        error: .mutationIndeterminate(receipt)
-    )
     let operation = operation(
         "000000000621",
         location: .oneDrive,
         kind: .makeFolder(at: "/JournalFailure"),
         precondition: .pathAbsent
+    )
+    let runID = uuid("000000000622")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000620"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/JournalFailure"],
+        startedAt: phase06Date,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
+    )
+    let provider = DeadlineMakeFolderProvider(
+        base: FakeStorageProvider(locationID: .oneDrive),
+        error: .mutationIndeterminate(receipt)
     )
     let plan = planForOperations([operation], path: "/JournalFailure")
     let journal = FailIndeterminateRunJournalStore()
@@ -332,8 +337,6 @@ import Testing
         stores: stores,
         name: "indeterminate-journal-failure"
     )
-    let runID = uuid("000000000622")
-
     do {
         _ = try await executor.execute(plan, runID: runID)
         Issue.record("Execution did not surface the journal failure.")
@@ -358,6 +361,129 @@ import Testing
     #expect(report.reconciledOperations == [operation.id])
     #expect(await provider.didFinishRecovery())
     #expect(try await journal.unfinishedRun(for: plan.syncSetID) == nil)
+}
+
+@Test func markReconciledFailureRetainsProviderAndStageOwnership() async throws {
+    let operation = operation(
+        "000000000629",
+        location: .oneDrive,
+        kind: .makeFolder(at: "/ReconcileFailure"),
+        precondition: .pathAbsent
+    )
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000630"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/ReconcileFailure"],
+        startedAt: phase06Date
+    )
+    let destinationBase = FakeStorageProvider(locationID: .oneDrive)
+    _ = await destinationBase.putFolder(path: "/ReconcileFailure")
+    let provider = DeadlineMakeFolderProvider(
+        base: destinationBase,
+        error: .mutationIndeterminate(receipt)
+    )
+    let journal = FailMarkReconciledRunJournalStore()
+    let stores = engineStores(journal: journal)
+    let runID = uuid("000000000631")
+    let syncSetID = uuid("000000000632")
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "mark-reconciled-failure")
+    )
+    try await journal.append(.intent(operation), runID: runID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: phase06Date
+        ),
+        runID: runID
+    )
+
+    let source = FakeStorageProvider(locationID: .googleDrive)
+    let sourceItem = await source.putFile(
+        path: "/Pinned.txt",
+        contents: Data("pinned until WAL commit".utf8),
+        modifiedAt: phase06Date
+    )
+    let stageRoot = try temporaryDirectory("phase06-mark-reconciled-stage")
+    let stage = ContentStage(rootDirectory: stageRoot, byteLimit: 0)
+    let staged = try await stage.materialize(ContentRef(sourceItem), from: source)
+    await stage.deferRelease(staged, for: receipt)
+    let replay = try #require(
+        try await journal.unfinishedRun(for: syncSetID)
+    )
+
+    await #expect(throws: FailMarkReconciledRunJournalStore.ExpectedFailure.self) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores,
+            stage: stage,
+            environment: phase06Environment()
+        ).recover(replay)
+    }
+
+    #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
+    let didFinishRecovery = await provider.didFinishRecovery()
+    #expect(!didFinishRecovery)
+    #expect(await provider.abandonedRecoveryCount() == 1)
+    #expect(await stage.retainedArtifactCount(for: receipt) == 1)
+    #expect(FileManager.default.fileExists(atPath: staged.url.path))
+}
+
+@Test func recoveryRejectsUnboundLiveReceiptWithMatchingShape() async throws {
+    let operation = operation(
+        "000000000633",
+        location: .oneDrive,
+        kind: .makeFolder(at: "/SameShape"),
+        precondition: .pathAbsent
+    )
+    let runID = uuid("000000000634")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000635"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/SameShape"],
+        startedAt: phase06Date,
+        correlation: ProviderMutationCorrelation(
+            runID: uuid("000000000636"),
+            operationID: operation.id
+        )
+    )
+    let provider = DeadlineMakeFolderProvider(
+        base: FakeStorageProvider(locationID: .oneDrive),
+        error: .mutationIndeterminate(receipt)
+    )
+    let stores = EngineStores.inMemory()
+    try await stores.journal.begin(
+        runID: runID,
+        syncSetID: operation.id.rawValue,
+        fingerprint: PlanFingerprint(rawValue: "unbound-live-receipt")
+    )
+    try await stores.journal.append(.intent(operation), runID: runID)
+    let replay = try #require(
+        try await stores.journal.unfinishedRun(for: operation.id.rawValue)
+    )
+
+    await #expect(
+        throws: RunRecoveryError.indeterminateMutationProviderCannotRecover(
+            operationID: operation.id
+        )
+    ) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores,
+            environment: phase06Environment()
+        ).recover(replay)
+    }
+
+    #expect(
+        try await stores.journal.unfinishedRun(for: operation.id.rawValue) != nil
+    )
+    let didFinishRecovery = await provider.didFinishRecovery()
+    #expect(!didFinishRecovery)
 }
 
 @Test func preStartMutationDeadlineIsTerminalWithoutIndeterminateReceipt() async throws {
@@ -507,6 +633,78 @@ import Testing
     #expect(try await stores.journal.unfinishedRun(for: plan.syncSetID) == nil)
 }
 
+@Test func indeterminateRelocateUsesReceiptSourceAttribution() async throws {
+    let base = FakeStorageProvider(locationID: .oneDrive)
+    let source = await base.putFile(
+        path: "/Before.txt",
+        contents: Data("relocate attribution".utf8),
+        modifiedAt: phase06Date
+    )
+    let destinationPath: SyncPath = "/After.txt"
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000637"),
+        provider: .oneDrive,
+        kind: .relocate,
+        affectedPaths: [source.path, destinationPath],
+        startedAt: phase06Date
+    )
+    let provider = IndeterminateRelocateProvider(
+        base: base,
+        receipt: receipt
+    )
+    let relocate = operation(
+        "000000000638",
+        location: .oneDrive,
+        kind: .relocate(itemRef: ItemRef(source), to: destinationPath),
+        precondition: .versionMatches(source.version)
+    )
+    let plan = planForOperations([relocate], path: source.path)
+    let stores = EngineStores.inMemory()
+    let executor = try executor(
+        providerMap: [.oneDrive: provider],
+        stores: stores,
+        name: "indeterminate-relocate-attribution"
+    )
+
+    let summary = try await executor.execute(
+        plan,
+        runID: uuid("000000000639")
+    )
+
+    #expect(
+        summary.outcome == .mutationIndeterminate(
+            location: .oneDrive,
+            path: source.path,
+            receiptID: receipt.id
+        )
+    )
+    let record = try #require(summary.indeterminateOperations.first)
+    #expect(record.location == receipt.provider)
+    #expect(record.path == source.path)
+    let replay = try #require(
+        try await stores.journal.unfinishedRun(for: plan.syncSetID)
+    )
+    #expect(replay.indeterminateReceiptsByOperation[relocate.id] == receipt)
+    let intent = try #require(
+        replay.events.compactMap { event -> Operation? in
+            guard case let .intent(operation) = event else { return nil }
+            return operation
+        }.first
+    )
+    #expect(intent.kind.targetPath == destinationPath)
+    let activity = await stores.activity.entries(
+        matching: ActivityQuery(runID: summary.runID, limit: 20)
+    )
+    let safety = try #require(
+        activity.first {
+            $0.message == ActivityMessageCatalog.mutationIndeterminate
+        }
+    )
+    #expect(safety.locationID == receipt.provider)
+    #expect(safety.path == source.path)
+    #expect(safety.detail?.contains(destinationPath.rawValue) == true)
+}
+
 @Test func legacySyncRunSummaryDecodesWithoutIndeterminateOperations() throws {
     let summary = SyncRunSummary(
         runID: uuid("000000000619"),
@@ -625,6 +823,84 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: abandoned.path))
     #expect(FileManager.default.fileExists(atPath: unrelated.path))
     #expect(FileManager.default.fileExists(atPath: cache.path))
+}
+
+@Test func reconstructedContentStageRetainsCurrentProcessLateWrite() async throws {
+    let root = try temporaryDirectory("phase06-stage-shared-owner")
+    let base = FakeStorageProvider(locationID: .googleDrive)
+    let item = await base.putFile(
+        path: "/SharedOwner.txt",
+        contents: Data("shared stage owner".utf8),
+        modifiedAt: phase06Date
+    )
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000627"),
+        provider: .googleDrive,
+        kind: .fetch,
+        affectedPaths: [item.path],
+        startedAt: phase06Date
+    )
+    let provider = IndeterminateFetchProvider(base: base, receipt: receipt)
+    let first = ContentStage(rootDirectory: root, byteLimit: 0)
+
+    await #expect(throws: ProviderError.mutationIndeterminate(receipt)) {
+        _ = try await first.materialize(ContentRef(item), from: provider)
+    }
+    #expect(await first.retainedArtifactCount(for: receipt) == 1)
+
+    let reconstructed = ContentStage(rootDirectory: root, byteLimit: 0)
+    #expect(await reconstructed.retainedArtifactCount(for: receipt) == 1)
+    #expect(
+        try FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "tmp" }.count == 1
+    )
+
+    await reconstructed.releaseDeferredArtifacts(for: receipt)
+    #expect(await first.retainedArtifactCount(for: receipt) == 0)
+    #expect(
+        try FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "tmp" }.isEmpty
+    )
+}
+
+@Test func deferredArtifactsRequireFullReceiptIdentity() async throws {
+    let root = try temporaryDirectory("phase06-stage-receipt-identity")
+    let source = FakeStorageProvider(locationID: .googleDrive)
+    let item = await source.putFile(
+        path: "/Identity.txt",
+        contents: Data("receipt identity".utf8),
+        modifiedAt: phase06Date
+    )
+    let stage = ContentStage(rootDirectory: root, byteLimit: 0)
+    let staged = try await stage.materialize(ContentRef(item), from: source)
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000628"),
+        provider: .oneDrive,
+        kind: .store,
+        affectedPaths: [item.path],
+        startedAt: phase06Date
+    )
+    await stage.deferRelease(staged, for: receipt)
+
+    let wrongReceipt = ProviderMutationReceipt(
+        id: receipt.id,
+        provider: .localFolder,
+        kind: .fetch,
+        affectedPaths: ["/Other.txt"],
+        startedAt: phase06Date
+    )
+    await stage.releaseDeferredArtifacts(for: wrongReceipt)
+
+    #expect(await stage.retainedArtifactCount(for: receipt) == 1)
+    #expect(FileManager.default.fileExists(atPath: staged.url.path))
+
+    await stage.releaseDeferredArtifacts(for: receipt)
+    #expect(await stage.retainedArtifactCount(for: receipt) == 0)
+    #expect(!FileManager.default.fileExists(atPath: staged.url.path))
 }
 
 @Test func baseRecordUpdatesLandBeforeRunFinished() async throws {
@@ -960,6 +1236,7 @@ private actor DeadlineMakeFolderProvider: IndeterminateMutationRecovering {
     private let base: FakeStorageProvider
     private let error: ProviderError
     private var finishedRecovery = false
+    private var abandonedRecoveries = 0
 
     init(base: FakeStorageProvider, error: ProviderError) {
         self.base = base
@@ -1027,21 +1304,37 @@ private actor DeadlineMakeFolderProvider: IndeterminateMutationRecovering {
         .quiescent(.succeeded)
     }
 
+    func beginIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderMutationRecoveryClaimResult {
+        .claimed(ProviderMutationRecoveryClaim(receipt: receipt))
+    }
+
     func currentStateForRecovery(
         of observation: ItemObservation,
-        receipt _: ProviderMutationReceipt
+        claim _: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation {
         try await base.currentState(of: observation)
     }
 
     func finishIndeterminateMutationRecovery(
-        for _: ProviderMutationReceipt
+        _: ProviderMutationRecoveryClaim
     ) async {
         finishedRecovery = true
     }
 
+    func abandonIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {
+        abandonedRecoveries += 1
+    }
+
     func didFinishRecovery() -> Bool {
         finishedRecovery
+    }
+
+    func abandonedRecoveryCount() -> Int {
+        abandonedRecoveries
     }
 }
 
@@ -1087,16 +1380,81 @@ private actor IndeterminateFetchProvider: IndeterminateMutationRecovering {
     func indeterminateMutationState(for _: ProviderMutationReceipt) async -> ProviderIndeterminateMutationState {
         .quiescent(.succeeded)
     }
+    func beginIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderMutationRecoveryClaimResult {
+        .claimed(ProviderMutationRecoveryClaim(receipt: receipt))
+    }
     func currentStateForRecovery(
         of observation: ItemObservation,
-        receipt _: ProviderMutationReceipt
+        claim _: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation {
         try await base.currentState(of: observation)
     }
-    func finishIndeterminateMutationRecovery(for _: ProviderMutationReceipt) async {
+    func finishIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {
         finishedRecovery = true
     }
+    func abandonIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {}
     func didFinishRecovery() -> Bool { finishedRecovery }
+}
+
+private actor IndeterminateRelocateProvider: StorageProvider {
+    nonisolated let locationID: LocationID
+    nonisolated let capabilities: ProviderCapabilities
+
+    private let base: FakeStorageProvider
+    private let receipt: ProviderMutationReceipt
+
+    init(base: FakeStorageProvider, receipt: ProviderMutationReceipt) {
+        self.base = base
+        self.receipt = receipt
+        self.locationID = base.locationID
+        self.capabilities = base.capabilities
+    }
+
+    func checkAvailability() async -> LocationAvailability {
+        await base.checkAvailability()
+    }
+    func scan(_ scope: SyncScope) async -> LocationSnapshot {
+        await base.scan(scope)
+    }
+    func changedSubtrees(
+        in scope: SyncScope,
+        since cursor: ChangeCursor?
+    ) async throws -> ChangeHint {
+        try await base.changedSubtrees(in: scope, since: cursor)
+    }
+    func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
+        try await base.fetch(observation, to: stagingURL)
+    }
+    func store(
+        from stagingURL: URL,
+        at path: SyncPath,
+        options: StoreOptions
+    ) async throws -> ItemObservation {
+        try await base.store(from: stagingURL, at: path, options: options)
+    }
+    func makeFolder(at path: SyncPath) async throws -> ItemObservation {
+        try await base.makeFolder(at: path)
+    }
+    func relocate(
+        _: ItemObservation,
+        to _: SyncPath
+    ) async throws -> ItemObservation {
+        throw ProviderError.mutationIndeterminate(receipt)
+    }
+    func trash(_ observation: ItemObservation) async throws {
+        try await base.trash(observation)
+    }
+    func currentState(
+        of observation: ItemObservation
+    ) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
 }
 
 private actor IndeterminateStoreProvider: IndeterminateMutationRecovering {
@@ -1173,18 +1531,28 @@ private actor IndeterminateStoreProvider: IndeterminateMutationRecovering {
         .quiescent(.failed(detail: "scripted late failure"))
     }
 
+    func beginIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderMutationRecoveryClaimResult {
+        .claimed(ProviderMutationRecoveryClaim(receipt: receipt))
+    }
+
     func currentStateForRecovery(
         of observation: ItemObservation,
-        receipt _: ProviderMutationReceipt
+        claim _: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation {
         try await base.currentState(of: observation)
     }
 
     func finishIndeterminateMutationRecovery(
-        for _: ProviderMutationReceipt
+        _: ProviderMutationRecoveryClaim
     ) async {
         finishedRecovery = true
     }
+
+    func abandonIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {}
 
     func storeCallCount() -> Int { stores }
     func didFinishRecovery() -> Bool { finishedRecovery }
@@ -1263,6 +1631,36 @@ private actor FailIndeterminateRunJournalStore: RunJournalStore {
 
     func markReconciled(runID: UUID) async throws {
         try await delegate.markReconciled(runID: runID)
+    }
+}
+
+private actor FailMarkReconciledRunJournalStore: RunJournalStore {
+    struct ExpectedFailure: Error {}
+
+    private let delegate = InMemoryRunJournalStore()
+
+    func begin(
+        runID: UUID,
+        syncSetID: UUID,
+        fingerprint: PlanFingerprint
+    ) async throws {
+        try await delegate.begin(
+            runID: runID,
+            syncSetID: syncSetID,
+            fingerprint: fingerprint
+        )
+    }
+
+    func append(_ event: JournalEvent, runID: UUID) async throws {
+        try await delegate.append(event, runID: runID)
+    }
+
+    func unfinishedRun(for syncSetID: UUID) async throws -> JournalReplay? {
+        try await delegate.unfinishedRun(for: syncSetID)
+    }
+
+    func markReconciled(runID _: UUID) async throws {
+        throw ExpectedFailure()
     }
 }
 

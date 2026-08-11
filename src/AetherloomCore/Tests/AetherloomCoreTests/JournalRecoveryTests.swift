@@ -202,6 +202,71 @@ import Testing
     #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
 }
 
+@Test func recoveryRejectsProviderTruthFromAnotherPath() async throws {
+    let journal = InMemoryRunJournalStore()
+    let baseRecords = InMemoryBaseRecordStore()
+    let stores = EngineStores(
+        baseRecords: baseRecords,
+        journal: journal,
+        conflicts: InMemoryConflictStore(),
+        adviceCache: InMemoryAdviceCacheStore(),
+        activity: InMemoryActivityStore(),
+        locations: InMemoryLocationRegistry()
+    )
+    let operation = Operation(
+        id: OperationID(journalUUID("000000000212")),
+        location: .oneDrive,
+        kind: .makeFolder(at: "/Expected"),
+        precondition: .pathAbsent
+    )
+    let receipt = ProviderMutationReceipt(
+        id: journalUUID("000000000213"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/Expected"],
+        startedAt: journalDate
+    )
+    let provider = ScriptedIndeterminateRecoveryProvider(
+        locationID: .oneDrive,
+        state: .quiescent(.succeeded),
+        recoveryResult: .success(
+            ItemObservation(
+                location: .oneDrive,
+                path: "/Unrelated",
+                kind: .folder
+            )
+        )
+    )
+    let runID = journalUUID("000000000214")
+    let syncSetID = journalUUID("000000000215")
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "wrong-recovery-attribution")
+    )
+    try await journal.append(.intent(operation), runID: runID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: journalDate
+        ),
+        runID: runID
+    )
+    let replay = try #require(try await journal.unfinishedRun(for: syncSetID))
+
+    await #expect(throws: RunRecoveryError.self) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores
+        ).recover(replay)
+    }
+
+    #expect(try await baseRecords.records(for: syncSetID).isEmpty)
+    #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
+    #expect(await provider.finishCount() == 0)
+}
+
 @Test(arguments: RelocateRecoveryScenario.allCases)
 func relocateRecoveryRequiresTwoEndpointVersionProof(
     scenario: RelocateRecoveryScenario
@@ -356,16 +421,33 @@ private actor ScriptedIndeterminateRecoveryProvider:
     ) async -> ProviderIndeterminateMutationState {
         scriptedState
     }
+    func beginIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderMutationRecoveryClaimResult {
+        switch scriptedState {
+        case .inFlight:
+            return .inFlight
+        case .quiescent, .unknownAfterRestart:
+            return .claimed(
+                ProviderMutationRecoveryClaim(receipt: receipt)
+            )
+        }
+    }
     func currentStateForRecovery(
         of _: ItemObservation,
-        receipt _: ProviderMutationReceipt
+        claim _: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation {
         probes += 1
         return try recoveryResult.get()
     }
-    func finishIndeterminateMutationRecovery(for _: ProviderMutationReceipt) async {
+    func finishIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {
         finishes += 1
     }
+    func abandonIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {}
     func recoveryProbeCount() -> Int { probes }
     func finishCount() -> Int { finishes }
 }
@@ -509,9 +591,14 @@ private actor PathScriptedRelocateRecoveryProvider:
     ) async -> ProviderIndeterminateMutationState {
         .quiescent(.succeeded)
     }
+    func beginIndeterminateMutationRecovery(
+        for receipt: ProviderMutationReceipt
+    ) async -> ProviderMutationRecoveryClaimResult {
+        .claimed(ProviderMutationRecoveryClaim(receipt: receipt))
+    }
     func currentStateForRecovery(
         of observation: ItemObservation,
-        receipt _: ProviderMutationReceipt
+        claim _: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation {
         probes.append(observation.path)
         guard let result = results[observation.path] else {
@@ -528,9 +615,14 @@ private actor PathScriptedRelocateRecoveryProvider:
         }
         return current
     }
-    func finishIndeterminateMutationRecovery(for _: ProviderMutationReceipt) async {
+    func finishIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {
         finishes += 1
     }
+    func abandonIndeterminateMutationRecovery(
+        _: ProviderMutationRecoveryClaim
+    ) async {}
     func probedPaths() -> [SyncPath] { probes }
     func finishCount() -> Int { finishes }
 }
