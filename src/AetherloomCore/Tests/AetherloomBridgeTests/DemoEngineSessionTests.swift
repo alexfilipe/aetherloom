@@ -35,7 +35,7 @@ struct DemoEngineSessionTests {
 
         for syncSetID in [DemoWorld.documentsID, DemoWorld.projectsID, DemoWorld.photosArchiveID] {
             let preparation = try #require(await session.lastPreparation(for: syncSetID))
-            #expect(preparation.preview.sections.allSatisfy(\.entries.isEmpty))
+            #expect(preparation.preview.sections.allSatisfy { $0.entries.isEmpty })
             #expect(preparation.preview.holds.isEmpty)
             #expect(preparation.preview.refusals.isEmpty)
         }
@@ -362,7 +362,7 @@ struct DemoEngineSessionTests {
 
         let activity = await session.activity(matching: ActivityQuery(categories: [.safety], limit: 500))
         #expect(activity.contains { $0.message == ActivityMessageCatalog.recoveryPerformed })
-        #expect(preparation.preview.sections.allSatisfy(\.entries.isEmpty))
+        #expect(preparation.preview.sections.allSatisfy { $0.entries.isEmpty })
         #expect(preparation.preview.holds.isEmpty)
         let calls = await session.providerCallLogs().values.flatMap { $0 }
         #expect(calls.allSatisfy { !mutationOperations.contains($0.operation) })
@@ -389,7 +389,7 @@ struct DemoEngineSessionTests {
             #expect(await session.locationStates().first { $0.id == .nasFolder }?.availability == .available)
             for syncSetID in [DemoWorld.documentsID, DemoWorld.projectsID, DemoWorld.photosArchiveID] {
                 let preparation = try #require(await session.lastPreparation(for: syncSetID))
-                #expect(preparation.preview.sections.allSatisfy(\.entries.isEmpty))
+                #expect(preparation.preview.sections.allSatisfy { $0.entries.isEmpty })
                 #expect(preparation.preview.holds.isEmpty)
                 #expect(preparation.preview.refusals.isEmpty)
             }
