@@ -113,6 +113,18 @@ import Testing
     #expect(await coordinator.retainedOperationCount() == 0)
     #expect(await coordinator.barrierReceipt() == receipt)
 
+    var misboundReceipt = receipt
+    misboundReceipt.correlation = ProviderMutationCorrelation(
+        runID: receipt.correlation!.runID,
+        operationID: OperationID(
+            UUID(uuidString: "a1000000-0000-0000-0000-000000000102")!
+        )
+    )
+    #expect(
+        await coordinator.beginRecovery(for: misboundReceipt) == .inFlight
+    )
+    #expect(await coordinator.barrierReceipt() == receipt)
+
     guard case let .claimed(claim) = await coordinator.beginRecovery(
         for: receipt
     ) else {
@@ -426,6 +438,15 @@ import Testing
     #expect(await coordinator.barrierReceipt() == nil)
 }
 
+@Test func recoveryClaimRejectsReceiptWithoutCorrelation() async {
+    let coordinator = LocalMutationCoordinator()
+    var receipt = mutationReceipt("000000000016", kind: .store)
+    receipt.correlation = nil
+
+    #expect(await coordinator.beginRecovery(for: receipt) == .inFlight)
+    #expect(await coordinator.barrierReceipt() == nil)
+}
+
 @Test func recoveryCannotBypassUnrelatedReadOrMutationOwner() async {
     let coordinator = LocalMutationCoordinator()
     let recoveryReceipt = mutationReceipt("000000000013", kind: .relocate)
@@ -702,6 +723,16 @@ private func mutationReceipt(
         provider: .localFolder,
         kind: kind,
         affectedPaths: ["/Owned.txt"],
-        startedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        correlation: ProviderMutationCorrelation(
+            runID: UUID(
+                uuidString: "a1000000-0000-0000-0000-000000000100"
+            )!,
+            operationID: OperationID(
+                UUID(
+                    uuidString: "a1000000-0000-0000-0000-000000000101"
+                )!
+            )
+        )
     )
 }

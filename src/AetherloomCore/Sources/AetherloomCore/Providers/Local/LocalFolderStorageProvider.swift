@@ -1340,6 +1340,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             options: StoreOptions,
             receipt: ProviderMutationReceipt
         ) async -> Result<ItemObservation, ProviderError> {
+            var physicalCommitMayHaveApplied = false
             do {
                 try await requireAvailable()
                 try hook.beforeMutation(receipt)
@@ -1404,6 +1405,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 let committedURL: URL
                 let committedPath: SyncPath
                 if let existing {
+                    physicalCommitMayHaveApplied = true
                     _ = try FileManager.default.replaceItemAt(
                         existing.url,
                         withItemAt: temporary,
@@ -1413,10 +1415,12 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     committedURL = existing.url
                     committedPath = existing.observation.path
                 } else {
+                    physicalCommitMayHaveApplied = true
                     try FileManager.default.moveItem(at: temporary, to: destination)
                     committedURL = destination
                     committedPath = path
                 }
+                try hook.afterPhysicalCommit(receipt)
                 return .success(
                     try LocalFolderStorageProvider.observation(
                         locationID: locationID,
@@ -1425,9 +1429,17 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     )
                 )
             } catch let error as ProviderError {
-                return .failure(error)
+                return .failure(
+                    physicalCommitMayHaveApplied
+                        ? .mutationIndeterminate(receipt)
+                        : error
+                )
             } catch {
-                return .failure(.itemUnavailable(provider: locationID, path: path))
+                return .failure(
+                    physicalCommitMayHaveApplied
+                        ? .mutationIndeterminate(receipt)
+                        : .itemUnavailable(provider: locationID, path: path)
+                )
             }
         }
 
@@ -1435,6 +1447,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             at path: SyncPath,
             receipt: ProviderMutationReceipt
         ) async -> Result<ItemObservation, ProviderError> {
+            var physicalCommitMayHaveApplied = false
             do {
                 try await requireAvailable()
                 try hook.beforeMutation(receipt)
@@ -1452,10 +1465,12 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     }
                     throw ProviderError.itemAlreadyExists(provider: locationID, path: path)
                 }
+                physicalCommitMayHaveApplied = true
                 try FileManager.default.createDirectory(
                     at: destination,
                     withIntermediateDirectories: false
                 )
+                try hook.afterPhysicalCommit(receipt)
                 return .success(
                     try LocalFolderStorageProvider.observation(
                         locationID: locationID,
@@ -1464,9 +1479,17 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     )
                 )
             } catch let error as ProviderError {
-                return .failure(error)
+                return .failure(
+                    physicalCommitMayHaveApplied
+                        ? .mutationIndeterminate(receipt)
+                        : error
+                )
             } catch {
-                return .failure(.itemUnavailable(provider: locationID, path: path))
+                return .failure(
+                    physicalCommitMayHaveApplied
+                        ? .mutationIndeterminate(receipt)
+                        : .itemUnavailable(provider: locationID, path: path)
+                )
             }
         }
 
@@ -1475,6 +1498,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             to newPath: SyncPath,
             receipt: ProviderMutationReceipt
         ) async -> Result<ItemObservation, ProviderError> {
+            var physicalCommitMayHaveApplied = false
             do {
                 try await requireAvailable()
                 try hook.beforeMutation(receipt)
@@ -1515,7 +1539,9 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
 
                 if isSameVolume {
+                    physicalCommitMayHaveApplied = true
                     try FileManager.default.moveItem(at: source, to: destination)
+                    try hook.afterPhysicalCommit(receipt)
                 } else {
                     do {
                         try relocation.copyItem(at: source, to: destination)
@@ -1564,9 +1590,20 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     )
                 )
             } catch let error as ProviderError {
-                return .failure(error)
+                return .failure(
+                    physicalCommitMayHaveApplied
+                        ? .mutationIndeterminate(receipt)
+                        : error
+                )
             } catch {
-                return .failure(.itemUnavailable(provider: locationID, path: expected.path))
+                return .failure(
+                    physicalCommitMayHaveApplied
+                        ? .mutationIndeterminate(receipt)
+                        : .itemUnavailable(
+                            provider: locationID,
+                            path: expected.path
+                        )
+                )
             }
         }
 
@@ -1660,28 +1697,47 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 )
                 try persistTrashReceipt(trashReceipt)
                 let resultingURL: URL?
+                let nativeTrashFailed: Bool
                 do {
                     resultingURL = try nativeTrash.trashItem(at: source)
+                    nativeTrashFailed = false
                 } catch {
                     resultingURL = nil
+                    nativeTrashFailed = true
                 }
-                let sourceIsAbsent: Bool
+                let remainingSource: LocalExistingEntry?
                 do {
-                    sourceIsAbsent = try existingEntry(at: current.path) == nil
+                    remainingSource = try existingEntry(at: current.path)
                 } catch {
                     // Native trash was already attempted. If its result cannot
                     // be inspected, ordinary failure is not safe evidence that
                     // the source stayed in place.
                     throw ProviderError.mutationIndeterminate(mutationReceipt)
                 }
-                if sourceIsAbsent {
-                    if let resultingURL {
-                        await artifacts.recordRecovery(
-                            resultingURL,
-                            for: current.path
-                        )
-                        trashReceipt.recoveryPath = resultingURL.path
+                if let remainingSource {
+                    guard remainingSource.observation.kind == current.kind,
+                          remainingSource.observation.version.isSameVersion(
+                              as: current.version
+                          ),
+                          nativeTrashFailed else {
+                        throw ProviderError.mutationIndeterminate(mutationReceipt)
                     }
+                } else {
+                    guard !nativeTrashFailed,
+                          let resultingURL else {
+                        throw ProviderError.mutationIndeterminate(mutationReceipt)
+                    }
+                    switch nativeTrash.artifactState(at: resultingURL) {
+                    case .present:
+                        break
+                    case .missing, .unavailable:
+                        throw ProviderError.mutationIndeterminate(mutationReceipt)
+                    }
+                    await artifacts.recordRecovery(
+                        resultingURL,
+                        for: current.path
+                    )
+                    trashReceipt.recoveryPath = resultingURL.path
                     trashReceipt.committedAt = deadlines.now()
                     try persistCommittedTrashReceipt(
                         trashReceipt,
@@ -1689,18 +1745,6 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         retryOnce: true
                     )
                     return
-                }
-                let afterFailure = try LocalFolderStorageProvider.observation(
-                    locationID: locationID,
-                    url: source,
-                    path: current.path
-                )
-                guard afterFailure.kind == current.kind,
-                      afterFailure.version.isSameVersion(as: current.version) else {
-                    throw ProviderError.preconditionFailed(
-                        provider: locationID,
-                        path: current.path
-                    )
                 }
             }
 
@@ -1928,16 +1972,21 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     reason: "Trash outcome is prepared but lacks committed recoverable-trash proof."
                 )
             }
-            if receipt.method == .quarantine {
-                guard let recoveryPath = receipt.recoveryPath,
-                      filesystemEntryExists(
-                          at: URL(fileURLWithPath: recoveryPath)
-                      ) else {
-                    return nil
-                }
-            } else if let recoveryPath = receipt.recoveryPath,
-                      !filesystemEntryExists(at: URL(fileURLWithPath: recoveryPath)) {
+            guard let recoveryPath = receipt.recoveryPath else {
                 return nil
+            }
+            switch SystemLocalRecoveryArtifactInspector.state(
+                at: URL(fileURLWithPath: recoveryPath)
+            ) {
+            case .present:
+                break
+            case .missing:
+                return nil
+            case let .unavailable(detail):
+                throw ProviderError.unavailable(
+                    provider: locationID,
+                    reason: "Recoverable trash artifact could not be inspected: \(detail)"
+                )
             }
             var observation = receipt.observation
             observation.isTrashed = true
@@ -2138,6 +2187,11 @@ actor LocalMutationArtifacts {
 
 protocol LocalMutationStarting: Sendable {
     func beforeMutation(_ receipt: ProviderMutationReceipt) throws
+    func afterPhysicalCommit(_ receipt: ProviderMutationReceipt) throws
+}
+
+extension LocalMutationStarting {
+    func afterPhysicalCommit(_: ProviderMutationReceipt) throws {}
 }
 
 struct NoOpLocalMutationHook: LocalMutationStarting {
@@ -2156,13 +2210,20 @@ struct SystemLocalFetchPerformer: LocalFetchPerforming {
 
 protocol LocalNativeTrashPerforming: Sendable {
     func trashItem(at url: URL) throws -> URL?
+    func artifactState(at url: URL) -> LocalRecoveryArtifactState
+}
+
+extension LocalNativeTrashPerforming {
+    func artifactState(at url: URL) -> LocalRecoveryArtifactState {
+        SystemLocalRecoveryArtifactInspector.state(at: url)
+    }
 }
 
 protocol LocalTrashReceiptPersisting: Sendable {
     func persist(_ data: Data, at url: URL) throws
 }
 
-enum LocalQuarantineArtifactState: Sendable {
+enum LocalRecoveryArtifactState: Sendable {
     case present
     case missing
     case unavailable(detail: String)
@@ -2170,7 +2231,7 @@ enum LocalQuarantineArtifactState: Sendable {
 
 protocol LocalQuarantinePerforming: Sendable {
     func moveItem(at source: URL, to destination: URL) throws
-    func artifactState(at url: URL) -> LocalQuarantineArtifactState
+    func artifactState(at url: URL) -> LocalRecoveryArtifactState
 }
 
 struct AtomicLocalTrashReceiptPersister: LocalTrashReceiptPersisting {
@@ -2195,7 +2256,13 @@ struct SystemLocalQuarantinePerformer: LocalQuarantinePerforming {
         try FileManager.default.moveItem(at: source, to: destination)
     }
 
-    func artifactState(at url: URL) -> LocalQuarantineArtifactState {
+    func artifactState(at url: URL) -> LocalRecoveryArtifactState {
+        SystemLocalRecoveryArtifactInspector.state(at: url)
+    }
+}
+
+private enum SystemLocalRecoveryArtifactInspector {
+    static func state(at url: URL) -> LocalRecoveryArtifactState {
         do {
             _ = try FileManager.default.attributesOfItem(atPath: url.path)
             return .present

@@ -694,10 +694,19 @@ struct LocalFolderStorageProviderTests {
             (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
         )
         let staging = root.appendingPathComponent("Late.stage")
+        let correlation = ProviderMutationCorrelation(
+            runID: UUID(uuidString: "a5000000-0000-0000-0000-000000000001")!,
+            operationID: OperationID(
+                UUID(uuidString: "a5000000-0000-0000-0000-000000000002")!
+            )
+        )
 
         let call = Task { () -> ProviderMutationReceipt? in
             do {
-                try await provider.fetch(observation, to: staging)
+                try await ProviderMutationExecutionContext.$correlation
+                    .withValue(correlation) {
+                        try await provider.fetch(observation, to: staging)
+                    }
                 return nil
             } catch let ProviderError.mutationIndeterminate(receipt) {
                 return receipt
@@ -1196,7 +1205,11 @@ struct LocalFolderStorageProviderTests {
             provider: location.id,
             kind: .trash,
             affectedPaths: [original.path],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_050)
+            startedAt: Date(timeIntervalSince1970: 1_800_000_050),
+            correlation: ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationID
+            )
         )
         try await firstStores.journal.append(
             .mutationIndeterminate(
@@ -1312,62 +1325,6 @@ struct LocalFolderStorageProviderTests {
         #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
     }
 
-    @Test func nativeTrashMoveThenThrowConfirmsAbsenceWithoutQuarantine() async throws {
-        let world = try makeRoot("native-trash-move-throw")
-        defer { try? FileManager.default.removeItem(at: world) }
-        let root = world.appendingPathComponent("Root", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let sourceURL = root.appendingPathComponent("MovedThenThrew.txt")
-        let movedURL = world.appendingPathComponent("NativeRecovery.txt")
-        let contents = Data("moved before error".utf8)
-        try contents.write(to: sourceURL)
-        let location = localLocation()
-        let provider = await LocalFolderStorageProvider.make(
-            location: location,
-            rootURL: root,
-            volumes: ScriptedVolumeInspector(
-                properties: VolumeProperties(
-                    isCaseSensitive: false,
-                    supportsNativeTrash: true,
-                    isNetwork: false
-                )
-            ),
-            nativeTrash: MoveThenThrowNativeTrashPerformer(destination: movedURL)
-        )
-        let observation = try #require(
-            (await provider.scan(.entireDrive))
-                .observations.byPath["/MovedThenThrew.txt"]
-        )
-
-        try await provider.trash(observation)
-        try await provider.trash(observation)
-        let restartedProvider = await LocalFolderStorageProvider.make(
-            location: location,
-            rootURL: root,
-            volumes: ScriptedVolumeInspector(
-                properties: VolumeProperties(
-                    isCaseSensitive: false,
-                    supportsNativeTrash: true,
-                    isNetwork: false
-                )
-            )
-        )
-        #expect(try await restartedProvider.currentState(of: observation).isTrashed)
-        try await restartedProvider.trash(observation)
-        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
-        #expect(try Data(contentsOf: movedURL) == contents)
-        #expect(
-            !FileManager.default.fileExists(
-                atPath: root.appendingPathComponent(".aetherloom/trash").path
-            )
-        )
-        #expect(
-            FileManager.default.fileExists(
-                atPath: root.appendingPathComponent(".aetherloom/trash-receipts").path
-            )
-        )
-    }
-
     @Test func preparedNativeTrashReceiptNeverProvesLaterAbsence() async throws {
         let root = try makeRoot("prepared-native-trash-receipt")
         let outside = try makeRoot("prepared-native-trash-outside")
@@ -1419,6 +1376,14 @@ struct LocalFolderStorageProviderTests {
             "NativeRecovery.txt",
             isDirectory: false
         )
+        let reportedNativeRecovery = world.appendingPathComponent(
+            "ReportedNativeRecovery.txt",
+            isDirectory: false
+        )
+        let hiddenRoot = world.appendingPathComponent(
+            "UnavailableRoot",
+            isDirectory: true
+        )
         try FileManager.default.createDirectory(
             at: root,
             withIntermediateDirectories: true
@@ -1461,10 +1426,19 @@ struct LocalFolderStorageProviderTests {
             ]
         )
         await clock.waitUntilIdle()
+        let correlation = ProviderMutationCorrelation(
+            runID: UUID(uuidString: "a3000000-0000-0000-0000-000000000003")!,
+            operationID: OperationID(
+                UUID(uuidString: "a3000000-0000-0000-0000-000000000004")!
+            )
+        )
 
         let mutation = Task { () -> ProviderMutationReceipt? in
             do {
-                try await provider.trash(observation)
+                try await ProviderMutationExecutionContext.$correlation
+                    .withValue(correlation) {
+                        try await provider.trash(observation)
+                    }
                 Issue.record("Prepared-only trash unexpectedly completed.")
                 return nil
             } catch let ProviderError.mutationIndeterminate(receipt) {
@@ -1499,6 +1473,11 @@ struct LocalFolderStorageProviderTests {
             location: location.id,
             kind: .trash(itemRef: ItemRef(observation)),
             precondition: .versionMatches(observation.version)
+        )
+        var durableReceipt = receipt
+        durableReceipt.correlation = ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operationID
         )
         let originalRecord = BaseRecord(
             id: UUID(uuidString: "a3000000-0000-0000-0000-000000000005")!,
@@ -1537,7 +1516,7 @@ struct LocalFolderStorageProviderTests {
         try await journal.append(
             .mutationIndeterminate(
                 operationID: operationID,
-                receipt: receipt,
+                receipt: durableReceipt,
                 occurredAt: Date(timeIntervalSince1970: 1_800_000_201)
             ),
             runID: runID
@@ -1696,19 +1675,79 @@ struct LocalFolderStorageProviderTests {
             "QuarantineHolding.txt",
             isDirectory: false
         )
+        let nativeTrash: any LocalNativeTrashPerforming
         let quarantine: any LocalQuarantinePerforming
         let trashReceiptPersistence: any LocalTrashReceiptPersisting
         switch mode {
-        case .nativeTrash, .quarantine:
+        case .nativeTrash:
+            nativeTrash = MovingNativeTrashPerformer(
+                destination: nativeRecovery
+            )
+            quarantine = SystemLocalQuarantinePerformer()
+            trashReceiptPersistence = FailAfterFirstTrashReceiptPersister()
+        case .nativeTrashMoveThenThrow:
+            nativeTrash = MoveThenThrowNativeTrashPerformer(
+                destination: nativeRecovery
+            )
+            quarantine = SystemLocalQuarantinePerformer()
+            trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
+        case .nativeTrashNilResult:
+            nativeTrash = MoveThenReturnNilNativeTrashPerformer(
+                destination: nativeRecovery
+            )
+            quarantine = SystemLocalQuarantinePerformer()
+            trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
+        case .nativeTrashSourceChanged:
+            nativeTrash = ChangeSourceThenThrowNativeTrashPerformer(
+                holdingURL: nativeRecovery
+            )
+            quarantine = SystemLocalQuarantinePerformer()
+            trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
+        case .nativeTrashSourceUnavailable:
+            nativeTrash = HideRootThenThrowNativeTrashPerformer(
+                root: root,
+                hiddenRoot: hiddenRoot,
+                holdingURL: nativeRecovery
+            )
+            quarantine = SystemLocalQuarantinePerformer()
+            trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
+        case .nativeTrashArtifactMissing:
+            nativeTrash = ScriptedArtifactNativeTrashPerformer(
+                holdingURL: nativeRecovery,
+                reportedURL: reportedNativeRecovery,
+                scriptedArtifactState: .missing
+            )
+            quarantine = SystemLocalQuarantinePerformer()
+            trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
+        case .nativeTrashArtifactUnavailable:
+            nativeTrash = ScriptedArtifactNativeTrashPerformer(
+                holdingURL: nativeRecovery,
+                reportedURL: reportedNativeRecovery,
+                scriptedArtifactState: .unavailable(
+                    detail: "scripted native artifact inspection failure"
+                )
+            )
+            quarantine = SystemLocalQuarantinePerformer()
+            trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
+        case .quarantine:
+            nativeTrash = MovingNativeTrashPerformer(
+                destination: nativeRecovery
+            )
             quarantine = SystemLocalQuarantinePerformer()
             trashReceiptPersistence = FailAfterFirstTrashReceiptPersister()
         case .quarantineMissingArtifact:
+            nativeTrash = MovingNativeTrashPerformer(
+                destination: nativeRecovery
+            )
             quarantine = MoveThenThrowQuarantinePerformer(
                 holdingURL: quarantineHolding,
                 scriptedArtifactState: .missing
             )
             trashReceiptPersistence = AtomicLocalTrashReceiptPersister()
         case .quarantineUnavailableArtifact:
+            nativeTrash = MovingNativeTrashPerformer(
+                destination: nativeRecovery
+            )
             quarantine = MoveThenThrowQuarantinePerformer(
                 holdingURL: quarantineHolding,
                 scriptedArtifactState: .unavailable(
@@ -1723,7 +1762,7 @@ struct LocalFolderStorageProviderTests {
             volumes: ScriptedVolumeInspector(
                 properties: VolumeProperties(
                     isCaseSensitive: true,
-                    supportsNativeTrash: mode == .nativeTrash,
+                    supportsNativeTrash: mode.usesNativeTrash,
                     isNetwork: false
                 )
             ),
@@ -1733,9 +1772,7 @@ struct LocalFolderStorageProviderTests {
                 now: { Date(timeIntervalSince1970: 1_800_000_210) },
                 makeMutationID: { mutationIDs.next() }
             ),
-            nativeTrash: MovingNativeTrashPerformer(
-                destination: nativeRecovery
-            ),
+            nativeTrash: nativeTrash,
             quarantine: quarantine,
             mutationHook: hook,
             trashReceiptPersistence: trashReceiptPersistence
@@ -1834,6 +1871,12 @@ struct LocalFolderStorageProviderTests {
         )
         #expect(receipt.id == receiptID)
         #expect(
+            receipt.correlation == ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationID
+            )
+        )
+        #expect(
             summary.outcome == .mutationIndeterminate(
                 location: location.id,
                 path: observation.path,
@@ -1851,8 +1894,26 @@ struct LocalFolderStorageProviderTests {
             return
         }
         #expect(await provider.indeterminateMutationReceipt() == receipt)
-        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        if mode == .nativeTrashSourceChanged {
+            var isDirectory: ObjCBool = false
+            #expect(
+                FileManager.default.fileExists(
+                    atPath: sourceURL.path,
+                    isDirectory: &isDirectory
+                )
+            )
+            #expect(isDirectory.boolValue)
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        }
         switch mode {
+        case .nativeTrashMoveThenThrow,
+             .nativeTrashNilResult,
+             .nativeTrashSourceChanged,
+             .nativeTrashSourceUnavailable,
+             .nativeTrashArtifactMissing,
+             .nativeTrashArtifactUnavailable:
+            #expect(try Data(contentsOf: nativeRecovery) == contents)
         case .quarantineMissingArtifact, .quarantineUnavailableArtifact:
             #expect(try Data(contentsOf: quarantineHolding) == contents)
         case .nativeTrash, .quarantine:
@@ -1917,6 +1978,258 @@ struct LocalFolderStorageProviderTests {
         #expect(await provider.indeterminateMutationReceipt() == receipt)
         #expect(await remote.callLog().isEmpty)
         #expect(hook.kinds() == [.trash])
+    }
+
+    @Test(arguments: PostPhysicalCommitMode.allCases)
+    func postPhysicalCommitFailureRetainsWALAndRootBarrier(
+        mode: PostPhysicalCommitMode
+    ) async throws {
+        let world = try makeRoot("post-physical-commit-\(mode.rawValue)")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Root", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        let unrelatedURL = root.appendingPathComponent("Unrelated.txt")
+        let unrelatedContents = Data("must stay untouched".utf8)
+        try unrelatedContents.write(to: unrelatedURL)
+
+        let targetPath: SyncPath = mode.targetPath
+        let targetURL = root.appendingPathComponent(
+            String(targetPath.rawValue.dropFirst())
+        )
+        let originalContents = Data("original destination".utf8)
+        if mode == .replacementStore {
+            try originalContents.write(to: targetURL)
+        } else if mode == .sameVolumeRelocate {
+            try Data("relocate me".utf8).write(
+                to: root.appendingPathComponent("RelocateSource.txt")
+            )
+        }
+
+        let location = localLocation()
+        let receiptID = mode.receiptID
+        let mutationIDs = LockedUUIDSequence(
+            [
+                receiptID,
+                UUID(uuidString: "a4000000-0000-0000-0000-000000000011")!,
+            ]
+        )
+        let clock = ProviderMutationManualClock()
+        let hook = BlockingLocalMutationHook(
+            failsAfterPhysicalCommit: true
+        )
+        let provider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            deadlines: ProviderDeadlines(
+                ioNanoseconds: 1,
+                clock: clock,
+                now: { Date(timeIntervalSince1970: 1_800_000_220) },
+                makeMutationID: { mutationIDs.next() }
+            ),
+            mutationHook: hook
+        )
+        await clock.waitUntilIdle()
+        let initialSnapshot = await provider.scan(.entireDrive)
+        await clock.waitUntilIdle()
+
+        let remote = FakeStorageProvider(locationID: .oneDrive)
+        let operationID = OperationID(
+            UUID(uuidString: "a4000000-0000-0000-0000-000000000002")!
+        )
+        let operation: AetherloomCore.Operation
+        switch mode {
+        case .newStore:
+            let source = await remote.putFile(
+                path: targetPath,
+                contents: Data("new store".utf8),
+                modifiedAt: Date(timeIntervalSince1970: 1_800_000_220)
+            )
+            operation = AetherloomCore.Operation(
+                id: operationID,
+                location: location.id,
+                kind: .transfer(
+                    content: ContentRef(source),
+                    to: targetPath,
+                    overwrite: .neverOverwrite
+                ),
+                precondition: .pathAbsent
+            )
+        case .replacementStore:
+            let existing = try #require(
+                initialSnapshot.observations.byPath[targetPath]
+            )
+            let source = await remote.putFile(
+                path: "/ReplacementSource.txt",
+                contents: Data("replacement store".utf8),
+                modifiedAt: Date(timeIntervalSince1970: 1_800_000_221)
+            )
+            operation = AetherloomCore.Operation(
+                id: operationID,
+                location: location.id,
+                kind: .transfer(
+                    content: ContentRef(source),
+                    to: targetPath,
+                    overwrite: .ifVersionMatches(existing.version)
+                ),
+                precondition: .versionMatches(existing.version)
+            )
+        case .makeFolder:
+            operation = AetherloomCore.Operation(
+                id: operationID,
+                location: location.id,
+                kind: .makeFolder(at: targetPath),
+                precondition: .pathAbsent
+            )
+        case .sameVolumeRelocate:
+            let source = try #require(
+                initialSnapshot.observations.byPath["/RelocateSource.txt"]
+            )
+            operation = AetherloomCore.Operation(
+                id: operationID,
+                location: location.id,
+                kind: .relocate(itemRef: ItemRef(source), to: targetPath),
+                precondition: .versionMatches(source.version)
+            )
+        }
+
+        let syncSetID = UUID(
+            uuidString: "a4000000-0000-0000-0000-000000000003"
+        )!
+        let runID = UUID(
+            uuidString: "a4000000-0000-0000-0000-000000000004"
+        )!
+        let plan = SyncPlan(
+            syncSetID: syncSetID,
+            generatedAt: Date(timeIntervalSince1970: 1_800_000_220),
+            decisions: [],
+            schedule: OperationSchedule(operations: [operation]),
+            gate: .clear,
+            fingerprint: PlanFingerprint(
+                rawValue: "post-physical-commit-\(mode.rawValue)"
+            )
+        )
+        let stores = EngineStores.inMemory()
+        let execution = Task {
+            try await ScheduleExecutor(
+                providers: [
+                    location.id: provider,
+                    .oneDrive: remote,
+                ],
+                stores: stores,
+                stage: ContentStage(
+                    rootDirectory: world.appendingPathComponent("ExecutionStage"),
+                    byteLimit: 1_000_000
+                ),
+                environment: ExecutionEnvironment(
+                    now: { Date(timeIntervalSince1970: 1_800_000_221) }
+                )
+            ).execute(plan, runID: runID)
+        }
+        await hook.waitUntilStarted(count: 1)
+        let queuedPath: SyncPath = "/QueuedAfterCommit"
+        let queuedMutation = Task { () -> ProviderError? in
+            do {
+                _ = try await provider.makeFolder(at: queuedPath)
+                Issue.record("Queued work crossed a post-commit barrier.")
+                return nil
+            } catch let error as ProviderError {
+                return error
+            } catch {
+                Issue.record("Unexpected queued mutation error: \(error)")
+                return nil
+            }
+        }
+        await clock.waitUntilSleeping(nanoseconds: 1, count: 2)
+        hook.release()
+
+        let summary = try await execution.value
+        let queuedError = await queuedMutation.value
+        #expect(
+            queuedError == .mutationDeadlineExpiredBeforeStart(
+                provider: location.id,
+                path: queuedPath
+            )
+        )
+        await clock.waitUntilIdle()
+        let replay = try #require(
+            try await stores.journal.unfinishedRun(for: syncSetID)
+        )
+        let receipt = try #require(
+            replay.indeterminateReceiptsByOperation[operationID]
+        )
+        #expect(receipt.id == receiptID)
+        #expect(
+            receipt.correlation == ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationID
+            )
+        )
+        #expect(
+            summary.outcome == .mutationIndeterminate(
+                location: location.id,
+                path: receipt.affectedPaths[0],
+                receiptID: receiptID
+            )
+        )
+        #expect(summary.appliedOperations.isEmpty)
+        #expect(summary.failedOperations.isEmpty)
+        #expect(replay.pendingOperationIDs == [operationID])
+        #expect(!replay.events.contains { $0.isRunFinished })
+        #expect(!replay.events.contains { $0.resultOperationID == operationID })
+        guard case .quiescent(.failed) = await provider
+            .indeterminateMutationState(for: receipt) else {
+            Issue.record("Post-commit uncertainty released its root owner.")
+            return
+        }
+        #expect(await provider.indeterminateMutationReceipt() == receipt)
+        #expect(try Data(contentsOf: unrelatedURL) == unrelatedContents)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent(
+                    String(queuedPath.rawValue.dropFirst())
+                ).path
+            )
+        )
+
+        switch mode {
+        case .newStore:
+            #expect(try Data(contentsOf: targetURL) == Data("new store".utf8))
+        case .replacementStore:
+            #expect(
+                try Data(contentsOf: targetURL)
+                    == Data("replacement store".utf8)
+            )
+        case .makeFolder:
+            var isDirectory: ObjCBool = false
+            #expect(
+                FileManager.default.fileExists(
+                    atPath: targetURL.path,
+                    isDirectory: &isDirectory
+                )
+            )
+            #expect(isDirectory.boolValue)
+        case .sameVolumeRelocate:
+            #expect(
+                !FileManager.default.fileExists(
+                    atPath: root.appendingPathComponent("RelocateSource.txt").path
+                )
+            )
+            #expect(try Data(contentsOf: targetURL) == Data("relocate me".utf8))
+        }
+
+        guard case .unavailable = (await provider.scan(.entireDrive)).status else {
+            Issue.record("A scan crossed unresolved post-commit ownership.")
+            return
+        }
+        await #expect(throws: ProviderError.self) {
+            _ = try await provider.makeFolder(at: "/FreshAfterCommit")
+        }
+        #expect(hook.kinds().count == 1)
+        #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
     }
 
     @Test func nativeTrashProducesRecoverableArtifact() async throws {
@@ -2158,13 +2471,22 @@ struct LocalFolderStorageProviderTests {
             registry: registry
         )
         await clock.waitUntilIdle()
+        let correlation = ProviderMutationCorrelation(
+            runID: UUID(uuidString: "a2000000-0000-0000-0000-000000000015")!,
+            operationID: OperationID(
+                UUID(uuidString: "a2000000-0000-0000-0000-000000000014")!
+            )
+        )
         let call = Task { () -> ProviderMutationReceipt? in
             do {
-                _ = try await first.store(
-                    from: staging,
-                    at: "/Late.txt",
-                    options: StoreOptions()
-                )
+                _ = try await ProviderMutationExecutionContext.$correlation
+                    .withValue(correlation) {
+                        try await first.store(
+                            from: staging,
+                            at: "/Late.txt",
+                            options: StoreOptions()
+                        )
+                    }
                 return nil
             } catch let ProviderError.mutationIndeterminate(receipt) {
                 return receipt
@@ -2216,6 +2538,11 @@ struct LocalFolderStorageProviderTests {
         let stores = EngineStores.inMemory()
         let runID = UUID(uuidString: "a2000000-0000-0000-0000-000000000015")!
         let syncSetID = UUID(uuidString: "a2000000-0000-0000-0000-000000000016")!
+        var durableReceipt = receipt
+        durableReceipt.correlation = ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operationID
+        )
         try await stores.journal.begin(
             runID: runID,
             syncSetID: syncSetID,
@@ -2225,7 +2552,7 @@ struct LocalFolderStorageProviderTests {
         try await stores.journal.append(
             .mutationIndeterminate(
                 operationID: operationID,
-                receipt: receipt,
+                receipt: durableReceipt,
                 occurredAt: Date(timeIntervalSince1970: 1_800_000_100)
             ),
             runID: runID
@@ -2383,7 +2710,17 @@ struct LocalFolderStorageProviderTests {
             provider: location.id,
             kind: .makeFolder,
             affectedPaths: [created.path],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_300)
+            startedAt: Date(timeIntervalSince1970: 1_800_000_300),
+            correlation: ProviderMutationCorrelation(
+                runID: UUID(
+                    uuidString: "a2000000-0000-0000-0000-000000000032"
+                )!,
+                operationID: OperationID(
+                    UUID(
+                        uuidString: "a2000000-0000-0000-0000-000000000033"
+                    )!
+                )
+            )
         )
         guard case let .claimed(claim) = await reconstructed
             .beginIndeterminateMutationRecovery(for: recoveryReceipt) else {
@@ -2485,7 +2822,17 @@ struct LocalFolderStorageProviderTests {
             provider: aliasLocation.id,
             kind: .makeFolder,
             affectedPaths: ["/ClaimedAlias"],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_103)
+            startedAt: Date(timeIntervalSince1970: 1_800_000_103),
+            correlation: ProviderMutationCorrelation(
+                runID: UUID(
+                    uuidString: "a2000000-0000-0000-0000-000000000024"
+                )!,
+                operationID: OperationID(
+                    UUID(
+                        uuidString: "a2000000-0000-0000-0000-000000000025"
+                    )!
+                )
+            )
         )
 
         let wrongAliasClaim = await canonicalProvider
@@ -2630,10 +2977,19 @@ struct LocalFolderStorageProviderTests {
             registry: registry
         )
         await clock.waitUntilIdle()
+        let correlation = ProviderMutationCorrelation(
+            runID: UUID(uuidString: "a2000000-0000-0000-0000-000000000019")!,
+            operationID: OperationID(
+                UUID(uuidString: "a2000000-0000-0000-0000-000000000018")!
+            )
+        )
 
         let mutation = Task { () -> ProviderMutationReceipt? in
             do {
-                _ = try await first.makeFolder(at: "/LateFolder")
+                _ = try await ProviderMutationExecutionContext.$correlation
+                    .withValue(correlation) {
+                        try await first.makeFolder(at: "/LateFolder")
+                    }
                 return nil
             } catch let ProviderError.mutationIndeterminate(receipt) {
                 return receipt
@@ -2683,6 +3039,11 @@ struct LocalFolderStorageProviderTests {
         let syncSetID = UUID(
             uuidString: "a2000000-0000-0000-0000-000000000020"
         )!
+        var durableReceipt = receipt
+        durableReceipt.correlation = ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operationID
+        )
         try await stores.journal.begin(
             runID: runID,
             syncSetID: syncSetID,
@@ -2692,7 +3053,7 @@ struct LocalFolderStorageProviderTests {
         try await stores.journal.append(
             .mutationIndeterminate(
                 operationID: operationID,
-                receipt: receipt,
+                receipt: durableReceipt,
                 occurredAt: Date(timeIntervalSince1970: 1_800_000_102)
             ),
             runID: runID
@@ -2769,14 +3130,23 @@ struct LocalFolderStorageProviderTests {
             mutationHook: hook
         )
         await clock.waitUntilIdle()
+        let correlation = ProviderMutationCorrelation(
+            runID: UUID(uuidString: "a5000000-0000-0000-0000-000000000003")!,
+            operationID: OperationID(
+                UUID(uuidString: "a5000000-0000-0000-0000-000000000004")!
+            )
+        )
 
         let call = Task { () -> ProviderMutationReceipt? in
             do {
-                _ = try await provider.store(
-                    from: staging,
-                    at: "/Late.txt",
-                    options: StoreOptions()
-                )
+                _ = try await ProviderMutationExecutionContext.$correlation
+                    .withValue(correlation) {
+                        try await provider.store(
+                            from: staging,
+                            at: "/Late.txt",
+                            options: StoreOptions()
+                        )
+                    }
                 Issue.record("Store unexpectedly completed before its deadline.")
                 return nil
             } catch let ProviderError.mutationIndeterminate(receipt) {
@@ -2845,14 +3215,23 @@ struct LocalFolderStorageProviderTests {
             mutationHook: hook
         )
         await clock.waitUntilIdle()
+        let correlation = ProviderMutationCorrelation(
+            runID: UUID(uuidString: "a5000000-0000-0000-0000-000000000005")!,
+            operationID: OperationID(
+                UUID(uuidString: "a5000000-0000-0000-0000-000000000006")!
+            )
+        )
 
         let call = Task { () -> ProviderMutationReceipt? in
             do {
-                _ = try await provider.store(
-                    from: staging,
-                    at: "/Failure.txt",
-                    options: StoreOptions()
-                )
+                _ = try await ProviderMutationExecutionContext.$correlation
+                    .withValue(correlation) {
+                        try await provider.store(
+                            from: staging,
+                            at: "/Failure.txt",
+                            options: StoreOptions()
+                        )
+                    }
                 return nil
             } catch let ProviderError.mutationIndeterminate(receipt) {
                 return receipt
@@ -2921,6 +3300,12 @@ struct LocalFolderStorageProviderTests {
 
 enum PostMoveTrashMode: String, CaseIterable, Sendable {
     case nativeTrash
+    case nativeTrashMoveThenThrow
+    case nativeTrashNilResult
+    case nativeTrashSourceChanged
+    case nativeTrashSourceUnavailable
+    case nativeTrashArtifactMissing
+    case nativeTrashArtifactUnavailable
     case quarantine
     case quarantineMissingArtifact
     case quarantineUnavailableArtifact
@@ -2929,12 +3314,74 @@ enum PostMoveTrashMode: String, CaseIterable, Sendable {
         switch self {
         case .nativeTrash:
             UUID(uuidString: "a3000000-0000-0000-0000-000000000011")!
+        case .nativeTrashMoveThenThrow:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000022")!
+        case .nativeTrashNilResult:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000023")!
+        case .nativeTrashSourceChanged:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000024")!
+        case .nativeTrashSourceUnavailable:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000025")!
+        case .nativeTrashArtifactMissing:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000026")!
+        case .nativeTrashArtifactUnavailable:
+            UUID(uuidString: "a3000000-0000-0000-0000-000000000027")!
         case .quarantine:
             UUID(uuidString: "a3000000-0000-0000-0000-000000000012")!
         case .quarantineMissingArtifact:
             UUID(uuidString: "a3000000-0000-0000-0000-000000000020")!
         case .quarantineUnavailableArtifact:
             UUID(uuidString: "a3000000-0000-0000-0000-000000000021")!
+        }
+    }
+
+    var usesNativeTrash: Bool {
+        switch self {
+        case .nativeTrash,
+             .nativeTrashMoveThenThrow,
+             .nativeTrashNilResult,
+             .nativeTrashSourceChanged,
+             .nativeTrashSourceUnavailable,
+             .nativeTrashArtifactMissing,
+             .nativeTrashArtifactUnavailable:
+            true
+        case .quarantine,
+             .quarantineMissingArtifact,
+             .quarantineUnavailableArtifact:
+            false
+        }
+    }
+}
+
+enum PostPhysicalCommitMode: String, CaseIterable, Sendable {
+    case newStore
+    case replacementStore
+    case makeFolder
+    case sameVolumeRelocate
+
+    var targetPath: SyncPath {
+        switch self {
+        case .newStore:
+            "/NewStore.txt"
+        case .replacementStore:
+            "/Replacement.txt"
+        case .makeFolder:
+            "/CreatedFolder"
+        case .sameVolumeRelocate:
+            "/Relocated.txt"
+        }
+    }
+
+    var receiptID: UUID {
+        switch self {
+        case .newStore:
+            UUID(uuidString: "a4000000-0000-0000-0000-000000000021")!
+        case .replacementStore:
+            UUID(uuidString: "a4000000-0000-0000-0000-000000000022")!
+        case .makeFolder:
+            UUID(uuidString: "a4000000-0000-0000-0000-000000000023")!
+        case .sameVolumeRelocate:
+            UUID(uuidString: "a4000000-0000-0000-0000-000000000024")!
         }
     }
 }
@@ -3067,6 +3514,65 @@ private struct MoveThenThrowNativeTrashPerformer: LocalNativeTrashPerforming {
     }
 }
 
+private struct MoveThenReturnNilNativeTrashPerformer:
+    LocalNativeTrashPerforming
+{
+    let destination: URL
+
+    func trashItem(at source: URL) throws -> URL? {
+        try FileManager.default.moveItem(at: source, to: destination)
+        return nil
+    }
+}
+
+private struct ChangeSourceThenThrowNativeTrashPerformer:
+    LocalNativeTrashPerforming
+{
+    struct ExpectedFailure: Error {}
+    let holdingURL: URL
+
+    func trashItem(at source: URL) throws -> URL? {
+        try FileManager.default.moveItem(at: source, to: holdingURL)
+        try FileManager.default.createDirectory(
+            at: source,
+            withIntermediateDirectories: false
+        )
+        throw ExpectedFailure()
+    }
+}
+
+private struct HideRootThenThrowNativeTrashPerformer:
+    LocalNativeTrashPerforming
+{
+    struct ExpectedFailure: Error {}
+    let root: URL
+    let hiddenRoot: URL
+    let holdingURL: URL
+
+    func trashItem(at source: URL) throws -> URL? {
+        try FileManager.default.moveItem(at: source, to: holdingURL)
+        try FileManager.default.moveItem(at: root, to: hiddenRoot)
+        throw ExpectedFailure()
+    }
+}
+
+private struct ScriptedArtifactNativeTrashPerformer:
+    LocalNativeTrashPerforming
+{
+    let holdingURL: URL
+    let reportedURL: URL
+    let scriptedArtifactState: LocalRecoveryArtifactState
+
+    func trashItem(at source: URL) throws -> URL? {
+        try FileManager.default.moveItem(at: source, to: holdingURL)
+        return reportedURL
+    }
+
+    func artifactState(at _: URL) -> LocalRecoveryArtifactState {
+        scriptedArtifactState
+    }
+}
+
 private struct MovingNativeTrashPerformer: LocalNativeTrashPerforming {
     let destination: URL
 
@@ -3080,14 +3586,14 @@ private struct MoveThenThrowQuarantinePerformer: LocalQuarantinePerforming {
     struct ExpectedFailure: Error {}
 
     let holdingURL: URL
-    let scriptedArtifactState: LocalQuarantineArtifactState
+    let scriptedArtifactState: LocalRecoveryArtifactState
 
     func moveItem(at source: URL, to _: URL) throws {
         try FileManager.default.moveItem(at: source, to: holdingURL)
         throw ExpectedFailure()
     }
 
-    func artifactState(at _: URL) -> LocalQuarantineArtifactState {
+    func artifactState(at _: URL) -> LocalRecoveryArtifactState {
         scriptedArtifactState
     }
 }
@@ -3099,7 +3605,7 @@ private struct ThrowWithoutMovingQuarantinePerformer: LocalQuarantinePerforming 
         throw ExpectedFailure()
     }
 
-    func artifactState(at _: URL) -> LocalQuarantineArtifactState {
+    func artifactState(at _: URL) -> LocalRecoveryArtifactState {
         .unavailable(detail: "Inspection must not matter while the source remains.")
     }
 }
@@ -3197,12 +3703,23 @@ private final class BlockingLocalMutationHook:
 
     private let condition = NSCondition()
     private let failsWhenReleased: Bool
+    private let failsAfterPhysicalCommit: Bool
     private var startedCount = 0
     private var startedKinds: [ProviderMutationKind] = []
     private var released = false
 
-    init(failsWhenReleased: Bool = false) {
+    init(
+        failsWhenReleased: Bool = false,
+        failsAfterPhysicalCommit: Bool = false
+    ) {
         self.failsWhenReleased = failsWhenReleased
+        self.failsAfterPhysicalCommit = failsAfterPhysicalCommit
+    }
+
+    func afterPhysicalCommit(_: ProviderMutationReceipt) throws {
+        if failsAfterPhysicalCommit {
+            throw ScriptedFailure()
+        }
     }
 
     func beforeMutation(_ receipt: ProviderMutationReceipt) throws {

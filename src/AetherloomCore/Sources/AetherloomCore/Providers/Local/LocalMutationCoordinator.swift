@@ -410,7 +410,7 @@ actor LocalMutationCoordinator {
               case let .recovering(receipt, claimToken, _) = lifecycleByID[
                   claim.receipt.id
               ],
-              receipt == claim.receipt,
+              receiptsMatchForRecovery(receipt, claim.receipt),
               claimToken == claim.token else {
             return .blocked(barrierReceipt())
         }
@@ -425,8 +425,11 @@ actor LocalMutationCoordinator {
     func beginRecovery(
         for receipt: ProviderMutationReceipt
     ) -> ProviderMutationRecoveryClaimResult {
+        guard receipt.correlation != nil else {
+            return .inFlight
+        }
         if let lifecycle = lifecycleByID[receipt.id] {
-            guard lifecycle.receipt == receipt else {
+            guard receiptsMatchForRecovery(lifecycle.receipt, receipt) else {
                 return .inFlight
             }
             switch lifecycle {
@@ -474,7 +477,7 @@ actor LocalMutationCoordinator {
                 ? .unknownAfterRestart
                 : .inFlight
         }
-        guard lifecycle.receipt == receipt else {
+        guard receiptsMatchForRecovery(lifecycle.receipt, receipt) else {
             return .inFlight
         }
         switch lifecycle {
@@ -508,7 +511,7 @@ actor LocalMutationCoordinator {
               case let .recovering(receipt, claimToken, _) = lifecycleByID[
                   claim.receipt.id
               ],
-              receipt == claim.receipt,
+              receiptsMatchForRecovery(receipt, claim.receipt),
               claimToken == claim.token else {
             return
         }
@@ -520,7 +523,7 @@ actor LocalMutationCoordinator {
         guard case let .recovering(receipt, claimToken, origin) = lifecycleByID[
                   claim.receipt.id
               ],
-              receipt == claim.receipt,
+              receiptsMatchForRecovery(receipt, claim.receipt),
               claimToken == claim.token else {
             return
         }
@@ -759,6 +762,15 @@ actor LocalMutationCoordinator {
             origin: origin
         )
         return .claimed(claim)
+    }
+
+    private func receiptsMatchForRecovery(
+        _ owned: ProviderMutationReceipt,
+        _ candidate: ProviderMutationReceipt
+    ) -> Bool {
+        guard let correlation = owned.correlation else { return false }
+        return owned.identity == candidate.identity
+            && candidate.correlation == correlation
     }
 
     private func abandonTaskThatNeverStarted(_ id: UUID) {

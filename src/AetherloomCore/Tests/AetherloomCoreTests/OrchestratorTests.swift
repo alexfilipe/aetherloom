@@ -410,14 +410,18 @@ import Testing
         kind: .makeFolder(at: folder.path),
         precondition: .pathAbsent
     )
+    let unfinishedRunID = phase07UUID("000000000513")
     let receipt = ProviderMutationReceipt(
         id: phase07UUID("000000000512"),
         provider: .googleDrive,
         kind: .makeFolder,
         affectedPaths: [folder.path],
-        startedAt: phase07Date
+        startedAt: phase07Date,
+        correlation: ProviderMutationCorrelation(
+            runID: unfinishedRunID,
+            operationID: operation.id
+        )
     )
-    let unfinishedRunID = phase07UUID("000000000513")
     try await stores.journal.begin(
         runID: unfinishedRunID,
         syncSetID: syncSet.id,

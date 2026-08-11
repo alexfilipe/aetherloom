@@ -67,14 +67,18 @@ import Testing
         kind: .makeFolder(at: "/Pending"),
         precondition: .pathAbsent
     )
+    let runID = journalUUID("000000000203")
     let receipt = ProviderMutationReceipt(
         id: journalUUID("000000000202"),
         provider: .oneDrive,
         kind: .makeFolder,
         affectedPaths: ["/Pending"],
-        startedAt: journalDate
+        startedAt: journalDate,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
     )
-    let runID = journalUUID("000000000203")
     let syncSetID = journalUUID("000000000204")
     try await journal.begin(
         runID: runID,
@@ -109,6 +113,74 @@ import Testing
     #expect(await provider.finishCount() == 0)
 }
 
+@Test func recoveryRejectsDurableReceiptWithoutCorrelation() async throws {
+    let journal = InMemoryRunJournalStore()
+    let stores = recoveryStores(journal: journal)
+    let operation = Operation(
+        id: OperationID(journalUUID("000000000216")),
+        location: .oneDrive,
+        kind: .makeFolder(at: "/LegacyUnbound"),
+        precondition: .pathAbsent
+    )
+    let legacyReceipt = ProviderMutationReceipt(
+        id: journalUUID("000000000217"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/LegacyUnbound"],
+        startedAt: journalDate
+    )
+    let receipt = try CanonicalCoding.decoder().decode(
+        ProviderMutationReceipt.self,
+        from: CanonicalCoding.encoder().encode(legacyReceipt)
+    )
+    #expect(receipt.correlation == nil)
+    let provider = ScriptedIndeterminateRecoveryProvider(
+        locationID: .oneDrive,
+        state: .quiescent(.succeeded),
+        recoveryResult: .success(
+            ItemObservation(
+                location: .oneDrive,
+                path: "/LegacyUnbound",
+                kind: .folder
+            )
+        )
+    )
+    let runID = journalUUID("000000000218")
+    let syncSetID = journalUUID("000000000219")
+    try await journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "nil-durable-correlation")
+    )
+    try await journal.append(.intent(operation), runID: runID)
+    try await journal.append(
+        .mutationIndeterminate(
+            operationID: operation.id,
+            receipt: receipt,
+            occurredAt: journalDate
+        ),
+        runID: runID
+    )
+    let replay = try #require(
+        try await journal.unfinishedRun(for: syncSetID)
+    )
+
+    await #expect(
+        throws: RunRecoveryError.indeterminateMutationProviderCannotRecover(
+            operationID: operation.id
+        )
+    ) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores
+        ).recover(replay)
+    }
+
+    #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
+    #expect(await provider.recoveryProbeCount() == 0)
+    #expect(await provider.finishCount() == 0)
+}
+
 @Test func recoveryDoesNotClearIndeterminateStateWhenTruthProbeFails() async throws {
     let journal = InMemoryRunJournalStore()
     let stores = recoveryStores(journal: journal)
@@ -127,14 +199,18 @@ import Testing
         kind: .makeFolder(at: "/Uncertain"),
         precondition: .pathAbsent
     )
+    let runID = journalUUID("000000000207")
     let receipt = ProviderMutationReceipt(
         id: journalUUID("000000000206"),
         provider: .oneDrive,
         kind: .makeFolder,
         affectedPaths: ["/Uncertain"],
-        startedAt: journalDate
+        startedAt: journalDate,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
     )
-    let runID = journalUUID("000000000207")
     let syncSetID = journalUUID("000000000208")
     try await journal.begin(
         runID: runID,
@@ -219,12 +295,17 @@ import Testing
         kind: .makeFolder(at: "/Expected"),
         precondition: .pathAbsent
     )
+    let runID = journalUUID("000000000214")
     let receipt = ProviderMutationReceipt(
         id: journalUUID("000000000213"),
         provider: .oneDrive,
         kind: .makeFolder,
         affectedPaths: ["/Expected"],
-        startedAt: journalDate
+        startedAt: journalDate,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
     )
     let provider = ScriptedIndeterminateRecoveryProvider(
         locationID: .oneDrive,
@@ -237,7 +318,6 @@ import Testing
             )
         )
     )
-    let runID = journalUUID("000000000214")
     let syncSetID = journalUUID("000000000215")
     try await journal.begin(
         runID: runID,
@@ -296,12 +376,17 @@ func relocateRecoveryRequiresTwoEndpointVersionProof(
         kind: .relocate(itemRef: ItemRef(expected), to: destinationPath),
         precondition: .versionMatches(expectedVersion)
     )
+    let runID = journalUUID("000000000303")
     let receipt = ProviderMutationReceipt(
         id: journalUUID("000000000302"),
         provider: .oneDrive,
         kind: .relocate,
         affectedPaths: [sourcePath, destinationPath],
-        startedAt: journalDate
+        startedAt: journalDate,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
     )
     let provider = PathScriptedRelocateRecoveryProvider(
         locationID: .oneDrive,
@@ -311,7 +396,6 @@ func relocateRecoveryRequiresTwoEndpointVersionProof(
             expectedVersion: expectedVersion
         )
     )
-    let runID = journalUUID("000000000303")
     let syncSetID = journalUUID("000000000304")
     try await journal.begin(
         runID: runID,
@@ -492,7 +576,11 @@ func relocateRecoveryRequiresTwoEndpointVersionProof(
         provider: .oneDrive,
         kind: .makeFolder,
         affectedPaths: ["/Stable"],
-        startedAt: journalDate
+        startedAt: journalDate,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
     )
     let provider = ScriptedIndeterminateRecoveryProvider(
         locationID: .oneDrive,
@@ -583,7 +671,11 @@ func relocateRecoveryRequiresTwoEndpointVersionProof(
         provider: .oneDrive,
         kind: .relocate,
         affectedPaths: [sourcePath, destinationPath],
-        startedAt: journalDate
+        startedAt: journalDate,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
     )
     let provider = PathScriptedRelocateRecoveryProvider(
         locationID: .oneDrive,

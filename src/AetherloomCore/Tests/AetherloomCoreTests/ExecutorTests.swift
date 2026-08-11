@@ -191,26 +191,30 @@ import Testing
 
 @Test func indeterminateMutationRemainsPendingAndStopsTheSchedule() async throws {
     let base = FakeStorageProvider(locationID: .oneDrive)
-    let receipt = ProviderMutationReceipt(
-        id: uuid("000000000611"),
-        provider: .oneDrive,
-        kind: .makeFolder,
-        affectedPaths: ["/Indeterminate"],
-        startedAt: phase06Date
-    )
-    let provider = DeadlineMakeFolderProvider(
-        base: base,
-        error: .mutationIndeterminate(receipt)
-    )
     let operation = operation(
         "000000000612",
         location: .oneDrive,
         kind: .makeFolder(at: "/Indeterminate"),
         precondition: .pathAbsent
     )
+    let runID = uuid("000000000613")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000611"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/Indeterminate"],
+        startedAt: phase06Date,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
+    )
+    let provider = DeadlineMakeFolderProvider(
+        base: base,
+        error: .mutationIndeterminate(receipt)
+    )
     let plan = planForOperations([operation], path: "/Indeterminate")
     let stores = EngineStores.inMemory()
-    let runID = uuid("000000000613")
     let executor = try executor(
         providerMap: [.oneDrive: provider],
         stores: stores,
@@ -244,12 +248,23 @@ import Testing
 }
 
 @Test func indeterminateMutationDominatesOtherSameBatchStops() async throws {
+    let indeterminate = operation(
+        "000000000617",
+        location: .oneDrive,
+        kind: .makeFolder(at: "/Indeterminate"),
+        precondition: .pathAbsent
+    )
+    let runID = uuid("000000000619")
     let receipt = ProviderMutationReceipt(
         id: uuid("000000000616"),
         provider: .oneDrive,
         kind: .makeFolder,
         affectedPaths: ["/Indeterminate"],
-        startedAt: phase06Date
+        startedAt: phase06Date,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: indeterminate.id
+        )
     )
     let indeterminateProvider = DeadlineMakeFolderProvider(
         base: FakeStorageProvider(locationID: .oneDrive),
@@ -260,12 +275,6 @@ import Testing
         path: "/Drifted",
         contents: Data("occupied".utf8),
         modifiedAt: phase06Date
-    )
-    let indeterminate = operation(
-        "000000000617",
-        location: .oneDrive,
-        kind: .makeFolder(at: "/Indeterminate"),
-        precondition: .pathAbsent
     )
     let drifted = operation(
         "000000000618",
@@ -289,7 +298,7 @@ import Testing
 
     let summary = try await executor.execute(
         plan,
-        runID: uuid("000000000619")
+        runID: runID
     )
     let replay = try #require(
         try await stores.journal.unfinishedRun(for: plan.syncSetID)
@@ -370,12 +379,17 @@ import Testing
         kind: .makeFolder(at: "/ReconcileFailure"),
         precondition: .pathAbsent
     )
+    let runID = uuid("000000000631")
     let receipt = ProviderMutationReceipt(
         id: uuid("000000000630"),
         provider: .oneDrive,
         kind: .makeFolder,
         affectedPaths: ["/ReconcileFailure"],
-        startedAt: phase06Date
+        startedAt: phase06Date,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
     )
     let destinationBase = FakeStorageProvider(locationID: .oneDrive)
     _ = await destinationBase.putFolder(path: "/ReconcileFailure")
@@ -385,7 +399,6 @@ import Testing
     )
     let journal = FailMarkReconciledRunJournalStore()
     let stores = engineStores(journal: journal)
-    let runID = uuid("000000000631")
     let syncSetID = uuid("000000000632")
     try await journal.begin(
         runID: runID,
@@ -486,6 +499,55 @@ import Testing
     #expect(!didFinishRecovery)
 }
 
+@Test func recoveryRejectsLiveReceiptWithoutCorrelation() async throws {
+    let operation = operation(
+        "000000000640",
+        location: .oneDrive,
+        kind: .makeFolder(at: "/NilLiveCorrelation"),
+        precondition: .pathAbsent
+    )
+    let runID = uuid("000000000641")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000642"),
+        provider: .oneDrive,
+        kind: .makeFolder,
+        affectedPaths: ["/NilLiveCorrelation"],
+        startedAt: phase06Date
+    )
+    let provider = DeadlineMakeFolderProvider(
+        base: FakeStorageProvider(locationID: .oneDrive),
+        error: .mutationIndeterminate(receipt)
+    )
+    let stores = EngineStores.inMemory()
+    try await stores.journal.begin(
+        runID: runID,
+        syncSetID: operation.id.rawValue,
+        fingerprint: PlanFingerprint(rawValue: "nil-live-correlation")
+    )
+    try await stores.journal.append(.intent(operation), runID: runID)
+    let replay = try #require(
+        try await stores.journal.unfinishedRun(for: operation.id.rawValue)
+    )
+
+    await #expect(
+        throws: RunRecoveryError.indeterminateMutationProviderCannotRecover(
+            operationID: operation.id
+        )
+    ) {
+        _ = try await RunRecovery(
+            providers: [.oneDrive: provider],
+            stores: stores,
+            environment: phase06Environment()
+        ).recover(replay)
+    }
+
+    #expect(
+        try await stores.journal.unfinishedRun(for: operation.id.rawValue) != nil
+    )
+    let didFinishRecovery = await provider.didFinishRecovery()
+    #expect(!didFinishRecovery)
+}
+
 @Test func preStartMutationDeadlineIsTerminalWithoutIndeterminateReceipt() async throws {
     let base = FakeStorageProvider(locationID: .oneDrive)
     let provider = DeadlineMakeFolderProvider(
@@ -526,15 +588,6 @@ import Testing
         contents: Data("late fetch".utf8),
         modifiedAt: phase06Date
     )
-    let receipt = ProviderMutationReceipt(
-        id: uuid("000000000616"),
-        provider: .googleDrive,
-        kind: .fetch,
-        affectedPaths: [sourceItem.path],
-        startedAt: phase06Date
-    )
-    let source = IndeterminateFetchProvider(base: sourceBase, receipt: receipt)
-    let destination = FakeStorageProvider(locationID: .oneDrive)
     let conflictCopyPath: SyncPath = "/LateFetch (Conflict copy).txt"
     let operation = operation(
         "000000000617",
@@ -546,6 +599,20 @@ import Testing
         ),
         precondition: .pathAbsent
     )
+    let runID = uuid("000000000618")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000616"),
+        provider: .googleDrive,
+        kind: .fetch,
+        affectedPaths: [sourceItem.path],
+        startedAt: phase06Date,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
+    )
+    let source = IndeterminateFetchProvider(base: sourceBase, receipt: receipt)
+    let destination = FakeStorageProvider(locationID: .oneDrive)
     let plan = planForOperations([operation], path: conflictCopyPath)
     let stores = EngineStores.inMemory()
     let stageRoot = try temporaryDirectory("phase06-indeterminate-fetch")
@@ -559,7 +626,7 @@ import Testing
 
     let summary = try await executor.execute(
         plan,
-        runID: uuid("000000000618")
+        runID: runID
     )
     #expect(
         summary.outcome
@@ -641,22 +708,27 @@ import Testing
         modifiedAt: phase06Date
     )
     let destinationPath: SyncPath = "/After.txt"
-    let receipt = ProviderMutationReceipt(
-        id: uuid("000000000637"),
-        provider: .oneDrive,
-        kind: .relocate,
-        affectedPaths: [source.path, destinationPath],
-        startedAt: phase06Date
-    )
-    let provider = IndeterminateRelocateProvider(
-        base: base,
-        receipt: receipt
-    )
     let relocate = operation(
         "000000000638",
         location: .oneDrive,
         kind: .relocate(itemRef: ItemRef(source), to: destinationPath),
         precondition: .versionMatches(source.version)
+    )
+    let runID = uuid("000000000639")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000637"),
+        provider: .oneDrive,
+        kind: .relocate,
+        affectedPaths: [source.path, destinationPath],
+        startedAt: phase06Date,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: relocate.id
+        )
+    )
+    let provider = IndeterminateRelocateProvider(
+        base: base,
+        receipt: receipt
     )
     let plan = planForOperations([relocate], path: source.path)
     let stores = EngineStores.inMemory()
@@ -668,7 +740,7 @@ import Testing
 
     let summary = try await executor.execute(
         plan,
-        runID: uuid("000000000639")
+        runID: runID
     )
 
     #expect(
@@ -734,17 +806,6 @@ import Testing
         contents: Data("late store".utf8),
         modifiedAt: phase06Date
     )
-    let receipt = ProviderMutationReceipt(
-        id: uuid("000000000623"),
-        provider: .oneDrive,
-        kind: .store,
-        affectedPaths: [sourceItem.path],
-        startedAt: phase06Date
-    )
-    let destination = IndeterminateStoreProvider(
-        base: FakeStorageProvider(locationID: .oneDrive),
-        receipt: receipt
-    )
     let operation = operation(
         "000000000624",
         location: .oneDrive,
@@ -754,6 +815,22 @@ import Testing
             overwrite: .neverOverwrite
         ),
         precondition: .pathAbsent
+    )
+    let runID = uuid("000000000625")
+    let receipt = ProviderMutationReceipt(
+        id: uuid("000000000623"),
+        provider: .oneDrive,
+        kind: .store,
+        affectedPaths: [sourceItem.path],
+        startedAt: phase06Date,
+        correlation: ProviderMutationCorrelation(
+            runID: runID,
+            operationID: operation.id
+        )
+    )
+    let destination = IndeterminateStoreProvider(
+        base: FakeStorageProvider(locationID: .oneDrive),
+        receipt: receipt
     )
     let plan = planForOperations([operation], path: sourceItem.path)
     let stores = EngineStores.inMemory()
@@ -768,7 +845,7 @@ import Testing
 
     let summary = try await executor.execute(
         plan,
-        runID: uuid("000000000625")
+        runID: runID
     )
     #expect(
         summary.outcome == .mutationIndeterminate(

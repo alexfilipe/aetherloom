@@ -66,6 +66,8 @@ public struct ProviderMutationReceipt: Codable, Hashable, Sendable {
     public var kind: ProviderMutationKind
     public var affectedPaths: [SyncPath]
     public var startedAt: Date
+    /// Optional only so legacy/unbound diagnostic receipts remain decodable.
+    /// A nil value never authorizes WAL recovery or releases an I/O owner.
     public var correlation: ProviderMutationCorrelation?
 
     public init(

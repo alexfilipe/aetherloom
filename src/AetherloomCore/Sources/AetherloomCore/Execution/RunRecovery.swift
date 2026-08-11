@@ -495,11 +495,10 @@ private func receiptMatches(
     operation: Operation,
     runID: UUID
 ) -> Bool {
-    if let correlation = receipt.correlation,
-       correlation != ProviderMutationCorrelation(
-           runID: runID,
-           operationID: operation.id
-       ) {
+    guard receipt.correlation == ProviderMutationCorrelation(
+        runID: runID,
+        operationID: operation.id
+    ) else {
         return false
     }
     switch operation.kind {
