@@ -1543,26 +1543,28 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     try FileManager.default.moveItem(at: source, to: destination)
                     try hook.afterPhysicalCommit(receipt)
                 } else {
+                    physicalCommitMayHaveApplied = true
                     do {
                         try relocation.copyItem(at: source, to: destination)
-                        guard try LocalFolderStorageProvider.equivalentTrees(
-                            source,
-                            destination
-                        ) else {
-                            throw ProviderError.itemUnavailable(
-                                provider: locationID,
-                                path: newPath
-                            )
-                        }
                     } catch {
-                        if filesystemEntryExists(at: destination) {
-                            let recovery = try quarantineURL(
-                                destination,
-                                originalPath: newPath
-                            )
-                            await artifacts.recordRecovery(recovery, for: newPath)
-                        }
+                        try await restoreUnappliedCrossVolumeRelocation(
+                            source: current,
+                            destination: destination,
+                            destinationPath: newPath,
+                            mutationReceipt: receipt
+                        )
+                        physicalCommitMayHaveApplied = false
                         throw error
+                    }
+                    try hook.afterPhysicalCommit(receipt)
+                    guard try LocalFolderStorageProvider.equivalentTrees(
+                        source,
+                        destination
+                    ) else {
+                        throw ProviderError.itemUnavailable(
+                            provider: locationID,
+                            path: newPath
+                        )
                     }
                     do {
                         try relocation.beforeSourceTrash(at: source)
@@ -1571,14 +1573,15 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                             source: source,
                             mutationReceipt: receipt
                         )
+                        try hook.afterPhysicalCommit(receipt)
                     } catch {
-                        if filesystemEntryExists(at: destination) {
-                            let recovery = try quarantineURL(
-                                destination,
-                                originalPath: newPath
-                            )
-                            await artifacts.recordRecovery(recovery, for: newPath)
-                        }
+                        try await restoreUnappliedCrossVolumeRelocation(
+                            source: current,
+                            destination: destination,
+                            destinationPath: newPath,
+                            mutationReceipt: receipt
+                        )
+                        physicalCommitMayHaveApplied = false
                         throw error
                     }
                 }
@@ -2035,13 +2038,55 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             return checked
         }
 
-        private func quarantineURL(
-            _ source: URL,
-            originalPath: SyncPath
-        ) throws -> URL {
-            let destination = try quarantineDestinationURL(originalPath: originalPath)
-            try FileManager.default.moveItem(at: source, to: destination)
-            return destination
+        /// Rolls an interrupted cross-volume copy back to a provably unapplied
+        /// state. An ordinary failure is safe only while the exact source is
+        /// still live and the attempted destination is positively absent or
+        /// preserved in a positively verified quarantine artifact. Any
+        /// inspection or cleanup ambiguity retains the operation receipt.
+        private func restoreUnappliedCrossVolumeRelocation(
+            source: ItemObservation,
+            destination: URL,
+            destinationPath: SyncPath,
+            mutationReceipt: ProviderMutationReceipt
+        ) async throws {
+            do {
+                _ = try matchingCurrentState(of: source)
+            } catch {
+                throw ProviderError.mutationIndeterminate(mutationReceipt)
+            }
+
+            switch relocation.artifactState(at: destination) {
+            case .missing:
+                return
+            case .unavailable:
+                throw ProviderError.mutationIndeterminate(mutationReceipt)
+            case .present:
+                break
+            }
+
+            let recovery = try quarantineDestinationURL(
+                originalPath: destinationPath
+            )
+            do {
+                try relocation.moveItemToRecovery(
+                    at: destination,
+                    to: recovery
+                )
+            } catch {
+                // A move can throw after applying. Endpoint inspection below
+                // decides whether cleanup is safely complete.
+            }
+
+            guard case .missing = relocation.artifactState(at: destination),
+                  case .present = relocation.artifactState(at: recovery) else {
+                throw ProviderError.mutationIndeterminate(mutationReceipt)
+            }
+            do {
+                _ = try matchingCurrentState(of: source)
+            } catch {
+                throw ProviderError.mutationIndeterminate(mutationReceipt)
+            }
+            await artifacts.recordRecovery(recovery, for: destinationPath)
         }
 
         private func quarantineDestinationURL(
@@ -2285,6 +2330,18 @@ private enum SystemLocalRecoveryArtifactInspector {
 protocol LocalRelocationPerforming: Sendable {
     func copyItem(at source: URL, to destination: URL) throws
     func beforeSourceTrash(at source: URL) throws
+    func moveItemToRecovery(at source: URL, to destination: URL) throws
+    func artifactState(at url: URL) -> LocalRecoveryArtifactState
+}
+
+extension LocalRelocationPerforming {
+    func moveItemToRecovery(at source: URL, to destination: URL) throws {
+        try FileManager.default.moveItem(at: source, to: destination)
+    }
+
+    func artifactState(at url: URL) -> LocalRecoveryArtifactState {
+        SystemLocalRecoveryArtifactInspector.state(at: url)
+    }
 }
 
 struct SystemLocalRelocationPerformer: LocalRelocationPerforming {

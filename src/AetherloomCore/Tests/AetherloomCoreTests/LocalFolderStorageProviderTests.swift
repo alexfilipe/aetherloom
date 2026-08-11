@@ -1994,6 +1994,7 @@ struct LocalFolderStorageProviderTests {
         let unrelatedURL = root.appendingPathComponent("Unrelated.txt")
         let unrelatedContents = Data("must stay untouched".utf8)
         try unrelatedContents.write(to: unrelatedURL)
+        let inspector = ScriptedVolumeInspector()
 
         let targetPath: SyncPath = mode.targetPath
         let targetURL = root.appendingPathComponent(
@@ -2002,9 +2003,24 @@ struct LocalFolderStorageProviderTests {
         let originalContents = Data("original destination".utf8)
         if mode == .replacementStore {
             try originalContents.write(to: targetURL)
-        } else if mode == .sameVolumeRelocate {
+        } else if mode.isRelocate {
             try Data("relocate me".utf8).write(
                 to: root.appendingPathComponent("RelocateSource.txt")
+            )
+        }
+        if mode.isCrossVolume {
+            let destinationFolder = targetURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: destinationFolder,
+                withIntermediateDirectories: true
+            )
+            await inspector.setVolumeIdentity(
+                "source-volume",
+                at: root.appendingPathComponent("RelocateSource.txt")
+            )
+            await inspector.setVolumeIdentity(
+                "destination-volume",
+                at: destinationFolder
             )
         }
 
@@ -2019,12 +2035,12 @@ struct LocalFolderStorageProviderTests {
         )
         let clock = ProviderMutationManualClock()
         let hook = BlockingLocalMutationHook(
-            failsAfterPhysicalCommit: true
+            failsAfterPhysicalCommitCall: mode.physicalCommitFailureCall
         )
         let provider = await LocalFolderStorageProvider.make(
             location: location,
             rootURL: root,
-            volumes: ScriptedVolumeInspector(),
+            volumes: inspector,
             deadlines: ProviderDeadlines(
                 ioNanoseconds: 1,
                 clock: clock,
@@ -2085,7 +2101,9 @@ struct LocalFolderStorageProviderTests {
                 kind: .makeFolder(at: targetPath),
                 precondition: .pathAbsent
             )
-        case .sameVolumeRelocate:
+        case .sameVolumeRelocate,
+             .crossVolumePostCopy,
+             .crossVolumePostTrash:
             let source = try #require(
                 initialSnapshot.observations.byPath["/RelocateSource.txt"]
             )
@@ -2163,12 +2181,19 @@ struct LocalFolderStorageProviderTests {
             replay.indeterminateReceiptsByOperation[operationID]
         )
         #expect(receipt.id == receiptID)
+        #expect(receipt.provider == location.id)
+        #expect(receipt.kind == mode.expectedMutationKind)
         #expect(
             receipt.correlation == ProviderMutationCorrelation(
                 runID: runID,
                 operationID: operationID
             )
         )
+        if mode.isRelocate {
+            #expect(
+                receipt.affectedPaths == ["/RelocateSource.txt", targetPath]
+            )
+        }
         #expect(
             summary.outcome == .mutationIndeterminate(
                 location: location.id,
@@ -2220,6 +2245,20 @@ struct LocalFolderStorageProviderTests {
                 )
             )
             #expect(try Data(contentsOf: targetURL) == Data("relocate me".utf8))
+        case .crossVolumePostCopy:
+            #expect(
+                try Data(
+                    contentsOf: root.appendingPathComponent("RelocateSource.txt")
+                ) == Data("relocate me".utf8)
+            )
+            #expect(try Data(contentsOf: targetURL) == Data("relocate me".utf8))
+        case .crossVolumePostTrash:
+            #expect(
+                !FileManager.default.fileExists(
+                    atPath: root.appendingPathComponent("RelocateSource.txt").path
+                )
+            )
+            #expect(try Data(contentsOf: targetURL) == Data("relocate me".utf8))
         }
 
         guard case .unavailable = (await provider.scan(.entireDrive)).status else {
@@ -2231,6 +2270,348 @@ struct LocalFolderStorageProviderTests {
         }
         #expect(hook.kinds().count == 1)
         #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
+
+        if mode.isCrossVolume {
+            await inspector.setResponsiveness(
+                .unreachable(detail: "Cross-volume recovery truth unavailable.")
+            )
+            await remote.clearCallLog()
+            let remoteLocation = SyncLocation(id: .oneDrive, kind: .oneDrive)
+            let orchestrator = SyncOrchestrator(
+                locations: [
+                    location.id: location,
+                    remoteLocation.id: remoteLocation,
+                ],
+                providers: [
+                    location.id: provider,
+                    remoteLocation.id: remote,
+                ],
+                stores: stores,
+                stage: ContentStage(
+                    rootDirectory: world.appendingPathComponent("PreparationStage"),
+                    byteLimit: 1_000_000
+                ),
+                environment: EngineEnvironment(
+                    now: { Date(timeIntervalSince1970: 1_800_000_222) },
+                    makeID: {
+                        UUID(
+                            uuidString: "a4000000-0000-0000-0000-000000000013"
+                        )!
+                    }
+                )
+            )
+            let syncSet = SyncSet(
+                id: syncSetID,
+                name: "Cross-volume post-commit uncertainty",
+                locations: [location.id, remoteLocation.id]
+            )
+            do {
+                _ = try await orchestrator.prepare(syncSet)
+                Issue.record(
+                    "Preparation crossed unavailable cross-volume recovery truth."
+                )
+            } catch is RunRecoveryError {
+                // Recovery must keep the WAL and owner until both endpoints
+                // become positively inspectable.
+            } catch {
+                Issue.record("Unexpected preparation error: \(error)")
+            }
+            #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
+            #expect(await provider.indeterminateMutationReceipt() == receipt)
+            #expect(await remote.callLog().isEmpty)
+        }
+    }
+
+    @Test(arguments: CrossVolumeCopyFailureMode.allCases)
+    func crossVolumeCopyFailureRetainsOwnershipOnlyWhenTruthIsAmbiguous(
+        mode: CrossVolumeCopyFailureMode
+    ) async throws {
+        let world = try makeRoot("cross-volume-copy-failure-\(mode.rawValue)")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Root", isDirectory: true)
+        let destinationFolder = root.appendingPathComponent(
+            "Destination",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: destinationFolder,
+            withIntermediateDirectories: true
+        )
+        let sourceURL = root.appendingPathComponent("Source.txt")
+        let destinationURL = destinationFolder.appendingPathComponent("Moved.txt")
+        let contents = Data("copy failure must remain attributable".utf8)
+        try contents.write(to: sourceURL)
+        let inspector = ScriptedVolumeInspector()
+        await inspector.setVolumeIdentity("source-volume", at: sourceURL)
+        await inspector.setVolumeIdentity(
+            "destination-volume",
+            at: destinationFolder
+        )
+        let location = localLocation()
+        let mutationIDs = LockedUUIDSequence(
+            [
+                mode.receiptID,
+                UUID(uuidString: "a6000000-0000-0000-0000-000000000024")!,
+            ]
+        )
+        let provider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: inspector,
+            deadlines: ProviderDeadlines(
+                now: { Date(timeIntervalSince1970: 1_800_000_230) },
+                makeMutationID: { mutationIDs.next() }
+            ),
+            relocation: ScriptedCrossVolumeCopyFailurePerformer(
+                mode: mode,
+                destination: destinationURL
+            ),
+            registry: LocalRootIORegistry()
+        )
+        let source = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
+        )
+        let destinationPath: SyncPath = "/Destination/Moved.txt"
+        let correlation = ProviderMutationCorrelation(
+            runID: UUID(uuidString: "a6000000-0000-0000-0000-000000000001")!,
+            operationID: OperationID(
+                UUID(uuidString: "a6000000-0000-0000-0000-000000000002")!
+            )
+        )
+        let caughtError: ProviderError?
+        do {
+            _ = try await ProviderMutationExecutionContext.$correlation
+                .withValue(correlation) {
+                    try await provider.relocate(source, to: destinationPath)
+                }
+            Issue.record("The scripted cross-volume copy failure succeeded.")
+            caughtError = nil
+        } catch let providerError as ProviderError {
+            caughtError = providerError
+        } catch {
+            Issue.record("Unexpected cross-volume copy error: \(error)")
+            caughtError = nil
+        }
+
+        #expect(try Data(contentsOf: sourceURL) == contents)
+        switch mode {
+        case .noMutation:
+            #expect(
+                caughtError == .itemUnavailable(
+                    provider: location.id,
+                    path: source.path
+                )
+            )
+            #expect(await provider.indeterminateMutationReceipt() == nil)
+            #expect(!FileManager.default.fileExists(atPath: destinationURL.path))
+            guard case .complete = (await provider.scan(.entireDrive)).status else {
+                Issue.record("A proven no-op copy retained false ownership.")
+                return
+            }
+            _ = try await provider.makeFolder(at: "/AfterProvenNoMutation")
+
+        case .destinationInspectionUnavailable,
+             .cleanupArtifactInspectionUnavailable:
+            guard case let .mutationIndeterminate(receipt)? = caughtError else {
+                Issue.record("Ambiguous copy failure did not retain its receipt.")
+                return
+            }
+            #expect(receipt.id == mode.receiptID)
+            #expect(receipt.provider == location.id)
+            #expect(receipt.kind == .relocate)
+            #expect(receipt.affectedPaths == [source.path, destinationPath])
+            #expect(receipt.correlation == correlation)
+            #expect(await provider.indeterminateMutationReceipt() == receipt)
+            guard case .quiescent(.failed) = await provider
+                .indeterminateMutationState(for: receipt) else {
+                Issue.record("Ambiguous copy cleanup released root ownership.")
+                return
+            }
+            guard case .unavailable = (await provider.scan(.entireDrive)).status else {
+                Issue.record("A scan crossed ambiguous copy cleanup.")
+                return
+            }
+            await #expect(throws: ProviderError.self) {
+                _ = try await provider.makeFolder(at: "/BlockedAfterCopyFailure")
+            }
+        }
+    }
+
+    @Test func crossVolumePostTrashWALSurvivesRestartAndReconciles() async throws {
+        let world = try makeRoot("cross-volume-durable-restart")
+        defer { try? FileManager.default.removeItem(at: world) }
+        let root = world.appendingPathComponent("Root", isDirectory: true)
+        let destinationFolder = root.appendingPathComponent(
+            "Destination",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: destinationFolder,
+            withIntermediateDirectories: true
+        )
+        let sourceURL = root.appendingPathComponent("Source.txt")
+        let destinationURL = destinationFolder.appendingPathComponent("Moved.txt")
+        let contents = Data("durable cross-volume relocate".utf8)
+        try contents.write(to: sourceURL)
+        let location = SyncLocation(
+            id: LocationID(
+                rawValue: UUID(
+                    uuidString: "a6000000-0000-0000-0000-000000000011"
+                )!
+            ),
+            kind: .localFolder,
+            configuration: [
+                LocalFolderStorageProvider.expectedVolumeIdentityConfigurationKey:
+                    "scripted-volume",
+            ]
+        )
+        let inspector = ScriptedVolumeInspector()
+        await inspector.setVolumeIdentity("source-volume", at: sourceURL)
+        await inspector.setVolumeIdentity(
+            "destination-volume",
+            at: destinationFolder
+        )
+        let receiptID = UUID(
+            uuidString: "a6000000-0000-0000-0000-000000000012"
+        )!
+        let hook = BlockingLocalMutationHook(
+            failsAfterPhysicalCommitCall: 2
+        )
+        hook.release()
+        let firstProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: inspector,
+            deadlines: ProviderDeadlines(
+                now: { Date(timeIntervalSince1970: 1_800_000_240) },
+                makeMutationID: { receiptID }
+            ),
+            mutationHook: hook,
+            registry: LocalRootIORegistry()
+        )
+        let source = try #require(
+            (await firstProvider.scan(.entireDrive))
+                .observations.byPath["/Source.txt"]
+        )
+        let destinationPath: SyncPath = "/Destination/Moved.txt"
+        let operationID = OperationID(
+            UUID(uuidString: "a6000000-0000-0000-0000-000000000013")!
+        )
+        let operation = AetherloomCore.Operation(
+            id: operationID,
+            location: location.id,
+            kind: .relocate(itemRef: ItemRef(source), to: destinationPath),
+            precondition: .versionMatches(source.version)
+        )
+        let syncSetID = UUID(
+            uuidString: "a6000000-0000-0000-0000-000000000014"
+        )!
+        let runID = UUID(
+            uuidString: "a6000000-0000-0000-0000-000000000015"
+        )!
+        let engineRoot = world.appendingPathComponent("Engine", isDirectory: true)
+        let recordsRoot = engineRoot.appendingPathComponent("Records")
+        let journalRoot = engineRoot.appendingPathComponent("Journal")
+        let firstStores = EngineStores(
+            baseRecords: try FileBaseRecordStore(rootURL: recordsRoot),
+            journal: try FileRunJournalStore(rootURL: journalRoot),
+            conflicts: InMemoryConflictStore(),
+            adviceCache: InMemoryAdviceCacheStore(),
+            activity: InMemoryActivityStore(),
+            locations: InMemoryLocationRegistry()
+        )
+        let plan = SyncPlan(
+            syncSetID: syncSetID,
+            generatedAt: Date(timeIntervalSince1970: 1_800_000_240),
+            decisions: [],
+            schedule: OperationSchedule(operations: [operation]),
+            gate: .clear,
+            fingerprint: PlanFingerprint(rawValue: "cross-volume-durable-restart")
+        )
+        let summary = try await ScheduleExecutor(
+            providers: [location.id: firstProvider],
+            stores: firstStores,
+            stage: ContentStage(
+                rootDirectory: world.appendingPathComponent("ExecutionStage"),
+                byteLimit: 1_000_000
+            ),
+            environment: ExecutionEnvironment(
+                now: { Date(timeIntervalSince1970: 1_800_000_241) }
+            )
+        ).execute(plan, runID: runID)
+        #expect(
+            summary.outcome == .mutationIndeterminate(
+                location: location.id,
+                path: source.path,
+                receiptID: receiptID
+            )
+        )
+        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(try Data(contentsOf: destinationURL) == contents)
+
+        let restartInspector = ScriptedVolumeInspector()
+        await restartInspector.setVolumeIdentity("source-volume", at: sourceURL)
+        await restartInspector.setVolumeIdentity(
+            "destination-volume",
+            at: destinationFolder
+        )
+        let recoveryHook = RecordingLocalMutationHook()
+        let restartedProvider = await LocalFolderStorageProvider.make(
+            location: location,
+            rootURL: root,
+            volumes: restartInspector,
+            mutationHook: recoveryHook,
+            registry: LocalRootIORegistry()
+        )
+        let restartedStores = EngineStores(
+            baseRecords: try FileBaseRecordStore(rootURL: recordsRoot),
+            journal: try FileRunJournalStore(rootURL: journalRoot),
+            conflicts: InMemoryConflictStore(),
+            adviceCache: InMemoryAdviceCacheStore(),
+            activity: InMemoryActivityStore(),
+            locations: InMemoryLocationRegistry()
+        )
+        let replay = try #require(
+            try await restartedStores.journal.unfinishedRun(for: syncSetID)
+        )
+        let durableReceipt = try #require(
+            replay.indeterminateReceiptsByOperation[operationID]
+        )
+        #expect(durableReceipt.id == receiptID)
+        #expect(durableReceipt.provider == location.id)
+        #expect(durableReceipt.kind == .relocate)
+        #expect(durableReceipt.affectedPaths == [source.path, destinationPath])
+        #expect(
+            durableReceipt.correlation == ProviderMutationCorrelation(
+                runID: runID,
+                operationID: operationID
+            )
+        )
+        #expect(replay.pendingOperationIDs == [operationID])
+        #expect(!replay.events.contains { $0.isRunFinished })
+        #expect(!replay.events.contains { $0.resultOperationID == operationID })
+
+        let report = try await RunRecovery(
+            providers: [location.id: restartedProvider],
+            stores: restartedStores,
+            environment: ExecutionEnvironment(
+                now: { Date(timeIntervalSince1970: 1_800_000_242) }
+            )
+        ).recover(replay)
+
+        #expect(report.reconciledOperations == [operationID])
+        #expect(report.restoredRecords == 0)
+        #expect(try await restartedStores.baseRecords.records(for: syncSetID).isEmpty)
+        #expect(try await restartedStores.journal.unfinishedRun(for: syncSetID) == nil)
+        #expect(recoveryHook.kinds().isEmpty)
+        #expect(hook.kinds() == [.relocate])
+        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(try Data(contentsOf: destinationURL) == contents)
+        guard case .complete = (await restartedProvider.scan(.entireDrive)).status else {
+            Issue.record("Provider did not resume after durable relocate recovery.")
+            return
+        }
+        _ = try await restartedProvider.makeFolder(at: "/AfterRestartRecovery")
     }
 
     @Test func nativeTrashProducesRecoverableArtifact() async throws {
@@ -3359,6 +3740,8 @@ enum PostPhysicalCommitMode: String, CaseIterable, Sendable {
     case replacementStore
     case makeFolder
     case sameVolumeRelocate
+    case crossVolumePostCopy
+    case crossVolumePostTrash
 
     var targetPath: SyncPath {
         switch self {
@@ -3370,6 +3753,8 @@ enum PostPhysicalCommitMode: String, CaseIterable, Sendable {
             "/CreatedFolder"
         case .sameVolumeRelocate:
             "/Relocated.txt"
+        case .crossVolumePostCopy, .crossVolumePostTrash:
+            "/Destination/Relocated.txt"
         }
     }
 
@@ -3383,6 +3768,67 @@ enum PostPhysicalCommitMode: String, CaseIterable, Sendable {
             UUID(uuidString: "a4000000-0000-0000-0000-000000000023")!
         case .sameVolumeRelocate:
             UUID(uuidString: "a4000000-0000-0000-0000-000000000024")!
+        case .crossVolumePostCopy:
+            UUID(uuidString: "a4000000-0000-0000-0000-000000000025")!
+        case .crossVolumePostTrash:
+            UUID(uuidString: "a4000000-0000-0000-0000-000000000026")!
+        }
+    }
+
+    var isRelocate: Bool {
+        switch self {
+        case .sameVolumeRelocate,
+             .crossVolumePostCopy,
+             .crossVolumePostTrash:
+            true
+        case .newStore, .replacementStore, .makeFolder:
+            false
+        }
+    }
+
+    var isCrossVolume: Bool {
+        switch self {
+        case .crossVolumePostCopy, .crossVolumePostTrash:
+            true
+        case .newStore,
+             .replacementStore,
+             .makeFolder,
+             .sameVolumeRelocate:
+            false
+        }
+    }
+
+    var physicalCommitFailureCall: Int {
+        self == .crossVolumePostTrash ? 2 : 1
+    }
+
+    var expectedMutationKind: ProviderMutationKind {
+        switch self {
+        case .newStore, .replacementStore:
+            .store
+        case .makeFolder:
+            .makeFolder
+        case .sameVolumeRelocate,
+             .crossVolumePostCopy,
+             .crossVolumePostTrash:
+            .relocate
+        }
+    }
+}
+
+enum CrossVolumeCopyFailureMode: String, CaseIterable, Sendable {
+    case noMutation
+    case destinationInspectionUnavailable
+    case cleanupArtifactInspectionUnavailable
+
+    var receiptID: UUID {
+        switch self {
+        case .noMutation:
+            UUID(uuidString: "a6000000-0000-0000-0000-000000000021")!
+        case .destinationInspectionUnavailable:
+            UUID(uuidString: "a6000000-0000-0000-0000-000000000022")!
+        case .cleanupArtifactInspectionUnavailable:
+            UUID(uuidString: "a6000000-0000-0000-0000-000000000023")!
         }
     }
 }
@@ -3678,6 +4124,56 @@ private final class TrashFailureOnceRelocationPerformer:
     }
 }
 
+private final class ScriptedCrossVolumeCopyFailurePerformer:
+    LocalRelocationPerforming,
+    @unchecked Sendable
+{
+    struct ExpectedFailure: Error {}
+
+    let mode: CrossVolumeCopyFailureMode
+    let destination: URL
+
+    init(mode: CrossVolumeCopyFailureMode, destination: URL) {
+        self.mode = mode
+        self.destination = destination.standardizedFileURL
+    }
+
+    func copyItem(at source: URL, to destination: URL) throws {
+        switch mode {
+        case .noMutation:
+            break
+        case .destinationInspectionUnavailable,
+             .cleanupArtifactInspectionUnavailable:
+            try FileManager.default.copyItem(at: source, to: destination)
+        }
+        throw ExpectedFailure()
+    }
+
+    func beforeSourceTrash(at _: URL) throws {}
+
+    func moveItemToRecovery(at source: URL, to destination: URL) throws {
+        try FileManager.default.moveItem(at: source, to: destination)
+        if mode == .cleanupArtifactInspectionUnavailable {
+            throw ExpectedFailure()
+        }
+    }
+
+    func artifactState(at url: URL) -> LocalRecoveryArtifactState {
+        let standardized = url.standardizedFileURL
+        if mode == .destinationInspectionUnavailable,
+           standardized == destination {
+            return .unavailable(detail: "Destination inspection unavailable.")
+        }
+        if mode == .cleanupArtifactInspectionUnavailable,
+           standardized != destination {
+            return .unavailable(detail: "Cleanup artifact inspection unavailable.")
+        }
+        return FileManager.default.fileExists(atPath: standardized.path)
+            ? .present
+            : .missing
+    }
+}
+
 private final class RecordingLocalMutationHook:
     LocalMutationStarting,
     @unchecked Sendable
@@ -3704,21 +4200,30 @@ private final class BlockingLocalMutationHook:
 
     private let condition = NSCondition()
     private let failsWhenReleased: Bool
-    private let failsAfterPhysicalCommit: Bool
+    private let failingPhysicalCommitCall: Int?
     private var startedCount = 0
     private var startedKinds: [ProviderMutationKind] = []
+    private var physicalCommitCount = 0
     private var released = false
 
     init(
         failsWhenReleased: Bool = false,
-        failsAfterPhysicalCommit: Bool = false
+        failsAfterPhysicalCommit: Bool = false,
+        failsAfterPhysicalCommitCall: Int? = nil
     ) {
         self.failsWhenReleased = failsWhenReleased
-        self.failsAfterPhysicalCommit = failsAfterPhysicalCommit
+        self.failingPhysicalCommitCall = failsAfterPhysicalCommitCall
+            ?? (failsAfterPhysicalCommit ? 1 : nil)
     }
 
     func afterPhysicalCommit(_: ProviderMutationReceipt) throws {
-        if failsAfterPhysicalCommit {
+        condition.lock()
+        physicalCommitCount += 1
+        let shouldFail = failingPhysicalCommitCall.map {
+            $0 == physicalCommitCount
+        } ?? false
+        condition.unlock()
+        if shouldFail {
             throw ScriptedFailure()
         }
     }
