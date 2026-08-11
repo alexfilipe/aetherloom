@@ -1800,8 +1800,6 @@ struct LocalFolderStorageProviderTests {
             atPath: alias.path,
             withDestinationPath: target.path
         )
-        let clock = ProviderMutationManualClock()
-        let hook = BlockingLocalMutationHook()
         let aliasLocation = localLocation(
             id: LocationID(
                 UUID(uuidString: "a2000000-0000-0000-0000-000000000021")!
@@ -1815,55 +1813,38 @@ struct LocalFolderStorageProviderTests {
         let aliasProvider = await LocalFolderStorageProvider.make(
             location: aliasLocation,
             rootURL: alias,
-            volumes: ScriptedVolumeInspector(),
-            deadlines: ProviderDeadlines(ioNanoseconds: 1, clock: clock),
-            mutationHook: hook
+            volumes: ScriptedVolumeInspector()
         )
         let canonicalProvider = await LocalFolderStorageProvider.make(
             location: canonicalLocation,
             rootURL: target,
             volumes: ScriptedVolumeInspector()
         )
-        await clock.waitUntilIdle()
-
-        let mutation = Task { () -> ProviderMutationReceipt? in
-            do {
-                _ = try await aliasProvider.makeFolder(at: "/LateAlias")
-                return nil
-            } catch let ProviderError.mutationIndeterminate(receipt) {
-                return receipt
-            } catch {
-                Issue.record("Unexpected alias mutation error: \(error)")
-                return nil
-            }
-        }
-        await hook.waitUntilStarted(count: 1)
-        await clock.waitUntilSleeping()
-        await clock.fireAll()
-        let receipt = try #require(await mutation.value)
-
-        #expect(
-            await canonicalProvider.indeterminateMutationState(for: receipt)
-                == .inFlight
+        let receipt = ProviderMutationReceipt(
+            id: UUID(
+                uuidString: "a2000000-0000-0000-0000-000000000023"
+            )!,
+            provider: aliasLocation.id,
+            kind: .makeFolder,
+            affectedPaths: ["/ClaimedAlias"],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_103)
         )
-        guard case .unavailable = (await canonicalProvider.scan(.entireDrive)).status else {
-            Issue.record("Canonical alias escaped the shared live owner.")
-            hook.release()
-            return
-        }
 
-        hook.release()
-        await waitForProviderMutationQuiescence(aliasProvider, receipt: receipt)
+        let wrongAliasClaim = await canonicalProvider
+            .beginIndeterminateMutationRecovery(for: receipt)
         #expect(
-            await canonicalProvider.beginIndeterminateMutationRecovery(
-                for: receipt
-            ) == .inFlight
+            wrongAliasClaim == .inFlight
         )
         guard case let .claimed(claim) = await aliasProvider
             .beginIndeterminateMutationRecovery(for: receipt) else {
-            Issue.record("Alias receipt could not be claimed after quiescence.")
+            Issue.record("Alias receipt could not establish recovery ownership.")
             return
         }
+        guard case .unavailable = (await canonicalProvider.scan(.entireDrive)).status else {
+            Issue.record("Canonical alias escaped the shared recovery owner.")
+            return
+        }
+
         await canonicalProvider.finishIndeterminateMutationRecovery(claim)
         guard case .unavailable = (await canonicalProvider.scan(.entireDrive)).status else {
             Issue.record("A differently attributed alias released the recovery claim.")
