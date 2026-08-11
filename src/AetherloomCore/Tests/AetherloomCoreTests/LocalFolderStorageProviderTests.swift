@@ -1775,7 +1775,12 @@ struct LocalFolderStorageProviderTests {
                 byteLimit: 1_000_000
             ),
             environment: EngineEnvironment(
-                now: { Date(timeIntervalSince1970: 1_800_000_212) }
+                now: { Date(timeIntervalSince1970: 1_800_000_212) },
+                makeID: {
+                    UUID(
+                        uuidString: "a3000000-0000-0000-0000-000000000017"
+                    )!
+                }
             )
         )
         let syncSet = SyncSet(
@@ -1784,8 +1789,13 @@ struct LocalFolderStorageProviderTests {
             locations: [location.id, remoteLocation.id]
         )
 
-        await #expect(throws: RunRecoveryError.self) {
+        do {
             _ = try await orchestrator.prepare(syncSet)
+            Issue.record("Fresh preparation crossed the unresolved trash barrier.")
+        } catch is RunRecoveryError {
+            // The unfinished WAL and prepared-only receipt must stop preparation.
+        } catch {
+            Issue.record("Unexpected preparation error: \(error)")
         }
         #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
         #expect(await provider.indeterminateMutationReceipt() == receipt)
@@ -2793,7 +2803,7 @@ struct LocalFolderStorageProviderTests {
     }
 }
 
-private enum PostMoveTrashMode: String, CaseIterable, Sendable {
+enum PostMoveTrashMode: String, CaseIterable, Sendable {
     case nativeTrash
     case quarantine
 }
