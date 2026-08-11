@@ -2014,6 +2014,7 @@ struct LocalFolderStorageProviderTests {
             [
                 receiptID,
                 UUID(uuidString: "a4000000-0000-0000-0000-000000000011")!,
+                UUID(uuidString: "a4000000-0000-0000-0000-000000000012")!,
             ]
         )
         let clock = ProviderMutationManualClock()

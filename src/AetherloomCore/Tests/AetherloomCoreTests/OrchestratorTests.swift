@@ -518,10 +518,17 @@ import Testing
         stores: stores
     )
     _ = oldOrchestrator
+    let correlation = ProviderMutationCorrelation(
+        runID: phase07UUID("000000000523"),
+        operationID: OperationID(phase07UUID("000000000522"))
+    )
 
     let mutation = Task { () -> ProviderMutationReceipt? in
         do {
-            _ = try await firstProvider.makeFolder(at: "/LateFolder")
+            _ = try await ProviderMutationExecutionContext.$correlation
+                .withValue(correlation) {
+                    try await firstProvider.makeFolder(at: "/LateFolder")
+                }
             return nil
         } catch let ProviderError.mutationIndeterminate(receipt) {
             return receipt
