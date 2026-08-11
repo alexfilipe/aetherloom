@@ -172,16 +172,17 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         ownership: LocalRootOwnership
     ) async -> VolumeProperties? {
         guard ownership.admissionIssue == nil else { return nil }
-        let result = await ownership.mutations.performRead(
-            nanoseconds: deadlines.probeNanoseconds,
-            clock: deadlines.clock
-        ) {
-            guard let canonicalRootPath = ownership.canonicalRootPath,
-                  resolvedExistingRootPath(rootURL) == canonicalRootPath else {
-                return nil
+        let result: LocalOwnedReadResult<VolumeProperties?> = await ownership
+            .mutations.performRead(
+                nanoseconds: deadlines.probeNanoseconds,
+                clock: deadlines.clock
+            ) {
+                guard let canonicalRootPath = ownership.canonicalRootPath,
+                      resolvedExistingRootPath(rootURL) == canonicalRootPath else {
+                    return nil
+                }
+                await volumes.properties(for: rootURL)
             }
-            await volumes.properties(for: rootURL)
-        }
         switch result {
         case let .completed(properties):
             return properties
