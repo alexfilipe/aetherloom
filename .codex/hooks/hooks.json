@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "shell_command|exec_command|unified_exec",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/scripts/require-agent-attribution.sh\"",
+            "statusMessage": "Checking agent attribution"
+          }
+        ]
+      }
+    ]
+  }
+}

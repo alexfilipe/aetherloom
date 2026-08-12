@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Claude Code PreToolUse hook: refuse to post a GitHub comment as the user
-# without agent attribution.
+# PreToolUse hook: refuse to post a GitHub comment as the user without agent
+# attribution. Wired up for both Claude Code (.claude/settings.json) and Codex
+# (.codex/hooks/hooks.json), which share this hook protocol.
 #
 # A comment reads as written by whoever's account posted it, so an agent
 # posting under the maintainer's account silently claims authorship. AGENTS.md
@@ -17,7 +18,15 @@ set -uo pipefail
 
 PREFIX='Authored by agent: '
 
-command_text=$(jq -r '.tool_input.command // ""' 2>/dev/null) || exit 0
+# The two harnesses spell the command differently: Claude Code sends a shell
+# string, Codex sends argv. Accept either, and any of the keys they use, so one
+# script covers both.
+command_text=$(jq -r '
+  [.tool_input // {} | .command?, .argv?, .cmd?]
+  | map(select(. != null))
+  | map(if type == "array" then map(tostring) | join(" ") else tostring end)
+  | join(" ")
+' 2>/dev/null) || exit 0
 [ -n "$command_text" ] || exit 0
 
 matches() { printf '%s' "$command_text" | grep -qE "$1"; }
