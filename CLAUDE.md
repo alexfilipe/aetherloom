@@ -148,7 +148,8 @@ When a conflict is found:
 ## Pull request comments
 
 - Whenever posting a pull request comment as an agent, begin the comment with the exact prefix `Authored by agent: `. A comment is attributed to whoever's account posted it, so the prefix is what stops an agent from silently claiming the maintainer's authorship. Commits are out of scope: automating those is expected.
-- This is enforced rather than merely requested: `scripts/require-agent-attribution.sh` runs as a `PreToolUse` hook and blocks any `gh` command that posts a comment without the prefix. It is wired up for Claude Code in `.claude/settings.json` and for Codex in `.codex/hooks/hooks.json`; Codex asks you to trust the hook the first time it runs. Any other harness must apply the rule itself.
+- `scripts/require-agent-attribution.sh` enforces this where it can: it runs as a `PreToolUse` hook and blocks a `gh` command that posts a comment or review whose body does not begin with the prefix. It is wired up for Claude Code in `.claude/settings.json` and for Codex in `.codex/hooks/hooks.json`; Codex asks you to trust the hook the first time it runs.
+- The hook is a guard against forgetting, not a boundary. It covers what it can see: `gh` commands, and connector tools that pass a comment body as structured input under a recognizable name. A GitHub connector this hook does not recognize, a harness with no hook support, or a run with hook trust bypassed all fall back to the instruction above. A body passed by file or stdin cannot be read here and is refused, so inline it with `--body`.
 
 ## Evaluation-loop development
 
