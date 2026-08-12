@@ -148,6 +148,7 @@ When a conflict is found:
 ## Pull request comments
 
 - Whenever posting a pull request comment as an agent, begin the comment with the exact prefix `Authored by agent: `.
+- If a GitHub CLI (`gh`) command fails or does not run correctly inside the sandbox, retry the same command outside the sandbox with the required approval; sandboxed `gh` commands can fail intermittently.
 
 ## Evaluation-loop development
 
