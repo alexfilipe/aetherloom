@@ -10,9 +10,11 @@ This file defines the decision log, the default cutoff catalog, and the durable 
 
 ## Canonical decision log
 
-Material decisions go in [`DECISIONS.md`](DECISIONS.md) beside this policy, separate from work orders, implementation plans, and chat transcripts. The file is append-only: preserve existing entries and append resolution or supersession metadata instead of rewriting history.
+Material decisions go in [`DECISIONS.md`](DECISIONS.md) beside this policy, separate from work orders, implementation plans, and chat transcripts. The file is append-only with respect to decision content: never revise a recorded rationale, scope, risk, evidence, or trigger after the fact — append resolution or supersession metadata instead.
 
-Claim the next `CUT-<number>` from the log on the default branch at publication time, not from a stale local copy: parallel branches can otherwise claim the same number. Re-check for a collision when rebasing or merging. If a collision has already landed, keep the first-merged entry's number and renumber the later entry to the next free number, updating every citation of it. Identifiers are labels, not history — renumbering a duplicate is a correction, not a rewrite of the decision it records.
+Identifiers are labels rather than decision content, so a duplicated `CUT-<number>` may be corrected in place. That is the one permitted in-place edit, it changes nothing a reader relies on, and it must leave the entry otherwise byte-identical.
+
+Claim the next `CUT-<number>` from the log on the default branch at publication time, not from a stale local copy: parallel branches can otherwise claim the same number. Re-check for a collision when rebasing or merging. If a collision has already landed, keep the first-merged entry's number and renumber the later entry to the next free number, updating every citation of it in the same change. Check for citations outside the log first; if the old identifier has already been cited somewhere you cannot update, leave both entries alone and append re-designation metadata instead, since a label nobody can follow is worse than a duplicate.
 
 Add a durable entry when:
 
