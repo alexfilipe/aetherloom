@@ -143,6 +143,22 @@ When a conflict is found:
 - Do not introduce real network dependencies into core tests.
 - Do not commit secrets, tokens, test credentials, or `.env` files.
 
+## Evaluation-loop development
+
+Every feature and pull request follows the bounded evaluation loop in [`architecture/orchestration/README.md`](architecture/orchestration/README.md): **define → implement → evaluate → decide**.
+
+- Define acceptance scenarios, changed safety boundaries, required validation, evaluation budget, finish line, residual-risk policy, and reopen triggers before a complete evaluation.
+- Use one writer per branch/worktree. For multi-PR stacks, use a durable orchestrator and only one active writer across the stack.
+- Trigger bounded read-only Explorer and Test Designer subagents only for independent questions with exact inputs, evidence contracts, and stop conditions. Small, understood changes do not need ceremonial subagents.
+- Create tasks just in time: implementation only after its base is stable, independent evaluation only after an exact validated base/head pair is frozen and published.
+- Default to one complete independent evaluation for safety-critical work, one correction batch, targeted verification by the original evaluator, and one exact-head authoritative validation.
+- Require another fresh complete evaluation only when corrections add a safety boundary, change the architecture/acceptance contract, substantially rewrite evaluated code, or cannot be verified narrowly. A third complete evaluation requires explicit user approval and new P0/P1 evidence.
+- Freeze and present the merge gate when all listed scenarios pass, no P0/P1 finding remains, exact-head validation is green, and P2 residual risks have exact revisit triggers. Do not continue evaluating merely to seek more comments.
+- Serialize Swift and other shared-resource tests with one explicit test-lock owner.
+- Do not merge, change PR state or bases, resolve threads, force-push, or perform destructive Git recovery without explicit authority.
+
+Durable cutoffs are mandatory but selective. Record finish lines, accepted/deferred P2 risks, evaluation-budget extensions, narrow retry allowances, freezes/reopens, and cross-PR routing decisions in the separate append-only `architecture/cutoff-decisions.md` log using [`architecture/orchestration/cutoffs/TEMPLATE.md`](architecture/orchestration/cutoffs/TEMPLATE.md). Follow [`architecture/orchestration/cutoffs/README.md`](architecture/orchestration/cutoffs/README.md). Do not log every command or use a cutoff to waive a safety invariant, acceptance criterion, or required validation.
+
 ## Validation
 
 After code changes, run the relevant tests when possible.
