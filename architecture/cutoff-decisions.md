@@ -126,3 +126,8 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Revisit when a completed feature or PR demonstrates that a default cutoff either allowed a P0/P1 defect through or required redundant evaluation without producing new actionable evidence.
 - Status: accepted
 - Resolving PR/SHA: Pending publication of the documentation change.
+
+## PR-number metadata appended 2026-08-12
+
+- CUT-003 through CUT-008: References to “expected PR #16” reflected the plan when those decisions were recorded and are now superseded for numbering only. PR #16 was assigned to the evaluation-loop documentation; the strong-version-evidence PR number remains pending. The recorded strong-evidence scope, bases, implementation SHAs, CI evidence, risks, and revisit triggers are unchanged.
+- CUT-009: Published as draft PR #16. The framework was introduced by `ab6965e74786ce66a30d56e898bae0ebc1b7c5cd`; this appended metadata is the only post-publication correction.
