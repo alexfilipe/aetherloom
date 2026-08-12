@@ -433,6 +433,7 @@ struct SyncSetDetailView: View {
             case .held: return "Needs review"
             case .refused: return "Paused for safety"
             case .stoppedForReplan: return "Stopped to replan"
+            case .mutationIndeterminate: return "Paused for recovery"
             case .cancelled: return "Cancelled"
             case .failed: return "Failed"
             }

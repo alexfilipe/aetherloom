@@ -195,7 +195,7 @@ import Testing
     #expect(overwriteCount(plan) == 0)
 }
 
-@Test func degradedHashEqualSizeAndMtimeProducesNoAction() async throws {
+@Test func degradedHashEqualSizeAndMtimeCannotProveConvergence() async throws {
     var capabilities = ProviderCapabilities.fullFidelity
     capabilities.hasContentHashes = false
     let syncSet = makeSyncSet([.localFolder, .nasFolder])
@@ -208,8 +208,9 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
 
-    #expect(plan.schedule.operations.isEmpty)
-    #expect(plan.conflicts.isEmpty)
+    #expect(plan.conflicts.count == 1)
+    #expect(conflictCopyCount(plan) == 2)
+    #expect(overwriteCount(plan) == 0)
 }
 
 @Test func iCloudPlaceholderDoesNotProduceDeleteActions() async throws {
@@ -416,6 +417,40 @@ import Testing
     ])
 
     #expect(throws: OperationScheduleValidationError.transferAfterTrash(transferID)) {
+        try schedule.validate()
+    }
+}
+
+@Test func scheduleValidatorRejectsDirectoryTrashBeforeDescendant() throws {
+    let parentID = testOperationID("000000000011")
+    let childID = testOperationID("000000000012")
+    let schedule = OperationSchedule(operations: [
+        Operation(
+            id: parentID,
+            location: .oneDrive,
+            kind: .trash(
+                itemRef: testItemRef(path: "/Folder", kind: .folder)
+            ),
+            precondition: .versionMatches(testVersion())
+        ),
+        Operation(
+            id: childID,
+            location: .oneDrive,
+            kind: .trash(
+                itemRef: testItemRef(path: "/Folder/Child.txt")
+            ),
+            precondition: .versionMatches(testVersion())
+        ),
+    ])
+
+    #expect(
+        throws: OperationScheduleValidationError
+            .directoryTrashBeforeDescendant(
+                directory: "/Folder",
+                descendant: "/Folder/Child.txt",
+                location: .oneDrive
+            )
+    ) {
         try schedule.validate()
     }
 }
@@ -759,15 +794,45 @@ import Testing
 @Test func versionComparisonMatrixTreatsUnknownAsNotEqual() {
     let baseDate = fixedDate
 
-    #expect(ItemVersion(contentHash: "a", size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(contentHash: "a", size: 2, modifiedAt: baseDate.addingTimeInterval(1), revisionToken: "2")) == .same)
+    #expect(ItemVersion(contentHash: "a", size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(contentHash: "a", size: 2, modifiedAt: baseDate.addingTimeInterval(1), revisionToken: "2")) == .strong)
     #expect(ItemVersion(contentHash: "a").comparison(to: ItemVersion(contentHash: "b")) == .different)
-    #expect(ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "2")) == .same)
+    #expect(ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "2")) == .different)
+    #expect(ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "sha256-a").comparison(to: ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "sha256-b")) == .different)
     #expect(ItemVersion(size: 1, modifiedAt: baseDate).comparison(to: ItemVersion(size: 2, modifiedAt: baseDate)) == .different)
-    #expect(ItemVersion(revisionToken: "1").comparison(to: ItemVersion(revisionToken: "1")) == .same)
+    #expect(ItemVersion(size: 1, modifiedAt: baseDate).comparison(to: ItemVersion(size: 1, modifiedAt: baseDate)) == .weak)
+    #expect(ItemVersion(revisionToken: "1").comparison(to: ItemVersion(revisionToken: "1")) == .weak)
     #expect(ItemVersion(revisionToken: "1").comparison(to: ItemVersion(revisionToken: "2")) == .different)
     #expect(ItemVersion(contentHash: "a").comparison(to: ItemVersion(revisionToken: "a")) == .unknown)
     #expect(ItemVersion().comparison(to: ItemVersion()) == .unknown)
     #expect(ItemVersion(contentHash: "a").isSameVersion(as: ItemVersion(revisionToken: "a")) == false)
+}
+
+@Test func sha256RevisionTokenRequiresCompleteHexDigest() {
+    let lowercase = "sha256-" + String(repeating: "a5", count: 32)
+    let uppercase = "sha256-" + String(repeating: "A5", count: 32)
+
+    #expect(ItemVersion(revisionToken: lowercase).sha256RevisionHash == lowercase)
+    #expect(ItemVersion(revisionToken: uppercase).sha256RevisionHash == lowercase)
+    #expect(ItemVersion(revisionToken: lowercase).hasStrongEvidence)
+    #expect(
+        ItemVersion(revisionToken: lowercase).comparison(
+            to: ItemVersion(revisionToken: uppercase)
+        ) == .strong
+    )
+
+    for malformed in [
+        "sha256-",
+        "sha256-a",
+        "sha256-" + String(repeating: "a", count: 63),
+        "sha256-" + String(repeating: "a", count: 65),
+        "sha256-" + String(repeating: "g", count: 64),
+        "SHA256-" + String(repeating: "a", count: 64),
+    ] {
+        let version = ItemVersion(revisionToken: malformed)
+        #expect(version.sha256RevisionHash == nil)
+        #expect(!version.hasStrongEvidence)
+        #expect(version.comparison(to: version) == .weak)
+    }
 }
 
 private func makeSyncSet(_ locations: [LocationID] = [.iCloudDrive, .googleDrive, .oneDrive]) -> SyncSet {
@@ -943,8 +1008,18 @@ private func testContentRef(path: SyncPath) -> ContentRef {
     ContentRef(makeObservation(.googleDrive, path: path, hash: "source"))
 }
 
-private func testItemRef(path: SyncPath) -> ItemRef {
-    ItemRef(makeObservation(.oneDrive, path: path, hash: "destination"))
+private func testItemRef(
+    path: SyncPath,
+    kind: ItemKind = .file
+) -> ItemRef {
+    ItemRef(
+        makeObservation(
+            .oneDrive,
+            path: path,
+            hash: "destination",
+            kind: kind
+        )
+    )
 }
 
 private func testOperationID(_ suffix: String) -> OperationID {

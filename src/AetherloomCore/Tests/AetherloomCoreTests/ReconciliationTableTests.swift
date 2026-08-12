@@ -32,6 +32,17 @@ import Testing
     #expect(isInSync(verdict))
 }
 
+@Test func weaklyEqualEditsAreNotConverged() {
+    let weak = ItemVersion(size: 4, modifiedAt: testDate)
+    let verdict = reconcileTracked([
+        .localFolder: .changed(weak),
+        .nasFolder: .changed(weak),
+        .googleDrive: .matchesBase,
+    ])
+
+    #expect(conflictKind(verdict) == .editEdit)
+}
+
 @Test func row04_divergentEdits_conflict() {
     let verdict = reconcileTracked([
         .localFolder: .changed(version("local")),
@@ -175,6 +186,21 @@ import Testing
     ])
 
     #expect(isInSync(verdict))
+}
+
+@Test func weaklyEqualAppearedFilesAreNotConverged() {
+    let weak = ItemVersion(size: 4, modifiedAt: testDate)
+    let verdict = reconcileAppeared([
+        .localFolder: .appeared(
+            item(.localFolder, path: "/New.txt", version: weak)
+        ),
+        .nasFolder: .appeared(
+            item(.nasFolder, path: "/New.txt", version: weak)
+        ),
+        .googleDrive: .missing,
+    ])
+
+    #expect(conflictKind(verdict) == .createCreate)
 }
 
 @Test func row16_divergentAppeared_conflict() {

@@ -1,13 +1,36 @@
+import CryptoKit
 import Foundation
 
 enum ContentHashing {
+    static let chunkSize = 1_048_576
+
     static func hash(_ data: Data) -> String {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        let prime: UInt64 = 1_099_511_628_211
-        for byte in data {
-            hash ^= UInt64(byte)
-            hash = hash &* prime
+        let digest = SHA256.hash(data: data)
+        return formatted(digest)
+    }
+
+    static func hashFile(at url: URL) throws -> (hash: String, size: Int64) {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        var size: Int64 = 0
+        while true {
+            let chunk: Data
+            if #available(macOS 10.15.4, *) {
+                chunk = try handle.read(upToCount: chunkSize) ?? Data()
+            } else {
+                chunk = handle.readData(ofLength: chunkSize)
+            }
+            guard !chunk.isEmpty else { break }
+            size += Int64(chunk.count)
+            hasher.update(data: chunk)
         }
-        return String(format: "fnv1a64-%016llx", hash)
+        return (formatted(hasher.finalize()), size)
+    }
+
+    private static func formatted<Digest: Sequence>(_ digest: Digest) -> String
+    where Digest.Element == UInt8 {
+        "sha256-" + digest.map { String(format: "%02x", $0) }.joined()
     }
 }

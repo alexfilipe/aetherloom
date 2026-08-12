@@ -84,6 +84,11 @@ public actor FlakyStorageProvider: StorageProvider {
         return try await base.currentState(of: observation)
     }
 
+    public func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
+        try await prepare(for: .refineEvidence)
+        return try await base.refineEvidence(for: observation)
+    }
+
     private func prepare(for operation: FakeProviderOperation) async throws {
         if var mutations = mutationsByOperation[operation], !mutations.isEmpty {
             let mutation = mutations.removeFirst()
