@@ -174,7 +174,9 @@ Every feature and pull request follows the bounded evaluation loop in [`architec
 - Serialize Swift and other shared-resource tests with one explicit test-lock owner.
 - Do not merge, change PR state or bases, resolve threads, force-push, or perform destructive Git recovery without explicit authority.
 
-Durable cutoffs are mandatory but selective. Record finish lines, accepted/deferred P2 risks, evaluation-budget extensions, narrow retry allowances, freezes/reopens, and cross-PR routing decisions in the separate append-only [`architecture/orchestration/cutoffs/DECISIONS.md`](architecture/orchestration/cutoffs/DECISIONS.md) log, in the format defined by [`architecture/orchestration/cutoffs/README.md`](architecture/orchestration/cutoffs/README.md). Follow that policy. Do not log every command or use a cutoff to waive a safety invariant, acceptance criterion, or required validation.
+Durable cutoffs are mandatory but selective. Record finish lines, accepted/deferred P2 risks, evaluation-budget extensions, narrow retry allowances, freezes/reopens, and cross-PR routing decisions in the separate [`architecture/orchestration/cutoffs/DECISIONS.md`](architecture/orchestration/cutoffs/DECISIONS.md) log, in the format defined by [`architecture/orchestration/cutoffs/README.md`](architecture/orchestration/cutoffs/README.md). Follow that policy. Do not log every command or use a cutoff to waive a safety invariant, acceptance criterion, or required validation.
+
+Read that log before starting a PR: it carries the open backlog and the standing constraints that bind new work. Keep it short. Recorded decision content is never rewritten, but closed entries are retired from the log once their unfired deferrals and residual risks are carried forward into its backlog, per the pruning rules in that policy. Git holds the retired text verbatim, so do not add an archive file.
 
 ## Validation
 
