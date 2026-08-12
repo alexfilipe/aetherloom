@@ -45,21 +45,22 @@ Rules that keep the layers honest:
 
 ## One interaction, end to end
 
-"Sync now" on the *Documents* sync set — everything below is real code (✅), no mocked responses:
+Target “Sync now” flow after the L4 protocol migration (the current production app still uses the demo session):
 
 ```text
 View button ─▶ AppModel.syncNow(setID)
   ─▶ EngineSession.prepare(syncSetID)                    SyncOrchestrator.prepare()
         availability → scan → reconcile → plan → gate → ChangePreview (+ advice)
   ◀─ SyncPreparation
-  gate clear?  ── yes ─▶ EngineSession.execute(preparation, approval: nil)
-  │                        journal → verify → apply → verify → BaseRecords update
-  │                      ◀─ SyncRunSummary → toast + Activity refresh
-  └─ no (holds) ─▶ AppModel presents PreviewChangesSheet
-                     user reviews sections, acknowledges trash/conflict counts
-                     ─▶ PlanApproval(fingerprint, counts) ─▶ execute(…, approval)
-                     engine re-validates approval; drift ⇒ stoppedForReplan ⇒
-                     UI says "Files changed while you were reviewing — preview again."
+  ─▶ AppModel presents PreviewChangesSheet for clear or held plans
+       user reviews; held plans require trash/conflict acknowledgements
+       ─▶ WorkspaceExecutionConfirmation(fingerprint, times, counts)
+       ─▶ EngineSession.execute(…, confirmation)
+            bridge validates and derives internal core PlanApproval? (nil only for clear)
+            all-location preflight → journal → verify → apply → verify → BaseRecords
+       ◀─ SyncRunSummary → toast + Activity refresh
+       drift ⇒ stoppedForReplan ⇒
+       UI says "Files changed while you were reviewing — preview again."
 ```
 
 The `EngineEvent` stream (activity appended, run finished, availability changed) fans out to `AppModel`, which refreshes cached snapshots so Overview badges, sidebar counts, and the Activity feed stay live without polling.

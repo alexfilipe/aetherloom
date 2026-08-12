@@ -22,4 +22,4 @@ Capability secrecy tests MUST scan encoded manifest, `SyncLocation`, activity, d
 
 ## Finish and stop
 
-Apply the shared [validation ladder](local-workspace-mvp.md#validation-ladder-for-l2l5). Finish only when LW-09 and supporting persistence cases pass, no P0/P1 remains, and exact-head evidence is accepted. Freeze and stop for the user merge. Do not start L4.
+Apply the shared [validation ladder](local-workspace-mvp.md#validation-ladder-for-l2l5). The durable orchestrator's [LW-20](local-workspace-mvp.md#acceptance-matrix--one-owner-per-scenario) evidence gate blocks L3. Finish only when LW-09 and supporting persistence cases pass, no P0/P1 remains, and exact-head evidence is accepted. Freeze and stop for the user merge. Do not start L4.

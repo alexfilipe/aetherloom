@@ -23,6 +23,12 @@ Full entries for decisions whose feature or pull request is still in flight. App
 - Status: proposed
 - Resolving PR/SHA: PR #26 / pending frozen head and user merge.
 
+## Progress metadata appended 2026-08-12
+
+- CUT-025: The first published candidate was `19550973c75ab68aa61839f101085df20028f5fc` on base `15baf5c7a0899e9c8b901c67315f4f0a5d86a0c5`; exact-head CI run 109 succeeded. Its independent complete evaluation returned **CHANGES REQUIRED** with four P1 and three P2 findings. One coherent correction batch was authorized to close all seven.
+- CUT-025 handoff ordering: Repository publication rules govern the remaining correction loop: repeat applicable static/focused/full/audit checks, freeze the corrected candidate, push/publish it, and prove local/upstream/origin/GitHub PR base/head equality before the original evaluator's targeted recheck (or any required fresh evaluation). The correction invalidates evaluation and later exact-head evidence for `19550973c75ab68aa61839f101085df20028f5fc`. Exact-head CI/macOS/user gates follow the evaluator disposition.
+- CUT-025 corrected-head provenance: The correction commit cannot contain its own SHA. Its exact SHA and local/upstream/origin/GitHub equality MUST therefore be recorded in the post-publication handoff evidence before evaluator recheck. The resolving user-merge SHA remains pending; CUT-025 stays active.
+
 ## Carried backlog
 
 Open deferrals and accepted residual risks from closed decisions. Each is still live: treat the trigger as the condition that turns it into work. The named entry holds the full reasoning and evidence; retrieve it with its batch's command in the closed index below.

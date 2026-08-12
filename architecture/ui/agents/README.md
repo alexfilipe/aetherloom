@@ -20,7 +20,7 @@ Strictly serial by default. 07, 08, and 09 may run in parallel **only** in separ
 2. File boundaries: tasks 01–02 work only in `src/AetherloomCore/` (the `AetherloomBridge` target + its tests — **never** editing existing `AetherloomCore`/`AetherloomIntelligence` sources); tasks 03–10 work only in `src/AetherloomApp/` (plus bridge additions their spec explicitly names). Never touch `www/`, `README.md`, `CLAUDE.md`, `architecture/` except `architecture/ui/11-functioning-vs-placeholder.md` status updates.
 3. Zero third-party dependencies. `AetherloomBridge` imports `AetherloomCore`/Foundation only — no SwiftUI/AppKit (a test enforces this).
 4. Swift 6 strict concurrency; bridge values `Sendable + Hashable`; mutable state in actors or the `@MainActor ObservableObject` app model.
-5. **The engine decides, the UI presents**: no verdict/gate/count/threshold logic outside `AetherloomCore`; `PlanApproval` is constructed only via `makeApproval` (`architecture/ui/04-display-models.md §4`).
+5. **The engine decides, the UI presents**: no verdict/gate/count/threshold logic outside `AetherloomCore`; AppModel creates only `WorkspaceExecutionConfirmation` via `makeConfirmation`, and the bridge alone derives internal core `PlanApproval?` (`architecture/ui/04-display-models.md §4`).
 6. Canonical sentences render verbatim; engine-authored `message`/`detail`/`summary` strings are never rewritten.
 7. Placeholders follow the five conventions in `architecture/ui/11-functioning-vs-placeholder.md § Placeholder conventions`, and that matrix is updated in the same change.
 8. **Visual parity**: the demo shell's approved look (cards, mesh hero, tones, spacing) is preserved unless the screen doc says otherwise. Reshape data sources, not aesthetics.

@@ -16,7 +16,41 @@ This document is the normative production contract for Aetherloom's local-folder
 
 The bridge MAY map typed engine and workspace failures into calm display errors, but it MUST preserve refusal/hold meaning, fingerprints, counts, paths, and reasons.
 
-The production seam adds bridge-owned values equivalent to `FolderEnrollmentGrant` (display metadata, chosen root reference, and a separate `FolderAccessRecord`) and `WorkspaceExecutionConfirmation` (preparation fingerprint, confirmation time/expiry, and required trash/conflict acknowledgements). Exact Swift names may follow existing conventions, but `EngineSession`/`WorkspaceEngineSession` MUST expose enrollment, reauthorization, and execution in a way that makes capability separation and non-optional confirmation type-checkable. It MUST NOT reduce these to an absolute-path string or a Boolean “approved” flag.
+The production seam uses these bridge-owned semantic shapes (member spelling may follow repository conventions, but no member or method may be omitted or weakened):
+
+```swift
+public struct LocalFolderDraft: Sendable, Hashable {
+    public var displayName: String
+    public var kind: ProviderKind             // localFolder for this MVP
+}
+
+/// Opaque to AppModel/UI: encapsulates the selected root URL and bookmark
+/// capability created by the L5 macOS adapter. Only the adapter factory and
+/// session may access its stored payload; it exposes no raw path or bytes.
+public struct FolderAccessGrant: Sendable { /* opaque capability payload */ }
+
+public struct WorkspaceExecutionConfirmation: Codable, Hashable, Sendable {
+    public var planFingerprint: PlanFingerprint
+    public var confirmedAt: Date
+    public var expiresAt: Date
+    public var acknowledgedTrashCount: Int
+    public var acknowledgedConflictCount: Int
+}
+
+public protocol EngineSession: Sendable { // production-authority methods excerpt
+    func enrollLocalFolder(_ draft: LocalFolderDraft, access: FolderAccessGrant) async throws -> LocationState
+    func reauthorizeLocalFolder(_ locationID: LocationID, access: FolderAccessGrant) async throws -> LocationState
+    func prepare(syncSetID: UUID) async throws -> SyncPreparation
+    func execute(
+        _ preparation: SyncPreparation,
+        confirmation: WorkspaceExecutionConfirmation
+    ) async throws -> SyncRunSummary
+}
+```
+
+Enrollment and reauthorization accept a metadata draft plus a separate opaque capability, never an absolute-path string. `AppModel` may pass a grant from the L5 adapter directly to the session but MUST NOT retain or inspect its URL/bookmark payload.
+
+The bridge validates fingerprint equality; `confirmedAt <= now < expiresAt`; `expiresAt > confirmedAt`; and exact acknowledgement counts against the preparation. It then deterministically derives the core call: a held plan receives `PlanApproval(planFingerprint: confirmation.planFingerprint, approvedAt: confirmation.confirmedAt, expiresAt: confirmation.expiresAt, acknowledgedTrashCount: confirmation.acknowledgedTrashCount, acknowledgedConflictCount: confirmation.acknowledgedConflictCount)`; a clear plan passes `nil` **only inside the bridge** after the same confirmation validation. Refusals remain unexecutable. The `EngineSession` protocol consumed by `AppModel`, including `DemoEngineSession` and `WorkspaceEngineSession`, exposes no nullable `PlanApproval?`, Boolean approval, path enrollment, or other production escape hatch.
 
 ## 2. Manual lifecycle and mutation authority
 

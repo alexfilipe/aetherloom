@@ -30,11 +30,16 @@ public protocol EngineSession: Sendable {
     func activity(matching query: ActivityQuery) async -> [ActivityEntry]
     func lastPreparation(for syncSetID: UUID) async -> SyncPreparation?
 
-    // Sync pipeline (thin passthrough to SyncOrchestrator)
+    // Sync pipeline
     func prepare(syncSetID: UUID) async throws -> SyncPreparation
-    func execute(_ preparation: SyncPreparation, approval: PlanApproval?) async throws -> SyncRunSummary
+    func execute(
+        _ preparation: SyncPreparation,
+        confirmation: WorkspaceExecutionConfirmation
+    ) async throws -> SyncRunSummary
 
     // Workspace edits
+    func enrollLocalFolder(_ draft: LocalFolderDraft, access: FolderAccessGrant) async throws -> LocationState
+    func reauthorizeLocalFolder(_ locationID: LocationID, access: FolderAccessGrant) async throws -> LocationState
     func createSyncSet(_ draft: SyncSetDraft) async throws -> SyncSetState
     func setSuggestionsEnabled(_ enabled: Bool) async throws
     func setPaused(_ paused: Bool, syncSetID: UUID) async
@@ -46,11 +51,11 @@ public protocol EngineSession: Sendable {
 
 Contract points:
 
-- `prepare`/`execute` are **verbatim passthroughs** to `SyncOrchestrator.prepare/execute` — the bridge never edits an outcome, filters a hold, or synthesizes an approval. `SyncPreparation`, `ChangePreview`, `PlanApproval`, `SyncRunSummary` cross the seam unchanged; the UI displays them through the display models of [04](04-display-models.md).
+- `prepare` passes the orchestrator's `SyncPreparation` through unchanged. `execute` requires the exact non-optional `WorkspaceExecutionConfirmation` from [the production contract](../providers/01-workspace-engine-session.md#1-current-state-and-target-boundary); the bridge validates it and deterministically derives the internal core `PlanApproval?`. The bridge never edits an outcome, filters a hold, or exposes that nullable core approval to `AppModel`.
 - Pause lives here, not in core: `prepare` on a paused set throws `EngineSessionError.syncSetPaused`; "Scan Now" skips paused sets. Pause state is part of `SyncSetState`.
 - Conflict resolution calls `ConflictStore.resolve(id, as:, at:)`. The bridge then emits `.conflictsChanged`; the *effect* of a resolution (e.g. `makeCanonical` propagating a version) materializes on the **next run**, exactly as the engine defines it — the UI copy must say so ("Applied on the next sync").
 - Every mutation emits an `EngineEvent`; reads never mutate.
-- `WorkspaceEngineSession` strengthens the execution boundary: every real plan, including a clear first plan, requires explicit user confirmation of the displayed fingerprint. The nullable core/demo approval surface is not authority for automatic production execution.
+- L4 migrates this protocol, `DemoEngineSession`, `WorkspaceEngineSession`, AppModel call sites, and their compile/interaction tests together. Both session implementations require the same confirmation shape; demo behavior is not a nullable escape hatch.
 
 ### Supporting value types (bridge-owned)
 
@@ -160,6 +165,6 @@ Each control mutates **fakes or stores only** and emits events; the engine react
 ## 6. What this layer must never do
 
 - Re-derive or second-guess verdicts, gates, counts, or fingerprints (no arithmetic on plan contents beyond *display* counting).
-- Offer any API that executes a gated plan without a `PlanApproval`.
+- Offer any AppModel-facing API that executes without a non-optional `WorkspaceExecutionConfirmation`, or expose the bridge's internal `PlanApproval?` mapping.
 - Let `AppModel` or SwiftUI construct providers, retain bookmark capability bytes, or decide sync behavior. `WorkspaceEngineSession` owns real-folder capability and composition under the provider contract; `DemoEngineSession` MUST remain isolated from real user folders.
 - Leak fake-provider details (e.g. `FakeProviderCall` logs) into non-demo API surfaces.

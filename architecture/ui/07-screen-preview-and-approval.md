@@ -36,8 +36,8 @@ executing                      → progress ("Applying N changes…"), controls 
 finished                       → RunResultToast + sheet dismiss
 ```
 
-- `ApprovalRequirement` [04 §4] drives the rows: one checkbox per nonzero count — "Move **N** items to trash (recoverable from each provider's trash)" and "**N** conflicts — both versions preserved". Zero-count rows don't render.
-- Sync Now builds `PlanApproval` exclusively via `makeApproval(requirement, at: now)` and calls `execute(preparation, approval:)`. For clear gates it passes `approval: nil`.
+- `ConfirmationRequirement` [04 §4] drives the rows: one checkbox per nonzero count — "Move **N** items to trash (recoverable from each provider's trash)" and "**N** conflicts — both versions preserved". Zero-count rows don't render; clear executable plans still carry a zero-count confirmation requirement.
+- Sync Now always builds a non-optional `WorkspaceExecutionConfirmation` from the displayed fingerprint, confirmation/expiry times, and actual acknowledgement counts, then calls `execute(preparation, confirmation:)`. The bridge validates it and derives core `PlanApproval?`; `nil` exists only inside the bridge for a validated clear plan.
 - **Expiry**: footer shows "Approval window: 15 minutes"; if `expiresAt` passes while the sheet is open, the footer flips to "This preview is stale — preview again" with a [Refresh Preview] button (re-runs `prepare`). The engine would reject the expired approval anyway; the UI just says it first.
 - **Drift**: `execute` returning `outcome == .stoppedForReplan(location:path:)` renders an InlineBanner: "Files changed while you were reviewing — nothing was applied to *path*. Preview again to see the current plan." with [Refresh Preview]. This is invariant 5 made visible.
 - **Partial failure**: `.failed(message:)` or nonempty `failedOperations` → toast reports "N applied, M failed — see Activity"; never silently discarded.

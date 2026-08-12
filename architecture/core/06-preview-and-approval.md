@@ -62,7 +62,7 @@ Contract ([05 §5] enforces it at one choke point): `clear` plans run with or wi
 
 ## 4. UI contract
 
-The engine hands the preview sheet everything so no sync rule leaks into SwiftUI: headline, notices with canonical sentences, ordered sections with causality strings, conflicts with version metadata and advice, byte totals. Buttons map 1:1: "Preview changes" → `prepare`, "Sync now" → `execute(prep)`, "Approve and sync" → `execute(prep, approval:)`, conflict choices → resolution inputs for the next prepare. The current SwiftUI app remains a demo shell; this contract is for the future wiring.
+The engine hands the preview sheet everything so no sync rule leaks into SwiftUI: headline, notices with canonical sentences, ordered sections with causality strings, conflicts with version metadata and advice, byte totals. Buttons map 1:1: “Preview changes” → `prepare`; any executable “Sync now”/“Approve and sync” action creates the non-optional bridge `WorkspaceExecutionConfirmation` bound to that preview; conflict choices become resolution inputs for the next prepare. The bridge alone maps a validated confirmation to the core `PlanApproval?` described in §3 ([production seam](../providers/01-workspace-engine-session.md#1-current-state-and-target-boundary)).
 
 ## 5. Changing the current code
 

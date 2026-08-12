@@ -16,6 +16,9 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
     public enum Reason: Codable, Hashable, Sendable {
         case packageDirectory
         case unsupportedMetadata(Set<MetadataKind>)
+        case unsupportedPOSIXPermissions(actual: UInt16, required: UInt16)
+        case accessControlList
+        case unsupportedOwnership
     }
 }
 
@@ -63,13 +66,30 @@ If metadata enumeration or resource-fork probing fails, the scan is incomplete; 
 
 Apple's File Provider contract exposes extended attributes as explicit item state rather than ordinary data-fork bytes; see [`NSFileProviderItemProtocol.extendedAttributes`](https://developer.apple.com/documentation/fileprovider/nsfileprovideritemprotocol/extendedattributes). Apple's [`copyfile(3)` documentation](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/copyfile.3.html) separately models data, metadata, extended attributes, ACLs, and resource forks. Aetherloom's current staging path has not proven that broader round trip, so the MVP MUST exclude rather than claim preservation.
 
-## 4. Mutation and recovery checks
+## 4. POSIX permissions, ACLs, and ownership
 
-Positive scan evidence is necessary but not sufficient because reality can change after preview. Immediately before any local provider mutation affecting a path, the provider/executor boundary MUST re-check that the source, destination, synchronized ancestors below the selected root, and item being displaced have not become a package or acquired unsupported metadata. Root container metadata remains outside synchronized content. A newly detected condition stops the run for fresh planning and performs no mutation at that path.
+The MVP supports one explicit baseline rather than claiming general Unix metadata fidelity:
 
-Recovery truth probes use the same classification. An excluded path cannot be accepted as a successfully applied ordinary mutation or used to advance a base record. Ambiguous metadata truth leaves the journal unresolved and fails closed.
+- a regular file MUST have exactly `0644` permission bits; and
+- a directory MUST have exactly `0755` permission bits.
 
-## 5. Fidelity claim and future upgrade
+Any deviation from those exact baselines—including an executable bit on a regular file or any setuid/setgid/sticky bit—is an `.unsupportedPOSIXPermissions` exclusion. Any access control list is an `.accessControlList` exclusion. A file exclusion is item-scoped; a directory exclusion is subtree-scoped and the provider MUST NOT descend into it. Inability to read mode or ACL state makes the scan incomplete rather than supported.
+
+User and group ownership are not synchronized from a source item. The supported baseline is ownership by the process's effective user ID and effective primary group ID at both source and destination. Any other ownership is `.unsupportedOwnership` (item or subtree as above); inability to prove ownership fails closed. Provider-created files and directories MUST be created and post-write verified with the exact `0644`/`0755` mode and baseline ownership. A failure to establish or verify that baseline is a failed/refused operation, never convergence. The selected root's mode, ACL, and ownership remain container metadata outside synchronized content.
+
+This baseline makes ordinary user-owned files usable without implying preservation of arbitrary permissions, ACLs, owners, or groups. General permission/ownership preservation remains outside L2.
+
+## 5. All-location preflight, adjacent checks, and recovery
+
+After preview and confirmation, but before the operation schedule's **first provider mutation**, execution MUST acquire live folder access and run one fail-closed classification preflight for every affected item or subtree at every participating location. “Affected” includes each operation's source, destination, item that may be displaced, and synchronized ancestors below the selected root. The classification covers packages, extended attributes, Finder tags/FinderInfo, resource forks, POSIX modes/special bits, ACLs, and ownership.
+
+The entire preflight completes before any mutation is admitted. A new exclusion at any participating location, an unavailable location, or any ambiguous/failed classification aborts the entire schedule with zero mutations at every location and requires a fresh prepare and preview. Confirmation never overrides this result.
+
+Mutation-adjacent provider checks remain mandatory defense in depth after the preflight. Immediately before each physical commit, the provider MUST re-check the applicable classification and ordinary version/absence preconditions. Drift arising after the all-location barrier stops the run; it never authorizes an overwrite or trash. Root container metadata remains outside synchronized content.
+
+Recovery uses the same all-location, live-access classification rule before it accepts convergence, releases receipt-bound artifacts/barriers, or permits any new schedule mutation. An excluded path cannot be accepted as a successfully applied ordinary mutation or used to advance a base record. Any new exclusion, unavailable location, or ambiguous package/metadata/permissions/ACL/ownership truth leaves the journal unresolved and fails closed; recovery never replays the old schedule.
+
+## 6. Fidelity claim and future upgrade
 
 UI and documentation MUST say the item is excluded because Aetherloom cannot yet preserve that package or metadata safely. They MUST NOT say the item was synchronized, backed up, copied completely, or preserved.
 

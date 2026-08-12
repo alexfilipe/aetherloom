@@ -84,21 +84,23 @@ public struct PreviewDisplay: Sendable, Hashable {
     public var sections: [SectionDisplay]            // non-empty sections, engine order, entry count,
                                                      // per-entry: path, summary, causality, destination chips, size
     public var totals: PreviewTotals                 // per-kind counts + byte total
-    public var approvalRequirement: ApprovalRequirement?
+    public var confirmationRequirement: ConfirmationRequirement? // nil only for refusal/non-executable preview
 }
 
-public struct ApprovalRequirement: Sendable, Hashable {
+public struct ConfirmationRequirement: Sendable, Hashable {
     public var fingerprint: PlanFingerprint
     public var trashCount: Int          // == plan.approvalTrashCount
     public var conflictCount: Int       // == plan.approvalConflictCount
 }
 
 public func previewDisplay(for preparation: SyncPreparation, locations: [LocationState]) -> PreviewDisplay
-public func makeApproval(_ req: ApprovalRequirement, at now: Date) -> PlanApproval
-// PlanApproval(planFingerprint:approvedAt:acknowledgedTrashCount:acknowledgedConflictCount:)
+public func makeConfirmation(
+    _ req: ConfirmationRequirement,
+    at now: Date
+) -> WorkspaceExecutionConfirmation
 ```
 
-`makeApproval` is the **only** constructor of `PlanApproval` in the UI stack, and it takes counts from the plan-derived requirement — the UI physically cannot acknowledge numbers it didn't show. Expiry stays the core default (15 min); the sheet surfaces "Approval expires…" from `expiresAt`.
+`makeConfirmation` is the **only** execution-authority constructor in the UI stack. It takes the fingerprint and counts from the plan-derived requirement for clear and held executable plans, so the UI cannot confirm a plan or counts it did not show. It sets the confirmation/expiry window (15 minutes); the sheet surfaces “Confirmation expires…” from `expiresAt`. Only the bridge derives a core `PlanApproval?`.
 
 ## 5. Conflict display
 
@@ -136,4 +138,4 @@ One `DisplayFormatting` namespace: relative dates ("2 minutes ago", `now`-inject
 
 ## 8. Testing (see [12-testing-strategy.md](12-testing-strategy.md))
 
-Every function above gets table-driven Swift Testing coverage in `AetherloomBridgeTests`, including: tone matrix over all `LocationUnavailabilityReason` cases; status-line priority; `makeApproval` count fidelity; preview display against a real `SyncPreparation` produced by the demo world (not hand-built fixtures).
+Every function above gets table-driven Swift Testing coverage in `AetherloomBridgeTests`, including: tone matrix over all `LocationUnavailabilityReason` cases; status-line priority; `makeConfirmation` fingerprint/time/expiry/count fidelity; preview display against a real `SyncPreparation` produced by the demo world (not hand-built fixtures).
