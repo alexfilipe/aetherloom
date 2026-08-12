@@ -67,8 +67,7 @@ public actor DemoEngineSession: EngineSession {
         try await seedWorld()
         try await convergeSeedGroups()
         await applyConfiguredProviderLatency()
-        await applyScriptedDivergences()
-        await applyScriptedAvailabilityFaults()
+        await applyBaselineAvailability()
         await clearProviderCallLogs()
 
         for syncSet in orderedSyncSets() where !pausedSyncSetIDs.contains(syncSet.id) {
@@ -338,8 +337,7 @@ public actor DemoEngineSession: EngineSession {
     }
 
     func makeConflict() async {
-        // Mutate a path that the standard cached Documents preparation already
-        // targets so the control deterministically exercises execution drift.
+        invalidatePreparation(for: DemoWorld.documentsID)
         let path: SyncPath = "/Documents/Notes/Meeting.txt"
         let date = environment.now()
         if let provider = providers[.iCloudDrive] {
@@ -360,6 +358,7 @@ public actor DemoEngineSession: EngineSession {
 
     func makeMassDeletion() async {
         guard let provider = providers[.googleDrive] else { return }
+        invalidatePreparation(for: DemoWorld.projectsID)
         for path in world.divergences.projectMassDeletionPaths {
             await provider.remove(path: path)
         }
@@ -367,6 +366,7 @@ public actor DemoEngineSession: EngineSession {
     }
 
     func simulateInterruptedRun() async throws {
+        invalidatePreparation(for: DemoWorld.documentsID)
         let runID = environment.makeID()
         try await stores.journal.begin(
             runID: runID,
@@ -479,85 +479,10 @@ public actor DemoEngineSession: EngineSession {
         }
     }
 
-    private func applyScriptedDivergences() async {
-        let divergenceDate = environment.now().addingTimeInterval(60)
-        if let iCloud = providers[.iCloudDrive] {
-            let path = world.divergences.documentEditPaths[0]
-            _ = await iCloud.putFile(
-                path: path,
-                contents: Data("Meeting notes edited on iCloud".utf8),
-                modifiedAt: divergenceDate,
-                itemID: await iCloud.item(at: path)?.itemID
-            )
-            let createPath = world.divergences.documentCreatePaths[0]
-            _ = await iCloud.putFile(path: createPath, contents: Data("Created on iPhone".utf8), modifiedAt: divergenceDate)
-
-            let conflictPath = world.divergences.documentConflictPath
-            _ = await iCloud.putFile(
-                path: conflictPath,
-                contents: Data("Budget edited on iCloud".utf8),
-                modifiedAt: divergenceDate,
-                itemID: await iCloud.item(at: conflictPath)?.itemID
-            )
-            let placeholderPath = world.divergences.documentPlaceholderPath
-            _ = await iCloud.putFile(
-                path: placeholderPath,
-                contents: Data("Materialized before placeholder".utf8),
-                modifiedAt: divergenceDate,
-                itemID: await iCloud.item(at: placeholderPath)?.itemID,
-                isPlaceholder: true
-            )
-        }
-
-        if let google = providers[.googleDrive] {
-            let path = world.divergences.documentEditPaths[1]
-            _ = await google.putFile(
-                path: path,
-                contents: Data("Roadmap edited on Google Drive".utf8),
-                modifiedAt: divergenceDate,
-                itemID: await google.item(at: path)?.itemID
-            )
-            let rename = world.divergences.documentRename
-            let renamedItemID = await google.item(at: rename.old)?.itemID
-            await google.remove(path: rename.old)
-            _ = await google.putFile(
-                path: rename.new,
-                contents: Data("Reference 1".utf8),
-                modifiedAt: divergenceDate,
-                itemID: renamedItemID
-            )
-            await google.remove(path: world.divergences.documentDeletePath)
-
-            let conflictPath = world.divergences.documentConflictPath
-            _ = await google.putFile(
-                path: conflictPath,
-                contents: Data("Budget edited on Google Drive".utf8),
-                modifiedAt: divergenceDate.addingTimeInterval(2),
-                itemID: await google.item(at: conflictPath)?.itemID
-            )
-            for path in world.divergences.projectMassDeletionPaths {
-                await google.remove(path: path)
-            }
-        }
-
-        if let local = providers[.localFolder] {
-            let path = world.divergences.documentCreatePaths[1]
-            _ = await local.putFile(path: path, contents: Data("Local draft".utf8), modifiedAt: divergenceDate)
-            // The missing local copy makes content propagation necessary while
-            // iCloud exposes only a placeholder, producing the real waiting verdict.
-            await local.remove(path: world.divergences.documentPlaceholderPath)
-        }
-    }
-
-    private func applyScriptedAvailabilityFaults() async {
+    private func applyBaselineAvailability() async {
         await setAvailability(
             .unavailable(.networkUnreachable(detail: "OneDrive cannot be reached.")),
             locationID: .oneDrive,
-            emit: false
-        )
-        await setAvailability(
-            .unavailable(.volumeNotMounted(detail: "NAS \"Tank\" is not mounted.")),
-            locationID: .nasFolder,
             emit: false
         )
     }
@@ -571,6 +496,10 @@ public actor DemoEngineSession: EngineSession {
         availabilityByLocationID[locationID] = availability
         lastCheckedByLocationID[locationID] = environment.now()
         if emit {
+            for syncSet in syncSetsByID.values where syncSet.locations.contains(locationID) {
+                invalidatePreparation(for: syncSet.id)
+                eventHub.emit(.syncSetChanged(syncSet.id))
+            }
             eventHub.emit(.locationsChanged)
         }
     }

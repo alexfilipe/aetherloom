@@ -108,6 +108,27 @@ Engine logic branches on capabilities and availability, never on `ProviderKind`.
 
 `ProviderError` ✅ keeps its taxonomy (`unavailable`, `itemUnavailable`, `placeholderOnly`, `notFound`, `itemAlreadyExists`, `preconditionFailed`, `unsupported`), keyed by `LocationID`. Discipline: `notFound` requires *positively confirmed absence at a healthy backend*; if the backend can't answer, throw `unavailable` — the executor treats them oppositely (replan vs abort-run).
 
-## 7. Changing the current code
+Mutation deadlines add two distinct errors:
+
+- `mutationDeadlineExpiredBeforeStart` proves the provider did not begin the side effect. It is a confirmed, terminal failure for that attempt.
+- `mutationIndeterminate(receipt)` means the deadline expired after blocking work began. It does **not** mean the syscall stopped. The receipt identifies the provider, operation kind, affected paths, and actual coordinator start time so the journal can retain the uncertainty. Stable recovery identity is the receipt ID plus provider, kind, and ordered paths; `startedAt` is timestamp evidence rather than identity because canonical date encoding may round sub-millisecond precision. `affectedPaths` is ordered: the first entry is the receipt provider's primary path (for relocate, source then destination). Caller-visible activity, execution records, and outcomes use that receipt attribution; destination operation context remains in the journaled intent.
+
+Providers with blocking calls refine `StorageProvider` through `IndeterminateMutationRecovering`. The refinement reports whether owned late work is still in flight, has reached quiescence with a retained success/failure, or belongs to a previous process. It also exposes the in-process indeterminate receipt so recovery can repair a failed journal-event append before it probes or releases anything. Each live receipt carries the exact run/operation correlation that authorized it; discovery rejects an unbound or differently bound same-shape receipt. `beginIndeterminateMutationRecovery` atomically returns an exclusive claim for a quiescent or genuinely restarted receipt; an unrelated same-process owner, read, or recovery claim reports in-flight instead of masquerading as restart. Every recovery probe requires that claim, which remains held through durable journal reconciliation. Probe or journal failure abandons only the session claim while retaining the receipt barrier for a safe retry. Ordinary availability, scans, probes, and mutations remain blocked until the engine durably reconciles the receipt.
+
+## 7. Mutation ownership contract
+
+Every provider mutation has one durable owner from its atomic queued-to-started transition until the underlying operation actually returns. Caller cancellation or deadline expiry never releases that ownership. The provider must:
+
+1. prevent a timed-out queued operation from starting; if active work becomes indeterminate, invalidate every operation queued under the old authorization as pre-start and reject new mutation calls until recovery finishes;
+2. retain started work and its late success or failure;
+3. atomically serialize reads that authorize sync truth against mutation admission, and keep each read lease until the underlying work returns even when its caller times out or cancels;
+4. expose recovery truth without authorizing ordinary planning; and
+5. release its barrier only after the engine has marked the journal reconciled.
+
+This contract includes writes to caller-supplied staging URLs (`fetch`) because abandoned late copies can race stage cleanup and later materialization. Local availability, scan, metadata, and recovery probes are coordinator-owned compound reads. Already-admitted reads may overlap; the first queued mutation closes ordinary read admission, waits for every physical read to drain, and then starts. A timed-out read therefore blocks mutation until its late completion rather than producing hybrid scan truth.
+
+Local root ownership is process-wide, keyed by canonical root path plus the configured enrollment volume identity; `LocationID` is deliberately not part of the key. The registry also retains every configured-path alias, so a symlinked root keeps its original owner while its target is temporarily unavailable. A previously unseen alias that cannot be resolved is rejected when another root on that enrolled volume already exists in-process; ambiguity never creates a second owner. Reconstructed providers and orchestrators for the same physical root share the coordinator and recovery artifacts, while different roots or volume identities cannot inherit stale state. Registry entries are retained for the process lifetime rather than risk evicting an owner with an unobservable blocking syscall. Only an actual process restart may create `unknownAfterRestart`.
+
+## 8. Changing the current code
 
 Phase 2 of [11-migration.md](11-migration.md): rename protocol and fake; add availability/capabilities/scan; collapse move/rename → `relocate`; convert `UploadOptions` → `StoreOptions.OverwritePolicy`; add call log + fault scripting + fake trash to the fake; add `FlakyStorageProvider`. The existing fake's revision/precondition behavior carries over unchanged — it is the part most worth keeping.

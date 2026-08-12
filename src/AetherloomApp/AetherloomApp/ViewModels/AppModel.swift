@@ -190,12 +190,24 @@ final class AppModel: ObservableObject {
 
     var isScanning: Bool { !busySyncSets.isEmpty }
 
+    var demoProviderControls: DemoProviderControlDisplay {
+        DemoProviderControlDisplay(locations: workspace?.locations ?? [])
+    }
+
     var oneDriveIsReachable: Bool {
-        workspace?.locations.first(where: { $0.location.kind == .oneDrive })?.availability == .available
+        demoProviderControls.oneDriveIsReachable
     }
 
     var nasIsMounted: Bool {
-        workspace?.locations.first(where: { $0.location.kind == .nasFolder })?.availability == .available
+        demoProviderControls.nasIsMounted
+    }
+
+    var oneDriveDemoActionTitle: String {
+        demoProviderControls.oneDriveActionTitle
+    }
+
+    var nasDemoActionTitle: String {
+        demoProviderControls.nasActionTitle
     }
 
     func startBootstrapIfNeeded() {
@@ -472,19 +484,24 @@ final class AppModel: ObservableObject {
     func performDemoAction(_ action: DemoAction) async {
         guard let demoControls else { return }
         do {
+            let providerControls = demoProviderControls
             switch action {
             case .toggleOneDrive:
-                await demoControls.setOneDriveReachable(!oneDriveIsReachable)
+                await demoControls.setOneDriveReachable(!providerControls.oneDriveIsReachable)
             case .toggleNAS:
-                await demoControls.setNASMounted(!nasIsMounted)
+                await demoControls.setNASMounted(!providerControls.nasIsMounted)
             case .makeConflict:
                 await demoControls.makeConflict()
+                preparations.removeValue(forKey: DemoWorld.documentsID)
             case .makeMassDeletion:
                 await demoControls.makeMassDeletion()
+                preparations.removeValue(forKey: DemoWorld.projectsID)
             case .simulateInterruptedRun:
                 try await demoControls.simulateInterruptedRun()
+                preparations.removeValue(forKey: DemoWorld.documentsID)
             case .reset:
                 try await demoControls.reset()
+                await reloadSessionStateAfterReset()
             }
             await refreshWorkspace()
         } catch {
@@ -535,6 +552,12 @@ final class AppModel: ObservableObject {
             if let query = activeActivityQuery {
                 await replaceActivity(with: query, showsLoading: false)
             }
+            if entry.message == ActivityMessageCatalog.recoveryPerformed {
+                pendingToast = RunResultToast.Model(recovery: entry)
+                AccessibilityNotification.Announcement(
+                    "Interrupted run checked. The old schedule was not resumed."
+                ).post()
+            }
         case let .syncSetChanged(syncSetID):
             await refreshWorkspace()
             if let preparation = await session.lastPreparation(for: syncSetID) {
@@ -564,22 +587,7 @@ final class AppModel: ObservableObject {
             preparations.removeValue(forKey: summary.syncSetID)
             await refreshWorkspace()
         case .worldReset:
-            workspace = await session.workspace()
-            recentActivity = await session.activity(matching: ActivityQuery(limit: 100))
-            if let query = activeActivityQuery {
-                await replaceActivity(with: query, showsLoading: false)
-            } else {
-                activityEntries = recentActivity
-            }
-            await refreshConflicts()
-            preparations.removeAll()
-            if let states = workspace?.syncSets {
-                for state in states {
-                    if let preparation = await session.lastPreparation(for: state.id) {
-                        preparations[state.id] = preparation
-                    }
-                }
-            }
+            await reloadSessionStateAfterReset()
         }
     }
 
@@ -618,6 +626,29 @@ final class AppModel: ObservableObject {
         activityEntries = entries
         activityCanLoadMore = entries.count == query.limit
         activityIsLoading = false
+    }
+
+    private func reloadSessionStateAfterReset() async {
+        activeSheet = nil
+        pendingToast = nil
+        presentedError = nil
+        focusedConflictID = nil
+        workspace = await session.workspace()
+        recentActivity = await session.activity(matching: ActivityQuery(limit: 100))
+        if let query = activeActivityQuery {
+            await replaceActivity(with: query, showsLoading: false)
+        } else {
+            activityEntries = recentActivity
+        }
+        await refreshConflicts()
+        preparations.removeAll()
+        if let states = workspace?.syncSets {
+            for state in states {
+                if let preparation = await session.lastPreparation(for: state.id) {
+                    preparations[state.id] = preparation
+                }
+            }
+        }
     }
 
     private func refreshConflicts() async {

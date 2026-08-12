@@ -184,7 +184,7 @@ public func previewDisplay(
         byteTotal: sections.flatMap(\.entries).compactMap(\.byteSize).reduce(0, +)
     )
     let requirement: ApprovalRequirement?
-    if let plan = preparation.outcome.planValue, !plan.gate.isClear {
+    if let plan = preparation.outcome.planValue, plan.gate.permitsApproval {
         requirement = ApprovalRequirement(
             fingerprint: plan.fingerprint,
             trashCount: plan.approvalTrashCount,

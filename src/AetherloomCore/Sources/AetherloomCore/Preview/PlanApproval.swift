@@ -22,6 +22,9 @@ public struct PlanApproval: Codable, Hashable, Sendable {
     }
 
     public func validate(against plan: SyncPlan, at now: Date) -> ApprovalValidation {
+        guard plan.gate.permitsApproval else {
+            return .rejected(.safetyHoldNotApprovable)
+        }
         guard planFingerprint == plan.fingerprint else {
             return .rejected(.wrongFingerprint)
         }
@@ -46,6 +49,7 @@ public enum ApprovalValidation: Codable, Hashable, Sendable {
 }
 
 public enum ApprovalRejectionReason: Codable, Hashable, Sendable {
+    case safetyHoldNotApprovable
     case wrongFingerprint
     case expired
     case trashCountMismatch(expected: Int, actual: Int)

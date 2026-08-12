@@ -145,7 +145,7 @@ public actor SyncOrchestrator {
             return SyncRunSummary(runID: preparation.runID, syncSetID: syncSetID, outcome: .refused)
 
         case let .plan(plan):
-            if !plan.gate.isClear, approval == nil {
+            if !plan.gate.isClear, approval == nil || !plan.gate.permitsApproval {
                 await logHolds(plan.gate.holdReasons, syncSetID: syncSetID, runID: preparation.runID)
                 await appendActivity(
                     syncSetID: syncSetID,
@@ -172,13 +172,19 @@ public actor SyncOrchestrator {
                 logRunBoundaryActivity: false
             )
             await appendStage("Execute", syncSetID: syncSetID, runID: preparation.runID, started: false)
-            await appendActivity(
-                syncSetID: syncSetID,
-                runID: preparation.runID,
-                category: .sync,
-                message: ActivityMessageCatalog.runFinished,
-                detail: summary.outcome.detail
-            )
+            if case .mutationIndeterminate = summary.outcome {
+                // The caller-visible execution phase returned, but the run is
+                // deliberately unfinished until recovery reconciles the late
+                // provider outcome.
+            } else {
+                await appendActivity(
+                    syncSetID: syncSetID,
+                    runID: preparation.runID,
+                    category: .sync,
+                    message: ActivityMessageCatalog.runFinished,
+                    detail: summary.outcome.detail
+                )
+            }
             return summary
         }
     }
@@ -228,6 +234,7 @@ public actor SyncOrchestrator {
             let report = try await RunRecovery(
                 providers: providers,
                 stores: stores,
+                stage: contentStage,
                 environment: executionEnvironment()
             ).recover(replay)
             await appendActivity(
