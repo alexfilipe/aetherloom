@@ -100,3 +100,16 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - CUT-005: Implemented by `bc493acfa1d325e37c7ef1b8146a53aab69183cf`.
 - CUT-006: Implemented by `bc493acfa1d325e37c7ef1b8146a53aab69183cf`.
 - CUT-007: The compatibility boundary is implemented by `bc493acfa1d325e37c7ef1b8146a53aab69183cf`; legacy receipt migration remains deferred.
+
+## CUT-008 — PR #16 permitted CI correction
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): expected PR #16; failed frozen head `668bd46584d6ec917cc410f71697cedaa2c61b3c`; correction `b77dcf9d7f8938ec62cd979b647542a23a8c12cb`.
+- Decision/cutoff: Use the single authorized correction cycle only to add the two missing `await` keywords at relocation-recovery rechecks, then run the one authorized replacement CI after the global queue clears.
+- Reason and evidence: Exact-head CI [run 31551029903](https://github.com/alexfilipe/aetherloom/actions/runs/31551029903) failed during compilation at those two call sites; no test executed and no behavioral or safety scenario failed.
+- What was completed: Both async calls now await `matchingCurrentState`; the correction changes no authority rule or test fixture.
+- What was explicitly deferred: Any additional cleanup or iteration unrelated to the reported compiler errors.
+- Residual risk/severity: Low; replacement exact-head CI remains required.
+- Exact revisit trigger or acceptance condition: Accept only when the replacement exact-head macOS CI run is green; otherwise stop if the failure is not within the already authorized narrow correction.
+- Status: accepted
+- Resolving PR/SHA: Expected PR #16 / `b77dcf9d7f8938ec62cd979b647542a23a8c12cb`.
