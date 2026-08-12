@@ -10,6 +10,11 @@
 # Delete this file when the two documents are meant to diverge.
 set -euo pipefail
 
+# Only check commits that stage a change to either mirror file.
+if git diff --cached --quiet -- AGENTS.md CLAUDE.md; then
+  exit 0
+fi
+
 # Compare the staged (index) versions, not the working tree. Skip the check
 # when either file is absent from the index, e.g. during a deliberate removal.
 if ! git cat-file -e :AGENTS.md 2>/dev/null || ! git cat-file -e :CLAUDE.md 2>/dev/null; then
