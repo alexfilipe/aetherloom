@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(gh *)",
+            "command": "bash \"$(git rev-parse --show-toplevel)/scripts/require-agent-attribution.sh\"",
+            "statusMessage": "Checking agent attribution"
+          }
+        ]
+      }
+    ]
+  }
+}

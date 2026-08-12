@@ -147,7 +147,8 @@ When a conflict is found:
 
 ## Pull request comments
 
-- Whenever posting a pull request comment as an agent, begin the comment with the exact prefix `Authored by agent: `.
+- Whenever posting a pull request comment as an agent, begin the comment with the exact prefix `Authored by agent: `. A comment is attributed to whoever's account posted it, so the prefix is what stops an agent from silently claiming the maintainer's authorship. Commits are out of scope: automating those is expected.
+- In Claude Code this is enforced rather than merely requested: `scripts/require-agent-attribution.sh` runs as a `PreToolUse` hook and blocks any `gh` command that posts a comment without the prefix. Agents in other harnesses must apply the rule themselves.
 
 ## Evaluation-loop development
 
