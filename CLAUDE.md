@@ -149,7 +149,7 @@ When a conflict is found:
 
 - Whenever posting a pull request comment as an agent, begin the comment with the exact prefix `Authored by agent: `.
 - Why it matters: a comment is attributed to whoever's account posted it, so without the prefix an agent's comment is indistinguishable from one the maintainer wrote. Someone reading the thread later — or an agent reacting to review feedback — has no way to tell whose judgment they are reading.
-- It applies to every comment surface: top-level pull request and issue comments, review summaries, inline review comments, and replies in a thread. If it lands in a thread, it needs the prefix.
+- It applies to every pull request comment surface: top-level comments, review summaries, inline review comments, and replies in a thread. If it lands on a pull request, it needs the prefix.
 - Put it at the very start of the body, not further in, so it reads as attribution rather than as an aside.
 - Commits are exempt. Automating those is expected, and their authorship travels through git config rather than the API token.
 
