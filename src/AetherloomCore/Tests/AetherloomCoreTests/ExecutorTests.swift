@@ -62,7 +62,7 @@ import Testing
     )
     let plan = planForOperations([transfer], path: "/Corrupt.txt")
     let stores = EngineStores.inMemory()
-    let executor = try executor(providers: [source, destination], stores: stores, name: "hash-mismatch")
+    let executor = try executor(providerMap: [.googleDrive: source, .oneDrive: destination], stores: stores, name: "hash-mismatch")
 
     let summary = try await executor.execute(plan, runID: uuid("000000000202"))
     let errors = await stores.activity.entries(matching: ActivityQuery(categories: [.error], limit: 10))

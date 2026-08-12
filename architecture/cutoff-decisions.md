@@ -178,3 +178,16 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Accept and publish only if the one exact-head macOS CI run is green and local/upstream/origin SHAs, cleanliness, ancestry, and PR #12 targeting are all verified; otherwise stop frozen and unpublished.
 - Status: accepted
 - Resolving PR/SHA: Focused correction `9731d1f35a2e28be25717e9a4fd45ef9effa6e2c`; final exact-head CI run and draft PR #17 URL pending.
+
+## CUT-014 — Authorize the final test-helper correction and disposition
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): expected draft PR #17; failed exact head `430134ec5ddca4ca4cd49f0c125f53b6e33277a6`; macOS CI [run 31553563703](https://github.com/alexfilipe/aetherloom/actions/runs/31553563703); parent integration `14c72efe008636c0c76590499166b3e1498f6af6`.
+- Decision/cutoff: Authorize exactly the one-line `ExecutorTests.swift` call-site correction from the concrete `[FakeStorageProvider]` helper to the existing existential `providerMap:` helper, followed by exactly one final exact-head macOS CI run. Green permits draft PR #17 publication; red requires stopping unpublished without another edit or run.
+- Reason and evidence: Run 31553563703 reached test-target compilation and failed only because `CorruptFetchProvider` cannot be placed in the concrete fake-provider array. Production code compiled, no test executed, and the existing `providerMap:` overload already accepts mixed `StorageProvider` implementations.
+- What was completed: The diagnosed test-helper call was corrected without changing the corrupt-fetch behavior, production code, any other test, or provider authority.
+- What was explicitly deferred: Every production change, other test change, cleanup, refactor, additional correction, or additional CI attempt.
+- Residual risk/severity: Low for the correction because it changes only test construction; authoritative execution of the full suite remains required.
+- Exact revisit trigger or acceptance condition: Freeze at the corrected exact head; publish draft PR #17 only if the one authorized run is green and all SHA, ancestry, cleanliness, and PR relationship checks pass. A red result ends work unpublished.
+- Status: accepted
+- Resolving PR/SHA: Corrected commit, final CI run, and draft PR #17 URL pending.
