@@ -570,11 +570,16 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             nanoseconds: deadlines.probeNanoseconds,
             clock: deadlines.clock
         ) {
-            if observation.kind == .file,
-               observation.version.hasStrongEvidence {
-                return await context.refineEvidence(for: observation)
+            let currentResult = await context.currentState(of: observation)
+            guard case let .success(current) = currentResult else {
+                return currentResult
             }
-            return await context.currentState(of: observation)
+            if current.kind == .file,
+               !current.isTrashed,
+               observation.version.hasStrongEvidence {
+                return await context.refineEvidence(for: current)
+            }
+            return .success(current)
         }
         switch result {
         case let .completed(.success(current)):

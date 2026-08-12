@@ -113,3 +113,55 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Accept only when the replacement exact-head macOS CI run is green; otherwise stop if the failure is not within the already authorized narrow correction.
 - Status: accepted
 - Resolving PR/SHA: Expected PR #16 / `b77dcf9d7f8938ec62cd979b647542a23a8c12cb`.
+
+## CUT-009 — Promote the cutoff log through PR #12
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): PR [#12](https://github.com/alexfilipe/aetherloom/pull/12), integration documentation; parent head `14c72efe008636c0c76590499166b3e1498f6af6`; local PR #16 merge `4471dcafc37f9e10084ba5452a93ae85ef64e5f4`.
+- Decision/cutoff: Make the durable cutoff log part of the PR #12 integration parent before PR #16, then incorporate that parent into PR #16 with a normal merge that preserves all existing PR #16 commits.
+- Reason and evidence: Parent commit `14c72efe008636c0c76590499166b3e1498f6af6` adds only `architecture/cutoff-decisions.md`; its blob `d6b0dd3082c64a6a7434a5619a3ebf4015d229d3` was byte-identical to the clean PR #16 copy and passed exact-head macOS CI [run 31551701935](https://github.com/alexfilipe/aetherloom/actions/runs/31551701935).
+- What was completed: The parent was merged normally as `4471dcafc37f9e10084ba5452a93ae85ef64e5f4`; both `14c72efe008636c0c76590499166b3e1498f6af6` and the prior PR #16 head `dda49b2d5f8e87cf4c0a17520485d9b752a17787` are ancestors, and no cutoff entry was erased.
+- What was explicitly deferred: Pushing the merge, publishing PR #16, and dispatching more CI pending diagnosis and orchestrator direction.
+- Residual risk/severity: Low; the merge itself changes no file content.
+- Exact revisit trigger or acceptance condition: Push only after the CI diagnosis is accepted and the orchestrator authorizes the next correction/publication step.
+- Status: accepted
+- Resolving PR/SHA: PR #12 / `14c72efe008636c0c76590499166b3e1498f6af6`; local integration merge `4471dcafc37f9e10084ba5452a93ae85ef64e5f4`.
+
+## CUT-010 — PR #16 replacement-CI diagnosis
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): expected PR #16; tested head `dda49b2d5f8e87cf4c0a17520485d9b752a17787`; macOS CI [run 31551176210](https://github.com/alexfilipe/aetherloom/actions/runs/31551176210).
+- Decision/cutoff: Classify the replacement result as a test failure after a successful compile/link, not an infrastructure failure. Do not proceed, correct, push, dispatch, or publish under the exhausted practical cutoff; retain locks for an explicit orchestrator decision on one additional focused correction.
+- Reason and evidence: The run built successfully and executed 324 tests in 8 suites. Every focused required PR #16 acceptance scenario passed. Eleven unexpected issues remained: six hashless conformance fixtures supplied weak scan observations directly to strong destructive preconditions; one hash-mismatch fixture was intercepted by the new source precondition before ContentStage verification; two strong recovery probes attempted to hash live source paths after those sources had been recoverably trashed; and two true legacy weak-receipt cases no longer satisfied RunRecovery's strong match. Nine separately declared known issues were also reported.
+- What was completed: Exact failure extraction and source-level diagnosis. The current implementation failed closed: no failing result demonstrated overwrite, trash, canonical replacement, false convergence, or weak base-state authorization.
+- What was explicitly deferred: Conformance-fixture refinement, a dedicated corrupt-fetch fixture, receipt-first strong recovery probing, and a decision whether true legacy weak receipts remain blocked or gain an explicit narrowly scoped proof type.
+- Residual risk/severity: Medium for release readiness because exact-head CI is red; low for immediate data loss because the observed paths reject uncertain work. Legacy recovery can remain paused until reconciled.
+- Exact revisit trigger or acceptance condition: Proceed only if the orchestrator authorizes one additional focused correction set, preserves fail-closed legacy behavior unless an explicit proof model is approved, and requires a new clear-queue exact-head macOS CI run to pass.
+- Status: deferred
+- Resolving PR/SHA: None; awaiting orchestrator direction.
+
+## CUT-011 — Strong-evidence publication renumbered to PR #17
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): PR 17 - Implementation; branch `codex/p1-strong-version-evidence`; local head `4471dcafc37f9e10084ba5452a93ae85ef64e5f4`; target `claude/local-sync-work-order` at `14c72efe008636c0c76590499166b3e1498f6af6`.
+- Decision/cutoff: Supersede the unpublished expected PR #16 number with expected draft PR #17 for all strong-version-evidence entries. Preserve historical “expected PR #16” text as recorded.
+- Reason and evidence: Unrelated open draft PR #16, `codex/standard-subagent-structure` targeting `main`, was allocated before strong-version-evidence publication.
+- What was completed: Durable task and publication state now identify the work as PR 17 - Implementation while retaining the existing branch, local merge, commits, target, dirty log additions, and writer/test locks.
+- What was explicitly deferred: Any code or test correction, CI dispatch, push, or draft PR creation. PR #16 remains untouched.
+- Residual risk/severity: Low; this is publication-number metadata only. Exact-head CI remains red and publication remains blocked.
+- Exact revisit trigger or acceptance condition: Publish only as draft PR #17 after explicit orchestrator authorization and green exact-head macOS CI, targeting `claude/local-sync-work-order` at the required integration lineage.
+- Status: superseded
+- Resolving PR/SHA: Historical expected PR #16 references are superseded by expected PR #17; no publication SHA or PR URL exists yet.
+
+## CUT-012 — Authorize one final diagnosed correction and exact-head run
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): expected draft PR #17; branch `codex/p1-strong-version-evidence`; pre-correction local head `4471dcafc37f9e10084ba5452a93ae85ef64e5f4`; failed tested head `dda49b2d5f8e87cf4c0a17520485d9b752a17787`; target `claude/local-sync-work-order` at `14c72efe008636c0c76590499166b3e1498f6af6`.
+- Decision/cutoff: Authorize exactly one final correction set limited to the diagnosed run-31551176210 failures and exactly one corrected-head macOS CI run. A red final run freezes the work without further edits or reruns.
+- Reason and evidence: The failed run compiled and all required strong-evidence scenarios passed, while eleven unexpected failures were confined to three unrefined conformance call paths, one corrupt-fetch fixture, two receipt-aware recovery probes, and two legacy weak-receipt expectations.
+- What was completed: Authorization was bounded to explicit fixture refinement, a dedicated corrupt-fetch provider, receipt-aware state before live-path refinement, and fail-closed legacy expectations.
+- What was explicitly deferred: Any weakened strong precondition, wider legacy proof model, unrelated production behavior, cleanup, refactor, exhaustive matrix, documentation polish, conflict-idempotence, or additional CI attempt.
+- Residual risk/severity: Medium until the single corrected exact-head run is green; low immediate data-loss risk because the diagnosed behavior fails closed.
+- Exact revisit trigger or acceptance condition: Freeze and publish draft PR #17 only after static audits and the one corrected exact-head macOS CI run pass; if it fails, stop without editing or rerunning.
+- Status: accepted
+- Resolving PR/SHA: Pending the final corrected commit and authorized CI disposition.

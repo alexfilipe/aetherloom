@@ -39,15 +39,25 @@ import Testing
 }
 
 @Test func hashMismatchFailsItemAndDoesNotStoreCorruptContent() async throws {
-    let source = FakeStorageProvider(locationID: .googleDrive)
+    let sourceBase = FakeStorageProvider(locationID: .googleDrive)
+    let source = CorruptFetchProvider(
+        base: sourceBase,
+        replacement: Data("corrupt".utf8)
+    )
     let destination = FakeStorageProvider(locationID: .oneDrive)
-    let sourceItem = await source.putFile(path: "/Corrupt.txt", contents: Data("truth".utf8), modifiedAt: phase06Date)
-    var corruptRef = ContentRef(sourceItem)
-    corruptRef.expectedVersion.contentHash = "wrong-hash"
+    let sourceItem = await sourceBase.putFile(
+        path: "/Corrupt.txt",
+        contents: Data("truth".utf8),
+        modifiedAt: phase06Date
+    )
     let transfer = operation(
         "000000000201",
         location: .oneDrive,
-        kind: .transfer(content: corruptRef, to: "/Corrupt.txt", overwrite: .neverOverwrite),
+        kind: .transfer(
+            content: ContentRef(sourceItem),
+            to: "/Corrupt.txt",
+            overwrite: .neverOverwrite
+        ),
         precondition: .pathAbsent
     )
     let plan = planForOperations([transfer], path: "/Corrupt.txt")
@@ -1342,6 +1352,72 @@ private actor CorruptAfterStoreProvider: StorageProvider {
     func trash(_ observation: ItemObservation) async throws { try await base.trash(observation) }
     func currentState(of observation: ItemObservation) async throws -> ItemObservation {
         try await base.currentState(of: observation)
+    }
+}
+
+private actor CorruptFetchProvider: StorageProvider {
+    nonisolated let locationID: LocationID
+    nonisolated let capabilities: ProviderCapabilities
+
+    private let base: FakeStorageProvider
+    private let replacement: Data
+
+    init(base: FakeStorageProvider, replacement: Data) {
+        self.base = base
+        self.replacement = replacement
+        self.locationID = base.locationID
+        self.capabilities = base.capabilities
+    }
+
+    func checkAvailability() async -> LocationAvailability {
+        await base.checkAvailability()
+    }
+
+    func scan(_ scope: SyncScope) async -> LocationSnapshot {
+        await base.scan(scope)
+    }
+
+    func changedSubtrees(
+        in scope: SyncScope,
+        since cursor: ChangeCursor?
+    ) async throws -> ChangeHint {
+        try await base.changedSubtrees(in: scope, since: cursor)
+    }
+
+    func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
+        try await base.fetch(observation, to: stagingURL)
+        try replacement.write(to: stagingURL)
+    }
+
+    func store(
+        from stagingURL: URL,
+        at path: SyncPath,
+        options: StoreOptions
+    ) async throws -> ItemObservation {
+        try await base.store(from: stagingURL, at: path, options: options)
+    }
+
+    func makeFolder(at path: SyncPath) async throws -> ItemObservation {
+        try await base.makeFolder(at: path)
+    }
+
+    func relocate(
+        _ observation: ItemObservation,
+        to newPath: SyncPath
+    ) async throws -> ItemObservation {
+        try await base.relocate(observation, to: newPath)
+    }
+
+    func trash(_ observation: ItemObservation) async throws {
+        try await base.trash(observation)
+    }
+
+    func currentState(of observation: ItemObservation) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
+
+    func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
+        try await base.refineEvidence(for: observation)
     }
 }
 

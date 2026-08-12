@@ -2835,7 +2835,7 @@ struct LocalFolderStorageProviderTests {
     }
 
     @Test(arguments: LegacyTrashRecoveryOperation.allCases)
-    func legacyReceiptWithExactArtifactRecoversUnfinishedWAL(
+    func legacyReceiptWithExactArtifactWithoutStrongEvidenceFailsClosed(
         _ recoveryOperation: LegacyTrashRecoveryOperation
     ) async throws {
         let world = try makeRoot("legacy-receipt-\(recoveryOperation.rawValue)")
@@ -2939,16 +2939,17 @@ struct LocalFolderStorageProviderTests {
             )
         )
 
-        let report = try await RunRecovery(
-            providers: [location.id: recoveryProvider],
-            stores: stores
-        ).recover(replay)
+        await #expect(throws: RunRecoveryError.self) {
+            _ = try await RunRecovery(
+                providers: [location.id: recoveryProvider],
+                stores: stores
+            ).recover(replay)
+        }
 
-        #expect(report.reconciledOperations == [operationID])
         #expect(
             try await stores.journal.unfinishedRun(
                 for: recoveryOperation.syncSetID
-            ) == nil
+            ) != nil
         )
         #expect(recoveryHook.kinds().isEmpty)
         #expect(try Data(contentsOf: artifact) == contents)
@@ -2959,8 +2960,8 @@ struct LocalFolderStorageProviderTests {
                 ) == contents
             )
         }
-        guard case .complete = (await recoveryProvider.scan(.entireDrive)).status else {
-            Issue.record("Legacy recovery did not release its exact owner.")
+        guard case .unavailable = (await recoveryProvider.scan(.entireDrive)).status else {
+            Issue.record("Weak legacy recovery evidence released its owner.")
             return
         }
     }
