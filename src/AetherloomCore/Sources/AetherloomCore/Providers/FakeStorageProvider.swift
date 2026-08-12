@@ -10,6 +10,7 @@ public enum FakeProviderOperation: String, Codable, Hashable, Sendable {
     case relocate
     case trash
     case currentState
+    case refineEvidence
 }
 
 public struct FakeProviderCall: Codable, Hashable, Sendable {
@@ -259,6 +260,14 @@ public actor FakeStorageProvider: StorageProvider {
             throw ProviderError.placeholderOnly(provider: locationID, path: observation.path)
         }
         let current = try await currentStateWithoutLogging(of: observation)
+        if observation.kind == .file,
+           observation.version.hasStrongEvidence,
+           !mutationPreconditionMatches(current, expected: observation) {
+            throw ProviderError.preconditionFailed(
+                provider: locationID,
+                path: observation.path
+            )
+        }
         guard !current.isFolder else {
             throw ProviderError.unsupported(provider: locationID, reason: "Folders cannot be fetched as files.")
         }
@@ -283,7 +292,8 @@ public actor FakeStorageProvider: StorageProvider {
                 }
                 throw ProviderError.itemAlreadyExists(provider: locationID, path: path)
             case let .ifVersionMatches(expected):
-                guard existing.version.isSameVersion(as: expected) else {
+                guard let verified = stronglyVersioned(existing),
+                      verified.version.isSameVersion(as: expected) else {
                     throw ProviderError.preconditionFailed(provider: locationID, path: path)
                 }
             }
@@ -307,6 +317,12 @@ public actor FakeStorageProvider: StorageProvider {
     public func relocate(_ observation: ItemObservation, to newPath: SyncPath) async throws -> ItemObservation {
         try await prepareForThrowingCall(.relocate, path: observation.path)
         let current = try await currentStateWithoutLogging(of: observation)
+        guard mutationPreconditionMatches(current, expected: observation) else {
+            throw ProviderError.preconditionFailed(
+                provider: locationID,
+                path: observation.path
+            )
+        }
         if current.path == newPath {
             return current
         }
@@ -322,6 +338,12 @@ public actor FakeStorageProvider: StorageProvider {
     public func trash(_ observation: ItemObservation) async throws {
         try await prepareForThrowingCall(.trash, path: observation.path)
         let current = try await currentStateWithoutLogging(of: observation)
+        guard mutationPreconditionMatches(current, expected: observation) else {
+            throw ProviderError.preconditionFailed(
+                provider: locationID,
+                path: observation.path
+            )
+        }
         guard !current.isTrashed else { return }
         _ = update(current) { updated, revision in
             updated.isTrashed = true
@@ -332,6 +354,19 @@ public actor FakeStorageProvider: StorageProvider {
     public func currentState(of observation: ItemObservation) async throws -> ItemObservation {
         try await prepareForThrowingCall(.currentState, path: observation.path)
         return try await currentStateWithoutLogging(of: observation)
+    }
+
+    public func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
+        try await prepareForThrowingCall(.refineEvidence, path: observation.path)
+        let current = try await currentStateWithoutLogging(of: observation)
+        guard current.kind != .file || stronglyVersioned(current) != nil else {
+            throw ProviderError.evidenceUnavailable(
+                provider: locationID,
+                path: observation.path,
+                reason: "The fake provider has no bytes for this file."
+            )
+        }
+        return stronglyVersioned(current) ?? current
     }
 
     private func prepareForThrowingCall(_ operation: FakeProviderOperation, path: SyncPath?) async throws {
@@ -369,6 +404,36 @@ public actor FakeStorageProvider: StorageProvider {
             return current
         }
         throw ProviderError.notFound(provider: locationID, path: observation.path)
+    }
+
+    private func stronglyVersioned(_ observation: ItemObservation) -> ItemObservation? {
+        guard observation.kind == .file,
+              let itemID = observation.itemID,
+              let contents = contentsByID[itemID] else {
+            return nil
+        }
+        var refined = observation
+        refined.version.contentHash = Self.hash(contents)
+        refined.version.size = Int64(contents.count)
+        return refined
+    }
+
+    private func mutationPreconditionMatches(
+        _ current: ItemObservation,
+        expected: ItemObservation
+    ) -> Bool {
+        guard current.kind == expected.kind else { return false }
+        if let currentID = current.itemID,
+           let expectedID = expected.itemID,
+           currentID != expectedID {
+            return false
+        }
+        if current.kind == .file {
+            guard let verified = stronglyVersioned(current) else { return false }
+            return verified.version.isSameVersion(as: expected.version)
+        }
+        let comparison = current.version.comparison(to: expected.version)
+        return comparison == .strong || comparison == .weak
     }
 
     private func scopedActiveItems(in scope: SyncScope) -> [ItemObservation] {

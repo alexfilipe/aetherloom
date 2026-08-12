@@ -252,9 +252,10 @@ struct ProviderConformanceTests {
             modifiedAt: providerContractDate
         )
         let provider = try await harness.makeProvider(seeded: [seed])
-        let original = try #require(
+        let weakOriginal = try #require(
             await provider.scan(.entireDrive).observations.byPath["/Versioned.txt"]
         )
+        let original = try await provider.refineEvidence(for: weakOriginal)
         let firstURL = try providerContractTemporaryFile(
             "first-version.txt",
             contents: providerContractData("first replacement")
@@ -365,11 +366,17 @@ struct ProviderConformanceTests {
             ),
         ]
         let provider = try await harness.makeProvider(seeded: seeds)
-        let original = try #require(
+        let weakOriginal = try #require(
             await provider.scan(.entireDrive).observations.byPath["/Move.txt"]
         )
+        let original = try await provider.refineEvidence(for: weakOriginal)
 
-        #expect(try await provider.relocate(original, to: original.path) == original)
+        let reapplied = try await provider.relocate(original, to: original.path)
+        #expect(reapplied.path == original.path)
+        #expect(
+            try await provider.refineEvidence(for: reapplied).version
+                .isSameVersion(as: original.version)
+        )
         await #expect(
             throws: ProviderError.itemAlreadyExists(
                 provider: provider.locationID,
@@ -420,9 +427,10 @@ struct ProviderConformanceTests {
                 )
             ]
         )
-        let original = try #require(
+        let weakOriginal = try #require(
             await provider.scan(.entireDrive).observations.byPath["/Trash.txt"]
         )
+        let original = try await provider.refineEvidence(for: weakOriginal)
 
         try await provider.trash(original)
         try await provider.trash(original)

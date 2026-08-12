@@ -39,20 +39,30 @@ import Testing
 }
 
 @Test func hashMismatchFailsItemAndDoesNotStoreCorruptContent() async throws {
-    let source = FakeStorageProvider(locationID: .googleDrive)
+    let sourceBase = FakeStorageProvider(locationID: .googleDrive)
+    let source = CorruptFetchProvider(
+        base: sourceBase,
+        replacement: Data("corrupt".utf8)
+    )
     let destination = FakeStorageProvider(locationID: .oneDrive)
-    let sourceItem = await source.putFile(path: "/Corrupt.txt", contents: Data("truth".utf8), modifiedAt: phase06Date)
-    var corruptRef = ContentRef(sourceItem)
-    corruptRef.expectedVersion.contentHash = "wrong-hash"
+    let sourceItem = await sourceBase.putFile(
+        path: "/Corrupt.txt",
+        contents: Data("truth".utf8),
+        modifiedAt: phase06Date
+    )
     let transfer = operation(
         "000000000201",
         location: .oneDrive,
-        kind: .transfer(content: corruptRef, to: "/Corrupt.txt", overwrite: .neverOverwrite),
+        kind: .transfer(
+            content: ContentRef(sourceItem),
+            to: "/Corrupt.txt",
+            overwrite: .neverOverwrite
+        ),
         precondition: .pathAbsent
     )
     let plan = planForOperations([transfer], path: "/Corrupt.txt")
     let stores = EngineStores.inMemory()
-    let executor = try executor(providers: [source, destination], stores: stores, name: "hash-mismatch")
+    let executor = try executor(providerMap: [.googleDrive: source, .oneDrive: destination], stores: stores, name: "hash-mismatch")
 
     let summary = try await executor.execute(plan, runID: uuid("000000000202"))
     let errors = await stores.activity.entries(matching: ActivityQuery(categories: [.error], limit: 10))
@@ -60,6 +70,64 @@ import Testing
     #expect(summary.failedOperations.count == 1)
     #expect(await destination.item(at: "/Corrupt.txt") == nil)
     #expect(errors.contains { $0.message == ActivityMessageCatalog.verificationFailed })
+}
+
+@Test func hashTokenOnlyMismatchFailsBeforeDestinationMutation() async throws {
+    let sourceBase = FakeStorageProvider(locationID: .googleDrive)
+    let source = CorruptFetchProvider(
+        base: sourceBase,
+        replacement: Data("corrupt".utf8)
+    )
+    let destination = FakeStorageProvider(locationID: .oneDrive)
+    let truth = Data("hash-token truth".utf8)
+    var sourceItem = await sourceBase.putFile(
+        path: "/HashToken.txt",
+        contents: truth,
+        modifiedAt: phase06Date
+    )
+    sourceItem.version.contentHash = nil
+    sourceItem.version.revisionToken = ContentHashing.hash(truth)
+    let transfer = operation(
+        "000000000211",
+        location: .oneDrive,
+        kind: .transfer(
+            content: ContentRef(sourceItem),
+            to: sourceItem.path,
+            overwrite: .neverOverwrite
+        ),
+        precondition: .pathAbsent
+    )
+    let stores = EngineStores.inMemory()
+    let executor = try executor(
+        providerMap: [.googleDrive: source, .oneDrive: destination],
+        stores: stores,
+        name: "hash-token-mismatch"
+    )
+
+    let summary = try await executor.execute(
+        planForOperations([transfer], path: sourceItem.path),
+        runID: uuid("000000000212")
+    )
+    let errors = await stores.activity.entries(
+        matching: ActivityQuery(categories: [.error], limit: 10)
+    )
+    let destinationMutations: Set<FakeProviderOperation> = [
+        .store,
+        .makeFolder,
+        .relocate,
+        .trash,
+    ]
+
+    #expect(sourceItem.version.contentHash == nil)
+    #expect(sourceItem.version.hasStrongEvidence)
+    #expect(summary.failedOperations.count == 1)
+    #expect(await destination.item(at: sourceItem.path) == nil)
+    #expect(errors.contains { $0.message == ActivityMessageCatalog.verificationFailed })
+    #expect(
+        await destination.callLog().allSatisfy {
+            !destinationMutations.contains($0.operation)
+        }
+    )
 }
 
 @Test func postWriteVerificationFailureIsRecordedAndRunContinues() async throws {
@@ -980,6 +1048,44 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: staged.url.path))
 }
 
+@Test func weakStageKeysNeverReusePinnedStaleBytes() async throws {
+    var capabilities = ProviderCapabilities.fullFidelity
+    capabilities.hasContentHashes = false
+    let source = FakeStorageProvider(
+        locationID: .googleDrive,
+        capabilities: capabilities
+    )
+    let firstObservation = await source.putFile(
+        path: "/Weak-Key.dat",
+        contents: Data("first".utf8),
+        modifiedAt: phase06Date
+    )
+    var weakRef = ContentRef(firstObservation)
+    weakRef.expectedVersion.revisionToken = nil
+    let stage = ContentStage(
+        rootDirectory: try temporaryDirectory("phase06-weak-stage-key"),
+        byteLimit: 10_000_000
+    )
+
+    let first = try await stage.materialize(weakRef, from: source)
+    _ = await source.putFile(
+        path: firstObservation.path,
+        contents: Data("other".utf8),
+        modifiedAt: phase06Date,
+        itemID: firstObservation.itemID
+    )
+    let second = try await stage.materialize(weakRef, from: source)
+
+    #expect(first.url != second.url)
+    #expect(try Data(contentsOf: first.url) == Data("first".utf8))
+    #expect(try Data(contentsOf: second.url) == Data("other".utf8))
+    let fetches = await source.callLog().filter { $0.operation == .fetch }
+    #expect(fetches.count == 2)
+
+    await stage.release(first)
+    await stage.release(second)
+}
+
 @Test func baseRecordUpdatesLandBeforeRunFinished() async throws {
     let recorder = EventRecorder()
     let baseRecords = RecordingBaseRecordStore(delegate: InMemoryBaseRecordStore(), recorder: recorder)
@@ -1304,6 +1410,73 @@ private actor CorruptAfterStoreProvider: StorageProvider {
     func trash(_ observation: ItemObservation) async throws { try await base.trash(observation) }
     func currentState(of observation: ItemObservation) async throws -> ItemObservation {
         try await base.currentState(of: observation)
+    }
+}
+
+private actor CorruptFetchProvider: StorageProvider {
+    nonisolated let locationID: LocationID
+    nonisolated let capabilities: ProviderCapabilities
+
+    private let base: FakeStorageProvider
+    private let replacement: Data
+
+    init(base: FakeStorageProvider, replacement: Data) {
+        self.base = base
+        self.replacement = replacement
+        self.locationID = base.locationID
+        self.capabilities = base.capabilities
+    }
+
+    func checkAvailability() async -> LocationAvailability {
+        await base.checkAvailability()
+    }
+
+    func scan(_ scope: SyncScope) async -> LocationSnapshot {
+        await base.scan(scope)
+    }
+
+    func changedSubtrees(
+        in scope: SyncScope,
+        since cursor: ChangeCursor?
+    ) async throws -> ChangeHint {
+        try await base.changedSubtrees(in: scope, since: cursor)
+    }
+
+    func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
+        let current = try await base.currentState(of: observation)
+        try await base.fetch(current, to: stagingURL)
+        try replacement.write(to: stagingURL)
+    }
+
+    func store(
+        from stagingURL: URL,
+        at path: SyncPath,
+        options: StoreOptions
+    ) async throws -> ItemObservation {
+        try await base.store(from: stagingURL, at: path, options: options)
+    }
+
+    func makeFolder(at path: SyncPath) async throws -> ItemObservation {
+        try await base.makeFolder(at: path)
+    }
+
+    func relocate(
+        _ observation: ItemObservation,
+        to newPath: SyncPath
+    ) async throws -> ItemObservation {
+        try await base.relocate(observation, to: newPath)
+    }
+
+    func trash(_ observation: ItemObservation) async throws {
+        try await base.trash(observation)
+    }
+
+    func currentState(of observation: ItemObservation) async throws -> ItemObservation {
+        try await base.currentState(of: observation)
+    }
+
+    func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
+        try await base.refineEvidence(for: observation)
     }
 }
 

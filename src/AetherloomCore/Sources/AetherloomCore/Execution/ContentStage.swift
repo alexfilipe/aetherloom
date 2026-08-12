@@ -127,7 +127,10 @@ private actor ContentStageStorage {
             return pin(entry, for: key)
         }
 
-        let stagingURL = rootDirectory.appendingPathComponent(key.filename, isDirectory: false)
+        let stagingURL = rootDirectory.appendingPathComponent(
+            key.filename,
+            isDirectory: false
+        )
         let task = Task<StageEntry, Error> {
             try await materializeEntry(ref, from: provider, at: stagingURL)
         }
@@ -190,6 +193,13 @@ private actor ContentStageStorage {
         guard let key = keysByURL[content.url], var entry = entries[key] else { return }
         entry.pinCount = max(0, entry.pinCount - 1)
         entry.lastAccess = nextAccess()
+        if entry.pinCount == 0, !key.isReusable {
+            entries.removeValue(forKey: key)
+            keysByURL.removeValue(forKey: content.url)
+            currentBytes -= entry.content.size
+            try? FileManager.default.removeItem(at: entry.content.url)
+            return
+        }
         entries[key] = entry
         evictIfNeeded()
     }
@@ -212,6 +222,7 @@ private actor ContentStageStorage {
 
     private func pinCachedEntry(for key: StageKey) -> StagedContent? {
         guard var entry = entries[key] else { return nil }
+        guard key.isReusable || entry.pinCount > 0 else { return nil }
         entry.pinCount += 1
         entry.lastAccess = nextAccess()
         entries[key] = entry
@@ -220,10 +231,17 @@ private actor ContentStageStorage {
 
     private func pin(_ entry: StageEntry, for key: StageKey) -> StagedContent {
         if var cached = entries[key] {
-            cached.pinCount += 1
-            cached.lastAccess = nextAccess()
-            entries[key] = cached
-            return cached.content
+            if !key.isReusable, cached.pinCount == 0 {
+                entries.removeValue(forKey: key)
+                keysByURL.removeValue(forKey: cached.content.url)
+                currentBytes -= cached.content.size
+                try? FileManager.default.removeItem(at: cached.content.url)
+            } else {
+                cached.pinCount += 1
+                cached.lastAccess = nextAccess()
+                entries[key] = cached
+                return cached.content
+            }
         }
 
         var pinned = entry
@@ -267,12 +285,18 @@ private struct StageKey: Hashable, Sendable {
     var itemID: String?
     var path: SyncPath
     var version: ItemVersion
+    var weakNonce: UUID?
 
     init(_ ref: ContentRef) {
         self.sourceLocation = ref.sourceLocation
         self.itemID = ref.itemID
         self.path = ref.path
         self.version = ref.expectedVersion
+        self.weakNonce = ref.expectedVersion.hasStrongEvidence ? nil : UUID()
+    }
+
+    var isReusable: Bool {
+        version.hasStrongEvidence
     }
 
     var filename: String {
@@ -284,7 +308,8 @@ private struct StageKey: Hashable, Sendable {
                 version.contentHash ?? "",
                 version.size.map(String.init) ?? "",
                 version.modifiedAt.map(CanonicalCoding.dateString) ?? "",
-                version.revisionToken ?? ""
+                version.revisionToken ?? "",
+                weakNonce?.uuidString ?? ""
             ].joined(separator: "\u{1f}")
         )
         return "\(digest).stage"
@@ -323,15 +348,17 @@ private func materializeEntry(
 
     do {
         try await provider.fetch(ref.observation, to: temporaryURL)
-        let data = try Data(contentsOf: temporaryURL)
-        let actualHash = ContentHashing.hash(data)
-        if let expectedHash = ref.expectedVersion.contentHash, expectedHash != actualHash {
+        let evidence = try ContentHashing.hashFile(at: temporaryURL)
+        let actualHash = evidence.hash
+        let expectedHash = ref.expectedVersion.contentHash
+            ?? ref.expectedVersion.sha256RevisionHash
+        if let expectedHash, expectedHash != actualHash {
             try? FileManager.default.removeItem(at: temporaryURL)
             throw ContentStageError.hashMismatch(path: ref.path, expected: expectedHash, actual: actualHash)
         }
         try FileManager.default.moveItem(at: temporaryURL, to: stagingURL)
         return StageEntry(
-            content: StagedContent(url: stagingURL, verifiedHash: actualHash, size: Int64(data.count)),
+            content: StagedContent(url: stagingURL, verifiedHash: actualHash, size: evidence.size),
             pinCount: 0,
             lastAccess: 0
         )

@@ -259,9 +259,9 @@ private func fact(for record: BaseRecord, observation: ItemObservation) -> Locat
 
     let comparison = observation.version.comparison(to: record.version)
     switch (comparison, observation.path == record.path) {
-    case (.same, true):
+    case (.strong, true), (.weak, true):
         return .matchesBase
-    case (.same, false):
+    case (.strong, false), (.weak, false):
         return .relocated(to: observation.path)
     case (.different, true), (.unknown, true):
         return .changed(observation.version)

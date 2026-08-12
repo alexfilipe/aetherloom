@@ -504,7 +504,7 @@ public struct RunRecovery: Sendable {
             && observation.kind == expected.kind
             && !observation.isPlaceholder
             && (mayBeTrashed || !observation.isTrashed)
-            && observation.version.comparison(to: expected.expectedVersion) == .same
+            && observation.version.comparison(to: expected.expectedVersion) == .strong
             && (expected.itemID == nil || observation.itemID == expected.itemID)
     }
 
@@ -591,11 +591,5 @@ private func receiptMatches(
 }
 
 private func matchingRecoveredContent(_ lhs: ItemVersion, _ rhs: ItemVersion) -> Bool {
-    if lhs.isSameVersion(as: rhs) {
-        return true
-    }
-    if let lhsSize = lhs.size, let rhsSize = rhs.size, lhsSize == rhsSize, rhs.contentHash == nil {
-        return true
-    }
-    return false
+    lhs.isSameVersion(as: rhs)
 }

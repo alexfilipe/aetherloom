@@ -18,6 +18,258 @@ import Testing
     #expect(await oneDrive.callLog().map(\.operation) == [.checkAvailability, .scan])
 }
 
+@Test func phase07WeakMetadataCannotAuthorizeOverwrite() async throws {
+    let syncSet = phase07SyncSet([.googleDrive, .oneDrive])
+    let stores = EngineStores.inMemory()
+    let googleBase = FakeStorageProvider(locationID: .googleDrive)
+    let oneDriveBase = FakeStorageProvider(locationID: .oneDrive)
+    let googleOriginal = await googleBase.putFile(
+        path: "/Weak-Overwrite.dat",
+        contents: phase07Data("base"),
+        modifiedAt: phase07Date
+    )
+    let oneDriveOriginal = await oneDriveBase.putFile(
+        path: "/Weak-Overwrite.dat",
+        contents: phase07Data("base"),
+        modifiedAt: phase07Date
+    )
+    try await stores.baseRecords.apply(
+        .upsert(
+            phase07Record(
+                syncSetID: syncSet.id,
+                path: "/Weak-Overwrite.dat",
+                items: [
+                    .googleDrive: weakObservation(googleOriginal),
+                    .oneDrive: weakObservation(oneDriveOriginal),
+                ]
+            )
+        )
+    )
+    let googleChanged = await googleBase.putFile(
+        path: "/Weak-Overwrite.dat",
+        contents: phase07Data("news"),
+        modifiedAt: phase07Date.addingTimeInterval(1),
+        itemID: googleOriginal.itemID
+    )
+    let oneDriveChanged = await oneDriveBase.putFile(
+        path: "/Weak-Overwrite.dat",
+        contents: phase07Data("drft"),
+        modifiedAt: phase07Date,
+        itemID: oneDriveOriginal.itemID
+    )
+    let google = WeakMetadataProvider(base: googleBase)
+    let oneDrive = WeakMetadataProvider(base: oneDriveBase)
+    let orchestrator = try phase07Orchestrator(
+        syncSet: syncSet,
+        providerMap: [
+            .googleDrive: google,
+            .oneDrive: oneDrive,
+        ],
+        stores: stores
+    )
+
+    let plan = try #require(try await orchestrator.prepare(syncSet).outcome.planValue)
+
+    #expect(plan.conflicts.count == 1)
+    #expect(plan.schedule.operations.allSatisfy { operation in
+        if case let .transfer(_, _, overwrite) = operation.kind {
+            return overwrite == .neverOverwrite
+        }
+        return true
+    })
+    #expect(await googleBase.callLog().filter { $0.operation == .refineEvidence }.count == 1)
+    #expect(await oneDriveBase.callLog().filter { $0.operation == .refineEvidence }.count == 1)
+    let weakSnapshots = [
+        LocationSnapshot(
+            location: .googleDrive,
+            scope: .entireDrive,
+            observations: [weakObservation(googleChanged)],
+            scannedAt: phase07Date
+        ),
+        LocationSnapshot(
+            location: .oneDrive,
+            scope: .entireDrive,
+            observations: [weakObservation(oneDriveChanged)],
+            scannedAt: phase07Date
+        ),
+    ]
+    let refinedSnapshots = [
+        LocationSnapshot(
+            location: .googleDrive,
+            scope: .entireDrive,
+            observations: [googleChanged],
+            scannedAt: phase07Date
+        ),
+        LocationSnapshot(
+            location: .oneDrive,
+            scope: .entireDrive,
+            observations: [oneDriveChanged],
+            scannedAt: phase07Date
+        ),
+    ]
+    #expect(
+        plan.fingerprint == PlanFingerprint.compute(
+            syncSetID: syncSet.id,
+            decisions: plan.decisions,
+            schedule: plan.schedule,
+            gate: plan.gate,
+            snapshots: refinedSnapshots
+        )
+    )
+    #expect(
+        plan.fingerprint != PlanFingerprint.compute(
+            syncSetID: syncSet.id,
+            decisions: plan.decisions,
+            schedule: plan.schedule,
+            gate: plan.gate,
+            snapshots: weakSnapshots
+        )
+    )
+}
+
+@Test func phase07EvidenceFailureRefusesWithoutDestructiveOperation() async throws {
+    let syncSet = phase07SyncSet([.googleDrive, .oneDrive])
+    let stores = EngineStores.inMemory()
+    let googleBase = FakeStorageProvider(locationID: .googleDrive)
+    let oneDriveBase = FakeStorageProvider(locationID: .oneDrive)
+    let googleOriginal = await googleBase.putFile(
+        path: "/Evidence-Failure.dat",
+        contents: phase07Data("base"),
+        modifiedAt: phase07Date
+    )
+    let oneDriveOriginal = await oneDriveBase.putFile(
+        path: "/Evidence-Failure.dat",
+        contents: phase07Data("base"),
+        modifiedAt: phase07Date
+    )
+    try await stores.baseRecords.apply(
+        .upsert(
+            phase07Record(
+                syncSetID: syncSet.id,
+                path: "/Evidence-Failure.dat",
+                items: [
+                    .googleDrive: weakObservation(googleOriginal),
+                    .oneDrive: weakObservation(oneDriveOriginal),
+                ]
+            )
+        )
+    )
+    _ = await googleBase.putFile(
+        path: "/Evidence-Failure.dat",
+        contents: phase07Data("news"),
+        modifiedAt: phase07Date.addingTimeInterval(1),
+        itemID: googleOriginal.itemID
+    )
+    let google = WeakMetadataProvider(base: googleBase)
+    let oneDriveWeak = WeakMetadataProvider(base: oneDriveBase)
+    let oneDrive = FlakyStorageProvider(wrapping: oneDriveWeak)
+    await oneDrive.failNext(
+        .refineEvidence,
+        with: .evidenceUnavailable(
+            provider: .oneDrive,
+            path: "/Evidence-Failure.dat",
+            reason: "Injected evidence failure."
+        )
+    )
+    let orchestrator = try phase07Orchestrator(
+        syncSet: syncSet,
+        providerMap: [
+            .googleDrive: google,
+            .oneDrive: oneDrive,
+        ],
+        stores: stores
+    )
+
+    let preparation = try await orchestrator.prepare(syncSet)
+    let refusal = try #require(preparation.outcome.refusalValue)
+
+    #expect(refusal.reasons.contains { reason in
+        if case .evidenceUnavailable(.oneDrive, "/Evidence-Failure.dat", _) = reason {
+            return true
+        }
+        return false
+    })
+    let mutations = await oneDriveBase.callLog().filter {
+        [.fetch, .store, .relocate, .trash].contains($0.operation)
+    }
+    #expect(mutations.isEmpty)
+}
+
+@Test func phase07WeakEditDeleteCannotTrashEditedDestination() async throws {
+    let syncSet = phase07SyncSet([.googleDrive, .oneDrive])
+    let stores = EngineStores.inMemory()
+    let googleBase = FakeStorageProvider(locationID: .googleDrive)
+    let oneDriveBase = FakeStorageProvider(locationID: .oneDrive)
+    let googleOriginal = await googleBase.putFile(
+        path: "/Weak-Delete.dat",
+        contents: phase07Data("base"),
+        modifiedAt: phase07Date
+    )
+    let oneDriveOriginal = await oneDriveBase.putFile(
+        path: "/Weak-Delete.dat",
+        contents: phase07Data("base"),
+        modifiedAt: phase07Date
+    )
+    try await stores.baseRecords.apply(
+        .upsert(
+            phase07Record(
+                syncSetID: syncSet.id,
+                path: "/Weak-Delete.dat",
+                items: [
+                    .googleDrive: weakObservation(googleOriginal),
+                    .oneDrive: weakObservation(oneDriveOriginal),
+                ]
+            )
+        )
+    )
+    await googleBase.remove(path: googleOriginal.path)
+    _ = await oneDriveBase.putFile(
+        path: oneDriveOriginal.path,
+        contents: phase07Data("edit"),
+        modifiedAt: phase07Date,
+        itemID: oneDriveOriginal.itemID
+    )
+    let orchestrator = try phase07Orchestrator(
+        syncSet: syncSet,
+        providerMap: [
+            .googleDrive: WeakMetadataProvider(base: googleBase),
+            .oneDrive: WeakMetadataProvider(base: oneDriveBase),
+        ],
+        stores: stores
+    )
+
+    let plan = try #require(try await orchestrator.prepare(syncSet).outcome.planValue)
+
+    #expect(plan.conflicts.count == 1)
+    #expect(plan.schedule.operations.allSatisfy { !$0.kind.isTrash })
+    #expect(await oneDriveBase.callLog().filter { $0.operation == .refineEvidence }.count == 1)
+}
+
+@Test func phase07SafeWeakCreationPreparationDoesNotHash() async throws {
+    let syncSet = phase07SyncSet([.googleDrive, .oneDrive])
+    let googleBase = FakeStorageProvider(locationID: .googleDrive)
+    let oneDriveBase = FakeStorageProvider(locationID: .oneDrive)
+    _ = await googleBase.putFile(
+        path: "/Lazy-Creation.txt",
+        contents: phase07Data("lazy"),
+        modifiedAt: phase07Date
+    )
+    let orchestrator = try phase07Orchestrator(
+        syncSet: syncSet,
+        providerMap: [
+            .googleDrive: WeakMetadataProvider(base: googleBase),
+            .oneDrive: WeakMetadataProvider(base: oneDriveBase),
+        ],
+        stores: .inMemory()
+    )
+
+    let plan = try #require(try await orchestrator.prepare(syncSet).outcome.planValue)
+
+    #expect(plan.schedule.operations.count == 1)
+    #expect(await googleBase.callLog().allSatisfy { $0.operation != .refineEvidence })
+    #expect(await oneDriveBase.callLog().allSatisfy { $0.operation != .refineEvidence })
+}
+
 @Test func phase07UnavailableShortCircuitsBeforeScan() async throws {
     let syncSet = phase07SyncSet([.googleDrive, .oneDrive])
     let google = FakeStorageProvider(locationID: .googleDrive)
@@ -830,6 +1082,91 @@ private final class UUIDSequence: @unchecked Sendable {
         counter += 1
         return UUID(uuidString: "\(prefix)-\(String(format: "%012d", value))")!
     }
+}
+
+private actor WeakMetadataProvider: StorageProvider {
+    nonisolated let locationID: LocationID
+    nonisolated let capabilities: ProviderCapabilities
+
+    private let base: FakeStorageProvider
+
+    init(base: FakeStorageProvider) {
+        self.base = base
+        self.locationID = base.locationID
+        var capabilities = base.capabilities
+        capabilities.hasContentHashes = false
+        self.capabilities = capabilities
+    }
+
+    func checkAvailability() async -> LocationAvailability {
+        await base.checkAvailability()
+    }
+
+    func scan(_ scope: SyncScope) async -> LocationSnapshot {
+        let snapshot = await base.scan(scope)
+        return LocationSnapshot(
+            location: snapshot.location,
+            scope: snapshot.scope,
+            observations: snapshot.observations.all.map(weakObservation),
+            status: snapshot.status,
+            scannedAt: phase07Date
+        )
+    }
+
+    func changedSubtrees(
+        in scope: SyncScope,
+        since cursor: ChangeCursor?
+    ) async throws -> ChangeHint {
+        try await base.changedSubtrees(in: scope, since: cursor)
+    }
+
+    func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
+        try await base.fetch(observation, to: stagingURL)
+    }
+
+    func store(
+        from stagingURL: URL,
+        at path: SyncPath,
+        options: StoreOptions
+    ) async throws -> ItemObservation {
+        weakObservation(
+            try await base.store(
+                from: stagingURL,
+                at: path,
+                options: options
+            )
+        )
+    }
+
+    func makeFolder(at path: SyncPath) async throws -> ItemObservation {
+        weakObservation(try await base.makeFolder(at: path))
+    }
+
+    func relocate(
+        _ observation: ItemObservation,
+        to newPath: SyncPath
+    ) async throws -> ItemObservation {
+        weakObservation(try await base.relocate(observation, to: newPath))
+    }
+
+    func trash(_ observation: ItemObservation) async throws {
+        try await base.trash(observation)
+    }
+
+    func currentState(of observation: ItemObservation) async throws -> ItemObservation {
+        weakObservation(try await base.currentState(of: observation))
+    }
+
+    func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
+        try await base.refineEvidence(for: observation)
+    }
+}
+
+private func weakObservation(_ observation: ItemObservation) -> ItemObservation {
+    var weak = observation
+    weak.version.contentHash = nil
+    weak.version.revisionToken = nil
+    return weak
 }
 
 private actor BlockingAvailabilityGate {

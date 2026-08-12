@@ -343,6 +343,76 @@ struct RealLocalSyncEndToEndTests {
         try await world.expectEmptyPreview()
     }
 
+    @Test func sameSizeSameMtimeIndependentEditsPreserveBothVersions() async throws {
+        let world = try await LocalRealE2EWorld.make(
+            name: "same-metadata-conflict-preservation"
+        )
+        defer { try? FileManager.default.removeItem(at: world.root) }
+        try localRealE2EWrite(
+            Data("base".utf8),
+            to: "/Same-Metadata.dat",
+            under: world.rootA
+        )
+        try await world.executeClearPlan()
+
+        let editA = Data("AAAA".utf8)
+        let editB = Data("BBBB".utf8)
+        let sharedModifiedAt = localE2EDate.addingTimeInterval(10)
+        try localRealE2EWrite(
+            editA,
+            to: "/Same-Metadata.dat",
+            under: world.rootA,
+            modifiedAt: sharedModifiedAt
+        )
+        try localRealE2EWrite(
+            editB,
+            to: "/Same-Metadata.dat",
+            under: world.rootB,
+            modifiedAt: sharedModifiedAt
+        )
+
+        let preparation = try await world.orchestrator.prepare(world.syncSet)
+        let plan = try #require(preparation.outcome.planValue)
+        let conflict = try #require(plan.conflicts.first)
+        let copies = plan.schedule.operations.compactMap {
+            operation -> (LocationID, SyncPath)? in
+            guard case let .transfer(content, path, .neverOverwrite) = operation.kind,
+                  path != content.path else {
+                return nil
+            }
+            return (operation.location, path)
+        }
+
+        #expect(conflict.kind == .editEdit)
+        #expect(copies.count == 2)
+        let summary = try await world.orchestrator.execute(
+            preparation,
+            approval: localE2EApproval(for: plan)
+        )
+        #expect(summary.outcome == .completed)
+        let preserved = try Set(copies.map { copy in
+            try localRealE2ERead(
+                copy.1,
+                under: copy.0 == world.locationA.id
+                    ? world.rootA
+                    : world.rootB
+            )
+        })
+        #expect(preserved == Set([editA, editB]))
+        #expect(
+            try localRealE2ERead(
+                "/Same-Metadata.dat",
+                under: world.rootA
+            ) == editA
+        )
+        #expect(
+            try localRealE2ERead(
+                "/Same-Metadata.dat",
+                under: world.rootB
+            ) == editB
+        )
+    }
+
     @Test func massDeleteHoldCannotBeApprovedAndPerformsNoProviderMutation() async throws {
         let settings = SyncSettings(
             thresholds: SafetyThresholds(
@@ -447,12 +517,12 @@ struct RealLocalSyncEndToEndTests {
         let plan = try #require(preparation.outcome.planValue)
         #expect(plan.decisions.contains { $0.path == "/Drift.txt" })
 
-        let surprise = Data("destination changed after planning".utf8)
+        let surprise = Data("drft".utf8)
         try localRealE2EWrite(
             surprise,
             to: "/Drift.txt",
             under: world.rootB,
-            modifiedAt: localE2EDate.addingTimeInterval(20)
+            modifiedAt: localE2EDate
         )
         await world.providerA.clearMutationCalls()
         await world.providerB.clearMutationCalls()
@@ -738,6 +808,10 @@ private actor LocalE2EMutationRecordingProvider: StorageProvider {
 
     func currentState(of observation: ItemObservation) async throws -> ItemObservation {
         try await base.currentState(of: observation)
+    }
+
+    func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
+        try await base.refineEvidence(for: observation)
     }
 }
 
