@@ -204,3 +204,34 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Accept only if focused token/staging coverage and the full package suite pass on the one new exact head, static safety audits pass, and exactly one clear-queue macOS CI run succeeds. The immutable tested SHA and CI URL belong in the frozen report because appending them afterward would create a different, untested head.
 - Status: accepted
 - Resolving PR/SHA: Pending the focused correction commit and its single exact-head macOS CI run.
+
+## CUT-009 — Evaluation-loop framework finish line
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): evaluation-loop documentation on branch `codex/standard-subagent-structure`; base `30e0e6a84080007748949a1728c8c0d96eb28ae0`; PR #12 cutoff precedent `14c72efe008636c0c76590499166b3e1498f6af6`; final publication SHA pending.
+- Decision/cutoff: Generalize the PR #12 orchestration lessons into a risk-scaled define → implement → evaluate → decide framework for all future features and PRs. Default to one complete independent evaluation for high-risk work, one correction batch, targeted verification, and one exact-head authoritative run. Require new P0/P1 evidence and explicit user approval before a third complete evaluation.
+- Reason and evidence: PR #12's durable decisions and live orchestration showed that exact finish lines, focused verification, one narrow correction allowance, human smoke evidence, and concrete reopen triggers preserve safety while preventing recursive review from indefinitely delaying merge.
+- What was completed: Canonical framework documentation, bounded subagent triggers, risk tiers, evaluation/review ceilings, validation and lock rules, human-smoke routing, durable cutoff policy/template, and references from `AGENTS.md`, `CLAUDE.md`, and the architecture index.
+- What was explicitly deferred: Runtime enforcement tooling, automation of task creation/locks, and any implementation or PR-state changes from the historical local-provider safety stack.
+- Residual risk/severity: P3; the framework is procedural documentation and depends on future agents applying and recording its gates accurately.
+- Exact revisit trigger or acceptance condition: Revisit when a completed feature or PR demonstrates that a default cutoff either allowed a P0/P1 defect through or required redundant evaluation without producing new actionable evidence.
+- Status: accepted
+- Resolving PR/SHA: Pending publication of the documentation change.
+
+## PR-number metadata appended 2026-08-12
+
+- CUT-003 through CUT-008: References to “expected PR #16” reflected the plan when those decisions were recorded and are now superseded for numbering only. PR #16 was assigned to the evaluation-loop documentation; the strong-version-evidence PR number remains pending. The recorded strong-evidence scope, bases, implementation SHAs, CI evidence, risks, and revisit triggers are unchanged.
+- CUT-009: Published as draft PR #16. The framework was introduced by `ab6965e74786ce66a30d56e898bae0ebc1b7c5cd`; this appended metadata is the only post-publication correction.
+
+## CUT-016 — Integrate current main into PR #12
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): PR [#12](https://github.com/alexfilipe/aetherloom/pull/12), branch `claude/local-sync-work-order`; pre-merge integration head `dc7cde3d4df405bb52f1ecd5bb984ca0793c1e1a`; merged `main` head `26878abcdedfbfd009b9c1d13c789c722c5f1dc1`; common ancestor `23177b20c93820cda70b6e31c43f9d339e4050a0`.
+- Decision/cutoff: Merge current `main` into the PR #12 integration branch with a normal merge commit after explicit user authorization. Preserve both independently added cutoff-log histories verbatim, including their historically duplicated `CUT-009` identifiers, and document the collision here instead of renumbering or rewriting either entry.
+- Reason and evidence: PR #12 had become conflicting after PR #16 advanced `main`. The integration branch was clean and synchronized, no Swift workflow was active, and the only Git merge conflict was the add/add cutoff log.
+- What was completed: All code and framework-documentation changes from `main` were merged automatically. The sole cutoff-log conflict retained every entry from both sides and removed only Git conflict markers.
+- What was explicitly deferred: Any product-level conflict-idempotence correction, PR #18 target selection, conflict-thread resolution, PR #12 readiness/merge, and merge-result validation beyond static checks until the exact merge commit is published and macOS CI completes.
+- Residual risk/severity: Medium until exact-head macOS CI validates the combined branch. The duplicate historical `CUT-009` labels are a documentation ambiguity only; titles and SHAs disambiguate them.
+- Exact revisit trigger or acceptance condition: Accept the integration only after `git diff --check`, ancestry/cleanliness verification, normal push, and one green exact-head macOS CI run. Reopen merge resolution only for a combined-branch regression or lost historical cutoff entry.
+- Status: accepted
+- Resolving PR/SHA: Merge commit and exact-head CI pending.
