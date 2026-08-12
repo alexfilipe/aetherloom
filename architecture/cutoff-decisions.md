@@ -165,3 +165,16 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Freeze and publish draft PR #17 only after static audits and the one corrected exact-head macOS CI run pass; if it fails, stop without editing or rerunning.
 - Status: accepted
 - Resolving PR/SHA: Pending the final corrected commit and authorized CI disposition.
+
+## CUT-013 — Freeze the final correction candidate for authoritative CI
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): expected draft PR #17; focused correction `9731d1f35a2e28be25717e9a4fd45ef9effa6e2c`; parent integration `14c72efe008636c0c76590499166b3e1498f6af6`; preserved merge `4471dcafc37f9e10084ba5452a93ae85ef64e5f4`.
+- Decision/cutoff: Freeze the diagnosed correction plus this disposition entry as the only candidate for the final authorized exact-head macOS CI run. Green authorizes draft PR #17 publication; red requires stopping without edits or another run.
+- Reason and evidence: Provider-contract fixtures now refine before destructive calls, corrupt-fetch coverage reaches ContentStage verification without forged evidence, recovery checks receipt-aware state before live-file refinement, and legacy weak receipts remain paused. `git diff --check`, focused scope review, permanent-delete audit, sleep audit, and secret-assignment audit passed; Busy Beaver has neither Swift nor Xcode, so no local Swift or app-target validation exists.
+- What was completed: The four diagnosed run-31551176210 correction categories and required append-only cutoff metadata were committed without weakening provider preconditions, scan laziness, physical-root ownership, receipts, or recovery barriers.
+- What was explicitly deferred: A wider legacy proof model, exhaustive permutations, unrelated cleanup or refactors, conflict-idempotence, local Swift/Xcode validation, and every additional correction or CI attempt.
+- Residual risk/severity: Medium until authoritative macOS CI completes; immediate data-loss risk remains low because uncertainty and legacy weak evidence fail closed.
+- Exact revisit trigger or acceptance condition: Accept and publish only if the one exact-head macOS CI run is green and local/upstream/origin SHAs, cleanliness, ancestry, and PR #12 targeting are all verified; otherwise stop frozen and unpublished.
+- Status: accepted
+- Resolving PR/SHA: Focused correction `9731d1f35a2e28be25717e9a4fd45ef9effa6e2c`; final exact-head CI run and draft PR #17 URL pending.
