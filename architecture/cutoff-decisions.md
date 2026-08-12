@@ -235,3 +235,20 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Accept the integration only after `git diff --check`, ancestry/cleanliness verification, normal push, and one green exact-head macOS CI run. Reopen merge resolution only for a combined-branch regression or lost historical cutoff entry.
 - Status: accepted
 - Resolving PR/SHA: Merge commit and exact-head CI pending.
+
+## Resolution metadata appended 2026-08-12
+
+- CUT-016: Integrated current `main` as merge commit `4926685568c5daf1b401f7b84189f351ee3d9569`. Exact-head macOS CI [run 31562729072](https://github.com/alexfilipe/aetherloom/actions/runs/31562729072) passed 326 tests in 8 suites with 0 unexpected failures, 9 known issues, and 1 opt-in skip. PR #12 was clean and mergeable against `main` after the integration.
+
+## CUT-017 — Close the reported PR #17 smoke anomalies without speculative PR #18 work
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): merged PR [#17](https://github.com/alexfilipe/aetherloom/pull/17); PR #12 integration head `4926685568c5daf1b401f7b84189f351ee3d9569`; user macOS smoke evidence captured after the `main` integration.
+- Decision/cutoff: Treat the mass-deletion report as resolved by the documented preview step and treat the earlier `runAlreadyExists` alert as not reproducible when the conflict dialog is closed before starting a fresh sync. Do not reopen PR #17 and do not create a speculative PR #18 implementation from this evidence.
+- Reason and evidence: The Projects preview displayed the required 30-item mass-deletion hold with “Paused for safety.” A subsequent clean conflict flow preserved both versions; after closing the dialog, starting Sync again produced a fresh Needs Review preview without `runAlreadyExists`. No permanent deletion, overwrite, or loss of either conflict version was observed.
+- What was completed: User-level macOS smoke coverage for mass-deletion review and repeated unresolved-conflict preview on the updated integration branch. The two read-only PR #18 reproduction tasks also found no existing executable harness for the full two-run identity/path/journal/store comparison.
+- What was explicitly deferred: Conflict-preservation idempotence implementation, semantic conflict identity, durable preservation mapping, full repeated-execution mutation/journal comparison, and PR #18 branch/PR creation.
+- Residual risk/severity: Low to medium. The originally planned conflict-idempotence scenario remains unmeasured end to end, but there is currently no reproducible failure or immediate data-loss evidence authorizing an implementation target.
+- Exact revisit trigger or acceptance condition: Reopen target selection only with a deterministic reproduction on a frozen `main` or integration SHA showing duplicate conflict records, new preservation paths, repeated filesystem mutations, `runAlreadyExists` after the clean close-and-resync flow, or loss/overwrite of preserved content.
+- Status: deferred
+- Resolving PR/SHA: No PR #18 implementation created; smoke anomalies closed at PR #12 head `4926685568c5daf1b401f7b84189f351ee3d9569` pending publication of this append-only record.
