@@ -257,7 +257,7 @@ This is how new evidence moves the product forward without restarting every prio
 
 Cutoffs are part of the evaluation loop, not an escape from it. They define when evidence is enough, what is intentionally deferred, and exactly what would reopen the work.
 
-Record material cutoff decisions in a file separate from work orders and implementation plans. Everything about cutoffs lives in [`cutoffs/`](cutoffs/README.md): the policy, default catalog, and entry format in [`cutoffs/README.md`](cutoffs/README.md), and the project's append-only decision log in [`cutoffs/DECISIONS.md`](cutoffs/DECISIONS.md).
+Record material cutoff decisions in a file separate from work orders and implementation plans. Everything about cutoffs lives in [`cutoffs/`](cutoffs/README.md): the policy, default catalog, entry format, and pruning rules in [`cutoffs/README.md`](cutoffs/README.md), and the working decision log in [`cutoffs/DECISIONS.md`](cutoffs/DECISIONS.md). Read that log before starting a PR — it carries the open backlog and the standing constraints that bind new work. It is kept short by retiring closed entries once their open residue is carried forward; git holds the retired text verbatim.
 
 At minimum, add or update a durable decision when:
 
