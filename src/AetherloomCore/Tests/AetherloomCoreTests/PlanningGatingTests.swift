@@ -421,6 +421,40 @@ import Testing
     }
 }
 
+@Test func scheduleValidatorRejectsDirectoryTrashBeforeDescendant() throws {
+    let parentID = testOperationID("000000000011")
+    let childID = testOperationID("000000000012")
+    let schedule = OperationSchedule(operations: [
+        Operation(
+            id: parentID,
+            location: .oneDrive,
+            kind: .trash(
+                itemRef: testItemRef(path: "/Folder", kind: .folder)
+            ),
+            precondition: .versionMatches(testVersion())
+        ),
+        Operation(
+            id: childID,
+            location: .oneDrive,
+            kind: .trash(
+                itemRef: testItemRef(path: "/Folder/Child.txt")
+            ),
+            precondition: .versionMatches(testVersion())
+        ),
+    ])
+
+    #expect(
+        throws: OperationScheduleValidationError
+            .directoryTrashBeforeDescendant(
+                directory: "/Folder",
+                descendant: "/Folder/Child.txt",
+                location: .oneDrive
+            )
+    ) {
+        try schedule.validate()
+    }
+}
+
 @Test func scheduleValidatorRejectsPerItemChainWithoutDependency() throws {
     let firstID = testOperationID("000000000003")
     let secondID = testOperationID("000000000004")
@@ -974,8 +1008,18 @@ private func testContentRef(path: SyncPath) -> ContentRef {
     ContentRef(makeObservation(.googleDrive, path: path, hash: "source"))
 }
 
-private func testItemRef(path: SyncPath) -> ItemRef {
-    ItemRef(makeObservation(.oneDrive, path: path, hash: "destination"))
+private func testItemRef(
+    path: SyncPath,
+    kind: ItemKind = .file
+) -> ItemRef {
+    ItemRef(
+        makeObservation(
+            .oneDrive,
+            path: path,
+            hash: "destination",
+            kind: kind
+        )
+    )
 }
 
 private func testOperationID(_ suffix: String) -> OperationID {

@@ -265,6 +265,177 @@ struct RealLocalSyncEndToEndTests {
         try await world.expectEmptyPreview()
     }
 
+    @Test func approvedNestedDirectoryDeletionStopsForLateGrandchild() async throws {
+        let hook = LocalE2ELateGrandchildHook(
+            targetPath: "/Tracked/Branch",
+            contents: Data("late and unplanned".utf8)
+        )
+        let world = try await LocalRealE2EWorld.make(
+            name: "late-grandchild-directory-trash",
+            mode: .askBeforeDeleting,
+            mutationHookB: hook
+        )
+        defer { try? FileManager.default.removeItem(at: world.root) }
+        hook.setLateFileURL(
+            localRealE2EURL("/Tracked/Branch/Late.txt", under: world.rootB)
+        )
+        let leafContents = Data("planned leaf".utf8)
+        try localRealE2EWrite(
+            leafContents,
+            to: "/Tracked/Branch/Leaf.txt",
+            under: world.rootA
+        )
+        try await world.executeClearPlan()
+        try FileManager.default.removeItem(
+            at: localRealE2EURL("/Tracked", under: world.rootA)
+        )
+
+        let preparation = try await world.orchestrator.prepare(world.syncSet)
+        let plan = try #require(preparation.outcome.planValue)
+        #expect(plan.gate.holdReasons.contains { reason in
+            if case .deletionsNeedReview(count: 3) = reason { return true }
+            return false
+        })
+        #expect(
+            localE2ETrashPaths(in: plan, location: world.locationB.id)
+                == [
+                    "/Tracked/Branch/Leaf.txt",
+                    "/Tracked/Branch",
+                    "/Tracked",
+                ]
+        )
+        hook.arm()
+        await world.providerB.clearMutationCalls()
+
+        let summary = try await world.orchestrator.execute(
+            preparation,
+            approval: localE2EApproval(for: plan)
+        )
+
+        #expect(
+            summary.outcome == .stoppedForReplan(
+                location: world.locationB.id,
+                path: "/Tracked/Branch"
+            )
+        )
+        #expect(
+            await world.providerB.mutationCalls()
+                == [
+                    .trash("/Tracked/Branch/Leaf.txt"),
+                    .trash("/Tracked/Branch"),
+                ]
+        )
+        #expect(localRealE2EIsDirectory("/Tracked", under: world.rootB))
+        #expect(localRealE2EIsDirectory("/Tracked/Branch", under: world.rootB))
+        #expect(
+            try localRealE2ERead(
+                "/Tracked/Branch/Late.txt",
+                under: world.rootB
+            ) == Data("late and unplanned".utf8)
+        )
+        #expect(await world.localProviderB.recoveryURL(for: "/Tracked") == nil)
+        #expect(
+            await world.localProviderB.recoveryURL(for: "/Tracked/Branch")
+                == nil
+        )
+        #expect(
+            await world.localProviderB.recoveryURL(
+                for: "/Tracked/Branch/Leaf.txt"
+            ) != nil
+        )
+        #expect(!summary.perItemResults.contains { result in
+            result.path == "/Tracked/Branch" && result.status == .converged
+        })
+        let replan = try await world.orchestrator.prepare(world.syncSet)
+        #expect(replan.outcome.planValue?.decisions.isEmpty == false)
+    }
+
+    @Test func approvedCleanNestedDirectoryDeletionIsDeepestFirstAndRecoverable() async throws {
+        let quarantine = LocalE2ERecordingQuarantine()
+        let world = try await LocalRealE2EWorld.make(
+            name: "clean-nested-directory-trash",
+            mode: .askBeforeDeleting,
+            quarantineB: quarantine
+        )
+        defer { try? FileManager.default.removeItem(at: world.root) }
+        let leafContents = Data("recover every planned item".utf8)
+        try localRealE2EWrite(
+            leafContents,
+            to: "/Tracked/Branch/Leaf.txt",
+            under: world.rootA
+        )
+        try await world.executeClearPlan()
+        try FileManager.default.removeItem(
+            at: localRealE2EURL("/Tracked", under: world.rootA)
+        )
+
+        let preparation = try await world.orchestrator.prepare(world.syncSet)
+        let plan = try #require(preparation.outcome.planValue)
+        let expectedOrder: [SyncPath] = [
+            "/Tracked/Branch/Leaf.txt",
+            "/Tracked/Branch",
+            "/Tracked",
+        ]
+        #expect(
+            localE2ETrashPaths(in: plan, location: world.locationB.id)
+                == expectedOrder
+        )
+        try plan.schedule.validate(decisions: plan.decisions)
+        let expectedObservations = localE2ETrashObservations(
+            in: plan,
+            location: world.locationB.id
+        )
+        await world.providerB.clearMutationCalls()
+
+        let summary = try await world.orchestrator.execute(
+            preparation,
+            approval: localE2EApproval(for: plan)
+        )
+
+        #expect(summary.outcome == .completed)
+        #expect(
+            await world.providerB.mutationCalls()
+                == expectedOrder.map { .trash($0) }
+        )
+        #expect(quarantine.moveCount() == expectedOrder.count)
+        for path in expectedOrder {
+            #expect(
+                !FileManager.default.fileExists(
+                    atPath: localRealE2EURL(path, under: world.rootB).path
+                )
+            )
+            let recoveryURL = try #require(
+                await world.localProviderB.recoveryURL(for: path)
+            )
+            #expect(FileManager.default.fileExists(atPath: recoveryURL.path))
+        }
+        let leafRecovery = try #require(
+            await world.localProviderB.recoveryURL(
+                for: "/Tracked/Branch/Leaf.txt"
+            )
+        )
+        #expect(try Data(contentsOf: leafRecovery) == leafContents)
+        for path in [SyncPath("/Tracked/Branch"), SyncPath("/Tracked")] {
+            let recoveryURL = try #require(
+                await world.localProviderB.recoveryURL(for: path)
+            )
+            var isDirectory: ObjCBool = false
+            #expect(
+                FileManager.default.fileExists(
+                    atPath: recoveryURL.path,
+                    isDirectory: &isDirectory
+                ) && isDirectory.boolValue
+            )
+        }
+        for observation in expectedObservations {
+            let current = try await world.localProviderB.currentState(
+                of: observation
+            )
+            #expect(current.isTrashed)
+        }
+        try await world.expectEmptyPreview()
+    }
+
     @Test func independentEditsPreserveBothVersionsThenResolveAndConverge() async throws {
         let world = try await LocalRealE2EWorld.make(name: "conflict-resolution")
         defer { try? FileManager.default.removeItem(at: world.root) }
@@ -607,6 +778,8 @@ private struct LocalRealE2EWorld {
     static func make(
         name: String,
         mode: SyncMode = .balancedMirror,
+        mutationHookB: any LocalMutationStarting = NoOpLocalMutationHook(),
+        quarantineB: any LocalQuarantinePerforming = SystemLocalQuarantinePerformer(),
         settings: SyncSettings = SyncSettings(
             thresholds: SafetyThresholds(
                 massDeleteAbsolute: 10_000,
@@ -655,7 +828,9 @@ private struct LocalRealE2EWorld {
             location: locationB,
             rootURL: rootB,
             volumes: inspectorB,
-            deadlines: deadlines
+            deadlines: deadlines,
+            quarantine: quarantineB,
+            mutationHook: mutationHookB
         )
         let providerA = LocalE2EMutationRecordingProvider(base: localProviderA)
         let providerB = LocalE2EMutationRecordingProvider(base: localProviderB)
@@ -812,6 +987,87 @@ private actor LocalE2EMutationRecordingProvider: StorageProvider {
 
     func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
         try await base.refineEvidence(for: observation)
+    }
+}
+
+private final class LocalE2ELateGrandchildHook:
+    LocalMutationStarting,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let targetPath: SyncPath
+    private var lateFileURL: URL?
+    private let contents: Data
+    private var isArmed = false
+    private var didInject = false
+
+    init(targetPath: SyncPath, contents: Data) {
+        self.targetPath = targetPath
+        self.contents = contents
+    }
+
+    func setLateFileURL(_ url: URL) {
+        lock.withLock { lateFileURL = url }
+    }
+
+    func arm() {
+        lock.withLock { isArmed = true }
+    }
+
+    func beforeMutation(_ receipt: ProviderMutationReceipt) throws {
+        let destination = lock.withLock { () -> URL? in
+            guard isArmed,
+                  !didInject,
+                  receipt.kind == .trash,
+                  receipt.affectedPaths == [targetPath] else {
+                return nil
+            }
+            didInject = true
+            return lateFileURL
+        }
+        guard let destination else { return }
+        try contents.write(to: destination, options: .atomic)
+    }
+}
+
+private final class LocalE2ERecordingQuarantine:
+    LocalQuarantinePerforming,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var moves = 0
+
+    func moveItem(at source: URL, to destination: URL) throws {
+        lock.withLock { moves += 1 }
+        try FileManager.default.moveItem(at: source, to: destination)
+    }
+
+    func artifactState(at url: URL) -> LocalRecoveryArtifactState {
+        FileManager.default.fileExists(atPath: url.path) ? .present : .missing
+    }
+
+    func moveCount() -> Int {
+        lock.withLock { moves }
+    }
+}
+
+private func localE2ETrashPaths(
+    in plan: SyncPlan,
+    location: LocationID
+) -> [SyncPath] {
+    localE2ETrashObservations(in: plan, location: location).map(\.path)
+}
+
+private func localE2ETrashObservations(
+    in plan: SyncPlan,
+    location: LocationID
+) -> [ItemObservation] {
+    plan.schedule.operations.compactMap { operation in
+        guard operation.location == location,
+              case let .trash(itemRef) = operation.kind else {
+            return nil
+        }
+        return itemRef.observation
     }
 }
 
