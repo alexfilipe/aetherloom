@@ -1,4 +1,4 @@
-<!-- AGENTS.md and CLAUDE.md are identical mirrors. Apply any edit to both files. -->
+<!-- AGENTS.md and CLAUDE.md are identical mirrors, verified by .githooks/pre-commit (enable with: git config core.hooksPath .githooks). Apply any edit to both files. -->
 
 # Aetherloom Agent Instructions
 
