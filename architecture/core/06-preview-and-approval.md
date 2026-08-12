@@ -34,6 +34,7 @@ Rules:
 - **Every decision appears exactly once** (`decisionID` partition — tested as a property, [10 §3]). A preview that hides work is a correctness bug, not a styling choice.
 - **Trash entries always explain causality**: which location the item vanished from, when it was last synced (from the `BaseRecord`), and that destination copies go to *trash*. The single most trust-building sentence in the app.
 - `waiting` items are shown, not hidden ("Waiting for 3 files to download from iCloud Drive") — the honest form of the old whole-set placeholder pause.
+- Typed package/metadata exclusions are shown with path and reason in the waiting/excluded presentation. The affected scope cannot be approved into mutation and must not contribute to an all-synced success state ([local policy](../providers/local/01-package-and-metadata-safety.md)).
 - Section titles use the preferred phrases verbatim ("Move to trash", "Both versions preserved"); trash and conflict sections render last, after the routine material.
 - Refusal previews have no sections and no fingerprint — there is nothing to approve; the notice carries the canonical sentence and, where useful, per-location detail.
 

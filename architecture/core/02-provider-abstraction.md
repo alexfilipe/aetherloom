@@ -70,6 +70,7 @@ Normative provider behavior:
 - **NAS:** enumeration runs under timeouts; a hang ⇒ `volumeUnreachable`; an error midway ⇒ `.incomplete`, never `.complete` with fewer items.
 - **iCloud local folder:** dataless files appear as observations with `isPlaceholder = true` — included, never omitted, never treated as edited.
 - **Symlinks:** observed with `ItemKind.symlink`, reported, excluded from propagation by default ([01 §5](01-domain-model.md)).
+- **Packages and unsupported macOS metadata:** the local MVP reports typed positive scan exclusions and never silently omits or descends into an excluded subtree; see [the local fidelity contract](../providers/local/01-package-and-metadata-safety.md). An exclusion is presence and cannot support deletion inference.
 
 ## 3. Capabilities
 

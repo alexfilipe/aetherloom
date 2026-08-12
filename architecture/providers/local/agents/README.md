@@ -2,15 +2,9 @@
 
 Each `task-*.md` is a self-contained prompt for one implementation agent covering one milestone of the local/NAS backend. The track-wide dispatch graph, global rules, and reporting format live in [../../agents/README.md](../../agents/README.md) — **those rules are authoritative here too**; this README adds only what is local-specific.
 
-## Dispatch order
+## Current dispatch order
 
-```text
-../../agents/task-01 (conformance suite) ─▶ 01 read side ─▶ 02 mutations ─▶ 03 NAS hardening ⏭
-```
-
-Strictly serial. Task 02 is blocked on [../01-mutations-and-trash.md](../README.md) ⏭ being written; task 03 on [../02-nas-hardening.md](../README.md) ⏭. Do not dispatch against a missing spec.
-
-**Bundled alternative:** [task-00-initial-local-sync.md](task-00-initial-local-sync.md) covers M1–M3 plus an end-to-end local↔local proof as one work order for a single long-horizon agent. Its Phase 3 carries the mutations detail normatively until `../01-mutations-and-trash.md` is written (backfill that doc from the shipped behavior afterwards). Dispatch **either** the serial tasks **or** task-00 — never both concurrently.
+The conformance, read, mutation, recovery, and local end-to-end work described by the old task-00/task-01 prompts is implemented. Do not dispatch those prompts. Current local work begins at [L2 package/metadata safety](../../agents/task-l2-package-metadata-safety.md), inside the serial [Local Workspace MVP stack](../../agents/local-workspace-mvp.md). NAS hardening remains future and outside that stack.
 
 ## Local-specific rules
 
@@ -24,7 +18,7 @@ Strictly serial. Task 02 is blocked on [../01-mutations-and-trash.md](../README.
 
 | Task | Milestone | Status |
 | --- | --- | --- |
-| [task-00-initial-local-sync.md](task-00-initial-local-sync.md) | M1–M3 bundled + end-to-end proof | Dispatchable (alternative to the serial tasks below) |
-| [task-01-read-side.md](task-01-read-side.md) | M2 — availability + scanning, zero mutations | Dispatchable after `../../agents/task-01` merges |
-| task-02-mutations-and-trash.md ⏭ | M3 — atomic store, relocate, trash/quarantine, full conformance | Blocked on spec 01 ⏭ |
-| task-03-nas-hardening.md ⏭ | M5 — timeouts, unreachable-mount fidelity, mtime tolerance | Blocked on spec 02 ⏭ |
+| [task-00-initial-local-sync.md](task-00-initial-local-sync.md) | M1–M3 + end-to-end proof | Completed; historical, do not dispatch |
+| [task-01-read-side.md](task-01-read-side.md) | M2 read side | Completed; historical, do not dispatch |
+| [../../agents/task-l2-package-metadata-safety.md](../../agents/task-l2-package-metadata-safety.md) | L2 arbitrary-folder safety | Current, only after L1 user merge |
+| task-03-nas-hardening.md ⏭ | Future NAS qualification | Out of Local Workspace MVP scope |

@@ -2,7 +2,7 @@
 
 ## Why this track exists
 
-Everything real in Aetherloom today runs inside the demo world: the full pipeline (availability → scan → reconcile → plan → gate → preview → approve → execute → journal) over `FakeStorageProvider`s and in-memory stores. That was the plan — harden the engine before any real integration exists. This track is the payoff: implement `StorageProvider` ✅ ([../core/02-provider-abstraction.md](../core/02-provider-abstraction.md)) against real backends and compose them into a `WorkspaceEngineSession` 🆕 behind the seam the UI already proved ([../ui/03-engine-session.md](../ui/03-engine-session.md)).
+The engine's real local boundary now exists: `LocalFolderStorageProvider` implements the full provider contract, conservative mutation/recovery behavior, and temporary-directory end-to-end tests. The production app has not crossed that boundary: it still starts `DemoEngineSession` over fakes and in-memory state. The next work composes the existing local provider into the durable `WorkspaceEngineSession` specified in [01-workspace-engine-session.md](01-workspace-engine-session.md).
 
 The strategic choice, restated from the development order in `CLAUDE.md`: **local folders first, then NAS, then iCloud Drive, then cloud APIs.** A local↔local sync exercises 100 % of the real pipeline — staging, journal, preconditions, trash, recovery — with the fewest new failure modes. iCloud Drive is then a small, well-contained delta (placeholder semantics on top of a filesystem provider) instead of the place where filesystem bugs and placeholder bugs are discovered simultaneously.
 
@@ -10,15 +10,17 @@ The strategic choice, restated from the development order in `CLAUDE.md`: **loca
 
 | # | Milestone | Outcome | Where designed |
 | --- | --- | --- | --- |
-| M1 | Provider conformance suite 🆕 | One reusable test suite any `StorageProvider` must pass; the fakes pass it first, proving the harness | §3 below |
-| M2 | Local provider, read side 🆕 | Truthful availability and scanning of real directories; zero mutations | [local/00-overview.md](local/00-overview.md) |
-| M3 | Local provider, mutations 🆕 | Atomic stores, relocate, trash; full conformance passage | [local/](local/README.md) (planned docs) |
-| M4 | `WorkspaceEngineSession` 🆕 | **First real sync**: two local folders, file-backed stores, `NSOpenPanel` scopes, persistence across relaunch | 01-workspace-session.md ⏭ |
-| M5 | NAS hardening 🆕 | Timeout-bounded enumeration, `volumeUnreachable`/`volumeNotMounted` fidelity, quarantine trash | [local/](local/README.md) (planned docs) |
+| M1 | Provider conformance suite ✅ | Reusable contract exercised by fakes and local provider | §3 below |
+| M2 | Local provider, read side ✅ | Truthful availability and complete/incomplete scanning of real temporary directories | [local/00-overview.md](local/00-overview.md) |
+| M3 | Local provider, mutations ✅ | Owned atomic stores, relocate, recoverable trash/quarantine, indeterminate recovery, local end-to-end tests | [local/00-overview.md](local/00-overview.md) |
+| L2 | Arbitrary-folder safety | Typed package and unsupported-metadata exclusions before user-folder enrollment | [local/01-package-and-metadata-safety.md](local/01-package-and-metadata-safety.md) |
+| L3–L5 | Durable production workspace | Persistent workspace, `WorkspaceEngineSession`, picker/bookmarks, and default real app session | [01-workspace-engine-session.md](01-workspace-engine-session.md) |
+| L6 | Local-alpha qualification | Exact integrated-head relaunch/recovery and real-folder qualification | [agents/local-workspace-mvp.md](agents/local-workspace-mvp.md) |
+| M5 | NAS hardening ⏭ | Future timeout/mount and filesystem-fidelity qualification; not part of the local MVP | [local/](local/README.md) |
 | M6 | iCloud Drive variant ⏭ | Dataless placeholders observed (`isPlaceholder`, never absent), materialization before fetch | icloud/ ⏭ |
 | — | SQLite, FSEvents hints, cloud APIs ⏭ | Deferred; interfaces already stable ([../core/09-persistence.md §4](../core/09-persistence.md)) | later |
 
-M1→M4 are strictly serial. M5 overlaps M4 freely (disjoint files). Each milestone ends with the full suite green.
+The completed M1–M3 work is the base. L2→L6 is strictly serial and user-merge gated; see the sole [work-order map](agents/local-workspace-mvp.md). NAS and iCloud remain future work.
 
 ## 2. Shared normative requirements
 
@@ -34,9 +36,9 @@ Every real provider, current and future, obeys these — they extend the normati
 
 ## 3. The conformance suite
 
-The engine's contract with providers is currently enforced only against the fakes (`ProviderContractTests` ✅). M1 extracts that contract into a **parameterized conformance suite** that runs identically against any implementation, so "the fake passes and the real provider passes" is one property, not two test files drifting apart.
+The engine's contract is enforced by the parameterized conformance suite against fake configurations and the real local provider. New backends add a harness rather than bespoke contract semantics.
 
-Shape (final signatures belong to the implementation task):
+Current harness shape (implementation names may contain supporting detail):
 
 ```swift
 /// One per backend. Lives in test support; production code never sees it.

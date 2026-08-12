@@ -10,18 +10,18 @@ The policy governing this log, the default cutoff catalog, and the entry format 
 
 Full entries for decisions whose feature or pull request is still in flight. Append new ones here in the format from [`README.md`](README.md).
 
-### CUT-024 — Prune the cutoff log to a readable working set
+### CUT-025 — PR #26 Local Workspace architecture finish line
 
 - Date: 2026-08-12
-- PR/layer and exact relevant SHA(s): cutoff documentation on branch `claude/prune-cutoff-decisions-920122`; base `main` at `90a2342`.
-- Decision/cutoff: Retire closed entries from this log instead of accumulating them, keeping only in-flight decisions, a backlog row for every unfired deferral and residual risk, standing constraints, and a one-line index of what was retired. Relax the append-only rule to permit exactly that removal: an entry may leave this file and an open deferral may be summarized into a backlog row, but recorded decision content is still never rewritten in place. Rely on git for the verbatim record rather than a second copy in the repository.
-- Reason and evidence: The log had reached 341 lines and 57 KB across 23 entries, all of whose pull requests (#12–#20) are merged. Every agent starting work read the full history of settled decisions to find the handful of open ones, which is the cost this framework exists to avoid. An in-repo archive file was considered and rejected: it duplicates what git already stores immutably, and being greppable it would have been pulled into context anyway. No `CUT-` identifier is cited anywhere outside this directory, so retiring entries breaks no reference.
-- What was completed: The retirement of CUT-001 through CUT-023, the carried backlog, the standing constraints, the closed index, per-batch git retrieval pointers, the revised pruning policy in `README.md`, and updated references from `architecture/README.md`, the framework README, and `AGENTS.md`/`CLAUDE.md`. One review correction batch then resolved three preservation findings: CUT-023's distinct reopen trigger and CUT-006's hashing-performance deferral had been absorbed into rows that did not carry them, and the retrieval pointer was global rather than per batch, which would have left the first batch unreachable after a second pruning.
-- What was explicitly deferred: Any change to a cutoff's meaning, severity, or trigger; the default cutoff catalog; and tooling to enforce or automate pruning.
-- Residual risk/severity: P3. Documentation-only. The risk is that summarizing an entry into a backlog row dropped one of its deferrals or softened a trigger, checked by confirming every retired entry's deferrals and residual risks appear in the backlog or standing constraints, or were closed by their own resolution metadata.
-- Exact revisit trigger or acceptance condition: Revisit if a future PR needs a deferral or trigger that survives only in git history, or if this file grows past roughly 150 lines again.
+- PR/layer and exact relevant SHA(s): L1 standalone architecture PR #26; base `15baf5c7a0899e9c8b901c67315f4f0a5d86a0c5`; final head pending.
+- Decision/cutoff: L1 finishes after docs/link/diff checks, one complete independent architecture evaluation against the frozen base/head, at most one coherent correction batch, targeted recheck by the original evaluator, and exact-head documentation validation. No Swift/Xcode result is required or claimed for this docs-only Linux-host change. Freeze, publish as a draft PR, and stop for the user merge when no P0/P1 remains. L2 may begin only after the user confirms L1 merged; L3–L6 follow the same user-confirmed serial merge order recorded in the work stack.
+- Reason and evidence: The Local Workspace MVP changes data-access, persistence, recovery, identity, and destructive-authority boundaries. A complete standalone contract and one bounded independent evaluation are required before implementation, while repeated unbounded review would not add authority.
+- What was completed: Pending: normative `WorkspaceEngineSession`, folder-access, package/metadata, overlap, persistence/recovery contracts; factual status reconciliation; and L2–L6 work orders with single-owner acceptance mapping.
+- What was explicitly deferred: All implementation; OAuth/cloud providers; background/scheduled sync; whole-drive/NAS qualification; migration UI; SQLite; App Store distribution; and full metadata/package preservation.
+- Residual risk/severity: P2 may be accepted only for a documentation ambiguity or untested implementation permutation with no demonstrated safety-contract gap, and only with an exact implementation-layer revisit trigger. Any missing or contradictory destructive-authority, corrupt-state, capability-secrecy, exclusion, or recovery rule is P1 and blocks L1.
+- Exact revisit trigger or acceptance condition: Accept L1 only when the frozen diff has one disposition for every required contract and acceptance scenario, internal links/diff scope are clean, the evaluator reports no P0/P1, and exact-head docs validation is recorded. Reopen for new P0/P1 evidence, a contradictory/missing listed contract, invalidated exact-head evidence, or a changed base. After merge, implementation discovering a material contract change triggers a new standalone architecture PR and pauses the affected layer.
 - Status: proposed
-- Resolving PR/SHA: Pending publication of this documentation change.
+- Resolving PR/SHA: PR #26 / pending frozen head and user merge.
 
 ## Carried backlog
 
@@ -37,6 +37,7 @@ Open deferrals and accepted residual risks from closed decisions. Each is still 
 | CUT-006 | Bounded incremental hashing was implemented but never performance-tuned. | P3 | Measured evidence shows bounded hashing needs tuning, and the tuning does not weaken owned leases. |
 | CUT-022 | The pre-existing work-order and agent documents were never migrated to the consolidated structure. | P3 | A recorded reopen shows E14 still excludes a blocking finding class, a rule is found stated in two documents again, or a rule that existed before the refinement is found in neither. |
 | CUT-023 | The evaluation-loop framework has no runtime enforcement tooling and no automation of task creation or locks; it depends on agents applying and recording its gates accurately. | P3 | A completed feature or PR demonstrates that a default cutoff either allowed a P0/P1 defect through or required redundant evaluation without producing new actionable evidence. |
+| CUT-024 | Cutoff pruning has no enforcement tooling, and a future summary could drop or soften recorded residue. | P3 | Revisit if a future PR needs a deferral or trigger that survives only in git history, or if this file grows past roughly 150 lines again. |
 
 ## Standing constraints
 
@@ -51,6 +52,16 @@ Conditions from closed decisions that bind future work rather than waiting to be
 ## Closed decisions index
 
 One line per retired entry, so an ID cited in the backlog above can be placed without retrieving anything. Entries are grouped by the batch that retired them, and each batch names the commit whose copy of this file still holds those entries in full. A batch's commit is fixed at the moment it is retired and is never repointed, so an earlier batch stays reachable no matter how many prunings follow.
+
+### Retired in `15baf5c` — CUT-024
+
+```bash
+git show 15baf5c:architecture/orchestration/cutoffs/DECISIONS.md
+```
+
+| ID | Decision | Outcome |
+| --- | --- | --- |
+| CUT-024 | Prune the cutoff log to a readable working set | Merged as PR #25; tooling/summary-integrity trigger carried forward. |
 
 ### Retired in `90a2342` — CUT-001 through CUT-023
 

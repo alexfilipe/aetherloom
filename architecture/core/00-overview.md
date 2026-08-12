@@ -96,4 +96,4 @@ Engine-emitted user-facing strings use these verbatim; the UI adds detail beneat
 
 ## Relationship to the current code
 
-`AetherloomCore` today (planner, safety analyzer, executor, fakes, 20 green tests) implements most of the *behavior* above with a narrower structure: closed 3-cloud `ProviderID`, per-service `SyncRecord` fields, fall-through planner, pause sentinel, flat action list, no staging/journal/orchestrator/stores. Those 20 tests are the behavioral contract for the migration — every phase in [11-migration.md](11-migration.md) keeps their assertions passing.
+`AetherloomCore` now implements the provider-independent pipeline, staging/journal/recovery, stores, fakes, and the real `LocalFolderStorageProvider` with temporary-directory end-to-end tests. The production app still starts `DemoEngineSession`; durable real-folder app composition is the [Local Workspace MVP](../providers/01-workspace-engine-session.md). [11-migration.md](11-migration.md) is historical context for how the core reached its present structure, not an unstarted roadmap.

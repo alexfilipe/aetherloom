@@ -19,7 +19,7 @@ public struct ReconciliationInput: Sendable {
 
 ## 2. Step 1 — derive per-location facts
 
-For each **item key** (join of base records and observations by itemID-then-path, case-folded; exclusions filtered first):
+For each **item key** (join of base records and observations by itemID-then-path, case-folded; user-pattern exclusions filtered first):
 
 ```swift
 public enum LocationFact: Hashable, Sendable {
@@ -36,6 +36,8 @@ public enum LocationFact: Hashable, Sendable {
 ```
 
 Fact derivation is where `VersionComparison` ([01 §3](01-domain-model.md)) does its work: `same` ⇒ matches, `different` ⇒ changed, **`unknown` ⇒ treated as `changed` with an unknown version — which can never win an overwrite and therefore lands in preservation rows below.** Placeholders derive `waiting` regardless of reported size/mtime (a dataless stub's metadata is not content). Folders never derive `changed` (folder "versions" are structural).
+
+Typed provider scan exclusions are different from user-pattern filtering. They are positive presence evidence and are lowered to visible exclusion/waiting decisions before ordinary fact derivation. The affected item/subtree is non-mutating at every location and cannot update base state or appear converged; see [the local fidelity contract](../providers/local/01-package-and-metadata-safety.md).
 
 ## 3. Step 2 — the verdict table
 

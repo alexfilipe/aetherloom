@@ -1,5 +1,7 @@
 # Task 00 — Initial Local Sync, End to End (Milestones M1–M3, bundled)
 
+> **Historical work order:** this provider and its core end-to-end tests are implemented. Do not dispatch this prompt. Current work starts from [the Local Workspace MVP map](../../agents/local-workspace-mvp.md).
+
 This is the **bundled work order** for the initial local-sync implementation: the provider conformance suite, the complete `LocalFolderStorageProvider`, and an end-to-end proof that the real engine syncs two real directories. It is the single-agent alternative to dispatching `../../agents/task-01-conformance-suite.md` → `task-01-read-side.md` → task-02 serially. If any of those has already merged, skip the corresponding phase and say so in your report. Work proceeds in phases; **the full suite is green at the end of every phase** before the next begins.
 
 ## Role

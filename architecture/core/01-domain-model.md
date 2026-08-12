@@ -1,5 +1,7 @@
 # 01 — Domain Model
 
+> Historical annotations labeled “current” describe the pre-migration scaffold. The migration has landed; use current source and active work orders for implementation status.
+
 The vocabulary, designed clean. Sections marked *(current)* note what exists in `Models/CoreModels.swift` today; the full mapping is in [11-migration.md](11-migration.md).
 
 ## 1. Identity of places
@@ -20,11 +22,13 @@ public struct SyncLocation: Codable, Hashable, Sendable, Identifiable {
     public var kind: ProviderKind
     public var displayName: String          // "Google Drive (alex@…)", "Media NAS" — embedded in conflict-copy names and log lines
     public var scope: SyncScope             // .selectedFolder(path:) | .entireDrive   (current ✅)
-    public var configuration: [String: String]  // opaque provider config; never credentials
+    public var configuration: [String: String]  // non-secret provider identity/config only
 }
 ```
 
 *(current)* `ProviderID` is a closed enum of three cloud services — no local, no NAS, no second account of anything. It is deleted, not deprecated: nothing outside the package consumes it yet.
+
+For the local workspace, recorded volume identity may live in `configuration`; security-scoped bookmark/capability bytes may not. Those bytes live only in bridge-owned `FolderAccessRecord` files per [the workspace contract](../providers/01-workspace-engine-session.md#3-folder-access-is-a-separate-capability).
 
 ## 2. Identity of things
 
@@ -144,6 +148,7 @@ public struct LocationSnapshot: Sendable {
     public var status: ScanStatus                     // complete | unavailable(reason) | incomplete(reason)
     public var scannedAt: Date
     public var observations: ObservationIndex          // byPath, byItemID, byCaseFoldedPath — O(1) lookups, built once
+    public var exclusions: [ScanExclusion]             // positive present-but-unsupported evidence
 }
 
 public enum ScanStatus: Codable, Hashable, Sendable {
@@ -154,6 +159,8 @@ public enum ScanStatus: Codable, Hashable, Sendable {
 ```
 
 Rule: `status == .complete` is a *proof obligation* on the provider — "I positively enumerated everything in scope". Only complete snapshots ever participate in reconciliation; anything else refuses the run ([04 §2](04-planning-and-gating.md)).
+
+An exclusion is not scan incompleteness and is never absence: it positively reports a present item/subtree whose fidelity is unsupported. The local MVP's typed semantics are normative in [providers/local/01-package-and-metadata-safety.md](../providers/local/01-package-and-metadata-safety.md).
 
 ## 7. Determinism envelope
 

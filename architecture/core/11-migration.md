@@ -1,6 +1,8 @@
 # 11 — Migration: Changing the Current Code
 
-`AetherloomCore` today is a good scaffold with the right instincts (precondition-checked execution, conservative planning, 20 green tests) and the wrong skeleton (closed provider enum, fall-through planner, pause sentinel, flat actions). This document is the complete route from that code to the target architecture — ordered so the tree is **green and invariant-preserving after every phase**.
+> **Historical record:** this core migration has landed. Use current source and the active provider/app work orders for implementation status; do not dispatch these phases as new work.
+
+At this migration's starting point, `AetherloomCore` was a good scaffold with the right instincts (precondition-checked execution, conservative planning, 20 green tests) and the wrong skeleton (closed provider enum, fall-through planner, pause sentinel, flat actions). This document records the route used to reach the target architecture while keeping the tree **green and invariant-preserving after every phase**.
 
 ## 1. Rules of the road
 

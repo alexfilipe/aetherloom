@@ -1,5 +1,7 @@
 # Task 01 — Local Provider Read Side (Milestone M2)
 
+> **Historical work order:** this milestone is implemented. Do not dispatch this prompt. Current work starts from [the Local Workspace MVP map](../../agents/local-workspace-mvp.md).
+
 ## Role
 Senior Swift engineer on `AetherloomCore`. You implement the first real `StorageProvider` over the filesystem — availability and scanning only. The provider must be able to *look* at real directories with the engine's full truthfulness discipline before it is allowed to touch anything. **Requires the conformance suite (`../../agents/task-01`) merged.**
 

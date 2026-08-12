@@ -1,6 +1,6 @@
 # 09 — Persistence
 
-The engine's memory: base records, run journals, conflicts, advice cache, activity, locations. Everything sits behind small protocols; file-backed implementations ship now, SQLite arrives later behind the same interfaces (roadmap step 10). Stores serialize the domain model as-is — no parallel schemas.
+The engine's memory: base records, run journals, conflicts, advice cache, activity, locations. Everything sits behind small protocols. File-backed base-record, journal, and activity stores exist today; L3 adds file-backed conflict, advice-cache, and location stores. SQLite remains later behind the same interfaces. Stores serialize the domain model as-is — no parallel schemas.
 
 ## 1. Interfaces
 
@@ -54,13 +54,16 @@ public protocol LocationRegistry: Sendable {
 - Store failures are loud: `error` activity entry + surfaced in the run summary. Silence is the only forbidden behavior.
 - **Never stored:** credentials/OAuth tokens (Keychain, app-side, later), file contents, advisor prompts.
 
-## 3. File-backed implementations (now)
+## 3. File-backed implementations
 
 Root directory is injected by the app (no `Application Support` literals in core). All JSON via one encoder/decoder factory: sorted keys, ISO-8601 dates with fractional seconds — the same canonical encoding fingerprints use.
 
 - `FileBaseRecordStore`: one atomic file per sync set (`records-<id>.json`), versioned envelope `{"schemaVersion": 1, "records": […]}`, forward-tolerant decoding (unknown keys ignored), decode failure ⇒ `corrupt` (the file is quarantined aside as `.corrupt-<date>`, never overwritten silently).
 - `FileRunJournalStore`: `journal-<runID>.jsonl`, append-only, fsync-on-append (journals are small and correctness-critical), torn-final-line tolerant on replay; reconciled journals compacted to a summary line. `mutationIndeterminate` is an additive schema-1 event, so existing schema-1 journals continue to decode unchanged. Duplicate complete indeterminate events replay conservatively without trapping; the latest receipt remains pending.
 - `FileActivityStore`: monthly JSONL, [08 §2].
+- **L3 target:** file-backed `ConflictStore`, `AdviceCacheStore`, and `LocationRegistry`, with the same atomic/corrupt-state discipline. They are not implemented at the L1 base.
+
+The bridge-owned workspace manifest, sync-set/pause persistence, separate folder capability files, injected Application Support layout, and whole-workspace fail-closed bootstrap are specified once in [providers/01-workspace-engine-session.md §5](../providers/01-workspace-engine-session.md#5-durable-workspace-boundary-and-layout). They do not belong in `EngineStores` or `SyncLocation`.
 - `InMemory*` variants for every protocol: actors over dictionaries; the test default.
 
 ## 4. SQLite (later — interface stability is the point now)

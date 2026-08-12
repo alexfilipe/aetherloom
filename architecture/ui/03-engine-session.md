@@ -1,9 +1,9 @@
 # 03 — The Engine Session (`AetherloomBridge`)
 
-The seam between the app and the engine. `AetherloomBridge` is a **new library target** in the `src/AetherloomCore` package (alongside `AetherloomIntelligence`): depends on `AetherloomCore` + Foundation, never SwiftUI/AppKit, fully covered by `swift test`. 🆕
+The seam between the app and the engine. `AetherloomBridge` exists as a library target in the `src/AetherloomCore` package (alongside `AetherloomIntelligence`): it depends on `AetherloomCore` + Foundation, never SwiftUI/AppKit, and is covered by `swift test`. `DemoEngineSession` is implemented and remains the production app's current launch session. The target real-local implementation is normatively specified in [../providers/01-workspace-engine-session.md](../providers/01-workspace-engine-session.md).
 
 ```swift
-// Package.swift additions
+// Existing package products/targets
 .library(name: "AetherloomBridge", targets: ["AetherloomBridge"]),
 .target(name: "AetherloomBridge", dependencies: ["AetherloomCore"]),
 // AetherloomBridgeTests test target
@@ -11,7 +11,7 @@ The seam between the app and the engine. `AetherloomBridge` is a **new library t
 
 ## 1. `EngineSession` — the UI-facing protocol
 
-One protocol, so the app is indifferent to what stands behind it. Today the only implementation is `DemoEngineSession`; a future `WorkspaceEngineSession` (real providers, file-backed stores) implements the same surface.
+One protocol keeps screens indifferent to what stands behind it. Today the implemented app session is `DemoEngineSession`; L4 adds `WorkspaceEngineSession` behind this seam and L5 makes it the production default. The signature below describes the UI-facing shape; the provider document owns production bootstrap, capability, persistence, and confirmation semantics.
 
 ```swift
 public protocol EngineSession: Sendable {
@@ -24,7 +24,9 @@ public protocol EngineSession: Sendable {
     func syncSetStates() async -> [SyncSetState]
     func locationStates() async -> [LocationState]
     func openConflicts(in syncSetID: UUID?) async throws -> [ConflictDecision]
+    func resolvedConflicts(in syncSetID: UUID?) async throws -> [ConflictResolutionRecord]
     func advice(for conflictIDs: [UUID]) async -> [ConflictAdvice]      // cached from last prepare
+    func suggestionsEnabled() async -> Bool
     func activity(matching query: ActivityQuery) async -> [ActivityEntry]
     func lastPreparation(for syncSetID: UUID) async -> SyncPreparation?
 
@@ -34,8 +36,10 @@ public protocol EngineSession: Sendable {
 
     // Workspace edits
     func createSyncSet(_ draft: SyncSetDraft) async throws -> SyncSetState
+    func setSuggestionsEnabled(_ enabled: Bool) async throws
     func setPaused(_ paused: Bool, syncSetID: UUID) async
-    func updateSettings(_ settings: SyncSettings, syncSetID: UUID) async throws
+    func updateSyncSet(mode: SyncMode, settings: SyncSettings, syncSetID: UUID) async throws
+    func deleteSyncSet(_ syncSetID: UUID) async throws
     func resolveConflict(id: UUID, as resolution: Resolution) async throws
 }
 ```
@@ -46,6 +50,7 @@ Contract points:
 - Pause lives here, not in core: `prepare` on a paused set throws `EngineSessionError.syncSetPaused`; "Scan Now" skips paused sets. Pause state is part of `SyncSetState`.
 - Conflict resolution calls `ConflictStore.resolve(id, as:, at:)`. The bridge then emits `.conflictsChanged`; the *effect* of a resolution (e.g. `makeCanonical` propagating a version) materializes on the **next run**, exactly as the engine defines it — the UI copy must say so ("Applied on the next sync").
 - Every mutation emits an `EngineEvent`; reads never mutate.
+- `WorkspaceEngineSession` strengthens the execution boundary: every real plan, including a clear first plan, requires explicit user confirmation of the displayed fingerprint. The nullable core/demo approval surface is not authority for automatic production execution.
 
 ### Supporting value types (bridge-owned)
 
@@ -156,5 +161,5 @@ Each control mutates **fakes or stores only** and emits events; the engine react
 
 - Re-derive or second-guess verdicts, gates, counts, or fingerprints (no arithmetic on plan contents beyond *display* counting).
 - Offer any API that executes a gated plan without a `PlanApproval`.
-- Talk to the network, real user folders, or real cloud SDKs — that is `WorkspaceEngineSession`'s future job, behind the same protocol.
+- Let `AppModel` or SwiftUI construct providers, retain bookmark capability bytes, or decide sync behavior. `WorkspaceEngineSession` owns real-folder capability and composition under the provider contract; `DemoEngineSession` MUST remain isolated from real user folders.
 - Leak fake-provider details (e.g. `FakeProviderCall` logs) into non-demo API surfaces.
