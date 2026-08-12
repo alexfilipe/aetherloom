@@ -1,3 +1,5 @@
+<!-- AGENTS.md and CLAUDE.md are identical mirrors. Apply any edit to both files. -->
+
 # Aetherloom Agent Instructions
 
 Aetherloom is a native macOS app for keeping selected folders, or eventually whole drives, synchronized across iCloud Drive, Google Drive, OneDrive, local folders, and NAS-backed folders.
