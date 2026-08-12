@@ -92,3 +92,11 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Revisit when a safe one-time legacy receipt migration can hash the proven artifact under an owned recovery claim, or if legacy recovery evidence is shown ambiguous.
 - Status: deferred
 - Resolving PR/SHA: None; migration deferred beyond PR #16.
+
+## Resolution metadata appended 2026-08-12
+
+- CUT-003: Implemented by `bc493acfa1d325e37c7ef1b8146a53aab69183cf`; PR number and exact-head CI remain pending publication.
+- CUT-004: Implemented by `bc493acfa1d325e37c7ef1b8146a53aab69183cf`.
+- CUT-005: Implemented by `bc493acfa1d325e37c7ef1b8146a53aab69183cf`.
+- CUT-006: Implemented by `bc493acfa1d325e37c7ef1b8146a53aab69183cf`.
+- CUT-007: The compatibility boundary is implemented by `bc493acfa1d325e37c7ef1b8146a53aab69183cf`; legacy receipt migration remains deferred.
