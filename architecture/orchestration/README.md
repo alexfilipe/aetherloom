@@ -12,7 +12,7 @@ The framework generalizes the durable cutoff decisions recorded for PR #12 at co
 - accept one complete evaluation plus focused verification and exact-head validation;
 - permit one narrow correction and one replacement validation run when the failure is clearly bounded;
 - freeze when the enumerated acceptance scenarios pass;
-- reopen only for an immediate data-loss defect, ambiguous destructive authority, a failed listed scenario, or missing authoritative validation;
+- reopen only for a newly evidenced P0/P1 failure mode — PR #12 met this as immediate data loss, ambiguous destructive authority, a failed listed scenario, or missing authoritative validation — rather than for reviewer preference;
 - carry low residual risk with an exact revisit trigger instead of demanding exhaustive permutations.
 
 The goal is not zero conceivable risk or zero reviewer comments. The goal is enough relevant evidence to make one of three honest decisions: **merge-ready**, **defer with a durable cutoff**, or **blocked by a named safety/correctness failure**.
@@ -226,6 +226,8 @@ Stop at the first failure that requires code changes. Resume after the fix from 
 One narrow correction and one replacement authoritative run are allowed when a first exact-head run fails for a clearly bounded compile error, test-fixture error, or transient infrastructure problem and no behavioral safety scenario failed. Broader or repeated failure returns to the normal correction loop and may require a new cutoff decision.
 
 Reuse prior evidence only when the exact head SHA and relevant code, tests, toolchain, environment, and command inputs are unchanged. Never report skipped or unavailable validation as passed.
+
+Integrating a new base into the branch changes the head and therefore invalidates prior exact-head evidence, even when the merge is clean and conflict-free. Run one fresh authoritative run at the integrated head and record both the new base and that head. This is required revalidation, not the reassurance rerun E11 forbids.
 
 ## Locks
 

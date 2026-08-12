@@ -82,7 +82,7 @@ Curious how it works — or want to contribute? The full engine design (provider
 
 Aetherloom is also an experiment in AI-first software development: architecture, product direction, review, and safety decisions are coordinated by a human developer while AI agents help implement and iterate on the codebase.
 
-Every feature and pull request follows a bounded evaluation loop — define → implement → evaluate → decide — documented in [architecture/orchestration/](architecture/orchestration/README.md), with durable scope and finish-line decisions recorded in [architecture/cutoff-decisions.md](architecture/cutoff-decisions.md).
+Every feature and pull request follows a bounded evaluation loop — define → implement → evaluate → decide — documented in [architecture/orchestration/](architecture/orchestration/README.md). Scope, acceptance scenarios, and required validation are defined in the owning track's work order or the pull request itself; the durable finish-line, deferral, freeze, and reopen decisions are recorded in [architecture/cutoff-decisions.md](architecture/cutoff-decisions.md).
 
 ## Building
 
