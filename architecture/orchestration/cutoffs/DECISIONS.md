@@ -2,7 +2,7 @@
 
 This is the working log of deliberate scope decisions: what is still in flight, what was deliberately left undone, and exactly what would reopen it. It is meant to be read in full by any agent starting work, so it is kept short.
 
-Closed decisions are removed once their open residue has been carried forward, so this file alone tells you what is still owed. Nothing is lost: git holds every entry verbatim. The full log as it stood before the 2026-08-12 pruning is one command away, and the closed index below says which ID to look for.
+Closed decisions are removed once their open residue has been carried forward, so this file alone tells you what is still owed. Nothing is lost: git holds every entry verbatim. The log as it stood before its last pruning is one command away, and the closed index below says which ID to look for.
 
 ```bash
 git show 90a2342:architecture/orchestration/cutoffs/DECISIONS.md
@@ -52,7 +52,7 @@ Conditions from closed decisions that bind future work rather than waiting to be
 
 ## Closed decisions index
 
-One line per retired entry, so an ID cited in the backlog above can be placed without retrieving anything. All of these were retired on 2026-08-12 and are recoverable in full from git at `90a2342`. Their pull requests are merged; entries that still read `proposed` or named a pending head, publication, or CI run were completed as recorded. Expected-PR numbering resolved as: the strong-version-evidence work published as PR #17, and PR #16 carried the evaluation-loop framework documentation.
+One line per retired entry, so an ID cited in the backlog above can be placed without retrieving anything. All of these are recoverable in full with the command at the top of this file. Their pull requests are merged; entries that still read `proposed` or named a pending head, publication, or CI run were completed as recorded. Expected-PR numbering resolved as: the strong-version-evidence work published as PR #17, and PR #16 carried the evaluation-loop framework documentation.
 
 | ID | Decision | Outcome |
 | --- | --- | --- |
