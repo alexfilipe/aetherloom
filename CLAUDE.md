@@ -143,6 +143,10 @@ When a conflict is found:
 - Do not introduce real network dependencies into core tests.
 - Do not commit secrets, tokens, test credentials, or `.env` files.
 
+## Pull request comments
+
+- Whenever posting a pull request comment as an agent, begin the comment with the exact prefix `Authored by agent: `.
+
 ## Validation
 
 After code changes, run the relevant tests when possible.
