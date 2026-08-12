@@ -8,7 +8,7 @@ Cutoffs never waive a safety invariant, a listed acceptance scenario, or require
 
 ## Canonical decision log
 
-Material decisions go in `architecture/cutoff-decisions.md`, separate from work orders, implementation plans, and chat transcripts. The file is append-only: preserve existing entries and append resolution or supersession metadata instead of rewriting history.
+Material decisions go in [`DECISIONS.md`](DECISIONS.md) beside this policy, separate from work orders, implementation plans, and chat transcripts. The file is append-only: preserve existing entries and append resolution or supersession metadata instead of rewriting history.
 
 Claim the next `CUT-<number>` from the log on the default branch at publication time, not from a stale local copy: parallel branches can otherwise claim the same number. Re-check for a collision when rebasing or merging; if a collision has already landed, keep the first-merged entry's number and re-designate the later entry with appended metadata rather than rewriting either entry.
 

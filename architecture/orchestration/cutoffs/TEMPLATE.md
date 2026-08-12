@@ -1,6 +1,6 @@
 # Durable Cutoff Decision Entry
 
-Append one copy of this entry to `architecture/cutoff-decisions.md` for each material decision. Keep work orders and evaluation prompts in their own files.
+Append one copy of this entry to [`DECISIONS.md`](DECISIONS.md) for each material decision. Keep work orders and evaluation prompts in their own files.
 
 ```markdown
 ## CUT-<next number> — <short decision name>

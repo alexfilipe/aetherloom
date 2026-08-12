@@ -241,7 +241,7 @@ Integrating a new base into the branch changes the head and therefore invalidate
 
 Cutoffs are part of the evaluation loop, not an escape from it. They define when evidence is enough, what is intentionally deferred, and exactly what would reopen the work.
 
-Record material cutoff decisions in a file separate from work orders and implementation plans. The canonical append-only format and defaults are in [`cutoffs/README.md`](cutoffs/README.md), with an entry template in [`cutoffs/TEMPLATE.md`](cutoffs/TEMPLATE.md). The current project decision log is `architecture/cutoff-decisions.md`, introduced by PR #12 commit `14c72efe008636c0c76590499166b3e1498f6af6`.
+Record material cutoff decisions in a file separate from work orders and implementation plans. Everything about cutoffs lives in [`cutoffs/`](cutoffs/README.md): the policy and defaults in [`cutoffs/README.md`](cutoffs/README.md), the entry template in [`cutoffs/TEMPLATE.md`](cutoffs/TEMPLATE.md), and the project's append-only decision log in [`cutoffs/DECISIONS.md`](cutoffs/DECISIONS.md).
 
 At minimum, add or update a durable decision when:
 
