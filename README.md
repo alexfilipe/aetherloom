@@ -67,11 +67,13 @@ Follow progress, open issues, or contribute on GitHub; the project website is [a
 ## Repository layout
 
 ```text
-src/AetherloomApp/    SwiftUI macOS app (UI only)
-src/AetherloomCore/   Swift package with the sync engine
-architecture/core/    Sync engine design documentation
-architecture/ui/      macOS app UI design documentation
-www/                  Project website
+src/AetherloomApp/           SwiftUI macOS app (UI only)
+src/AetherloomCore/          Swift package with the sync engine
+architecture/core/           Sync engine design documentation
+architecture/ui/             macOS app UI design documentation
+architecture/providers/      Storage-provider integration design documentation
+architecture/orchestration/  Evaluation-loop development framework
+www/                         Project website
 ```
 
 Curious how it works — or want to contribute? The full engine design (provider-agnostic sync architecture, conflict preservation, safe-delete flows, approval gates, mock providers for testing, on-device AI advice, testing strategy) lives in [architecture/core/](architecture/core/README.md), and the native app's UI design lives in [architecture/ui/](architecture/ui/README.md). [architecture/](architecture/README.md) is the index.
@@ -79,6 +81,8 @@ Curious how it works — or want to contribute? The full engine design (provider
 ## AI-first development workflow
 
 Aetherloom is also an experiment in AI-first software development: architecture, product direction, review, and safety decisions are coordinated by a human developer while AI agents help implement and iterate on the codebase.
+
+Every feature and pull request follows a bounded evaluation loop — define → implement → evaluate → decide — documented in [architecture/orchestration/](architecture/orchestration/README.md). Scope, acceptance scenarios, and required validation are defined in the owning track's work order or the pull request itself; the durable finish-line, deferral, freeze, and reopen decisions are recorded in [the cutoff decision log](architecture/orchestration/cutoffs/DECISIONS.md).
 
 ## Building
 

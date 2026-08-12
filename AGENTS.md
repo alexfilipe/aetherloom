@@ -174,7 +174,7 @@ Every feature and pull request follows the bounded evaluation loop in [`architec
 - Serialize Swift and other shared-resource tests with one explicit test-lock owner.
 - Do not merge, change PR state or bases, resolve threads, force-push, or perform destructive Git recovery without explicit authority.
 
-Durable cutoffs are mandatory but selective. Record finish lines, accepted/deferred P2 risks, evaluation-budget extensions, narrow retry allowances, freezes/reopens, and cross-PR routing decisions in the separate append-only `architecture/cutoff-decisions.md` log using [`architecture/orchestration/cutoffs/TEMPLATE.md`](architecture/orchestration/cutoffs/TEMPLATE.md). Follow [`architecture/orchestration/cutoffs/README.md`](architecture/orchestration/cutoffs/README.md). Do not log every command or use a cutoff to waive a safety invariant, acceptance criterion, or required validation.
+Durable cutoffs are mandatory but selective. Record finish lines, accepted/deferred P2 risks, evaluation-budget extensions, narrow retry allowances, freezes/reopens, and cross-PR routing decisions in the separate append-only [`architecture/orchestration/cutoffs/DECISIONS.md`](architecture/orchestration/cutoffs/DECISIONS.md) log, in the format defined by [`architecture/orchestration/cutoffs/README.md`](architecture/orchestration/cutoffs/README.md). Follow that policy. Do not log every command or use a cutoff to waive a safety invariant, acceptance criterion, or required validation.
 
 ## Validation
 

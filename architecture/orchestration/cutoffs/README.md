@@ -6,9 +6,15 @@ This policy generalizes the durable decisions in PR #12 commit `14c72efe008636c0
 
 Cutoffs never waive a safety invariant, a listed acceptance scenario, or required authoritative validation. They do allow low-risk permutations, cleanup, and adjacent improvements to be deferred with evidence and a precise revisit trigger.
 
+This file defines the decision log, the default cutoff catalog, and the durable entry format. The development procedure those cutoffs bound — the loop, risk tiers, evaluation budget, subagent triggers, validation ladder, locks, human-smoke routing, and the merge-readiness bar — is defined once in [`../README.md`](../README.md). Where a rule appears in both, that file is normative.
+
 ## Canonical decision log
 
-Material decisions go in `architecture/cutoff-decisions.md`, separate from work orders, implementation plans, and chat transcripts. The file is append-only: preserve existing entries and append resolution or supersession metadata instead of rewriting history.
+Material decisions go in [`DECISIONS.md`](DECISIONS.md) beside this policy, separate from work orders, implementation plans, and chat transcripts. The file is append-only with respect to decision content: never revise a recorded rationale, scope, risk, evidence, or trigger after the fact — append resolution or supersession metadata instead.
+
+Identifiers are labels rather than decision content, so a duplicated `CUT-<number>` may be corrected in place. That is the one permitted in-place edit, it changes nothing a reader relies on, and it must leave the entry otherwise byte-identical.
+
+Claim the next `CUT-<number>` from the log on the default branch at publication time, not from a stale local copy: parallel branches can otherwise claim the same number. Re-check for a collision when rebasing or merging. If a collision has already landed, keep the first-merged entry's number and renumber the later entry to the next free number, updating every citation of it in the same change. Check for citations outside the log first; if the old identifier has already been cited somewhere you cannot update, leave both entries alone and append re-designation metadata instead, since a label nobody can follow is worse than a duplicate.
 
 Add a durable entry when:
 
@@ -35,10 +41,10 @@ Do not log routine commands, lock transfers, or progress polling. Those belong i
 | E08 | Correction batch | Findings from the complete evaluation are understood | Make one coherent correction batch, then run targeted verification. Avoid one-task-per-comment churn. |
 | E09 | Fresh evaluation | Corrections introduce a new safety boundary, alter the acceptance contract/architecture, substantially rewrite evaluated code, or cannot be verified narrowly | Run one second fresh complete evaluation. Otherwise use targeted verification only. |
 | E10 | Review ceiling | Two complete evaluations have occurred | Freeze after required targeted verification. A third requires user approval plus new P0/P1 evidence. |
-| E11 | Exact-head CI | One authoritative exact-head run passes | Do not rerun for reassurance. Preserve its SHA, command, environment, result, known issues, and skips. |
+| E11 | Exact-head CI | One authoritative exact-head run passes at the current head | Do not rerun for reassurance. Preserve its SHA, command, environment, result, known issues, and skips. A later base integration or any other head change voids that evidence and requires one fresh run, which this cutoff does not forbid. |
 | E12 | Narrow correction | First authoritative run fails only on a bounded compile, test-fixture, or transient infrastructure problem before any safety scenario fails | Permit one focused correction and one replacement run; record the decision. |
 | E13 | Practical freeze | Acceptance scenarios pass, no P0/P1 remains, exact-head validation is green, and residual risk is P2 or lower | Mark the evaluation complete and present the merge gate. Do not keep searching for work. |
-| E14 | Reopen | New evidence shows immediate data loss, ambiguous destructive authority, a listed-scenario regression, or invalidated exact-head evidence | Reopen narrowly for that evidence. Reviewer preference, style, or hypothetical permutations do not reopen. |
+| E14 | Reopen | New evidence shows a P0/P1 failure mode (for example immediate data loss, ambiguous destructive authority, or a concurrency/persistence defect), a listed-scenario regression, or invalidated exact-head evidence | Reopen narrowly for that evidence. Reviewer preference, style, or hypothetical permutations do not reopen. |
 | E15 | Residual risk | Gap is missing permutation coverage or hardening with no demonstrated guard bypass | Record as P2 with an exact trigger; it does not block merge by default. |
 | E16 | Scope routing | A reproduced defect belongs to an adjacent layer or would destabilize a frozen PR | Create a narrowly scoped follow-up/stacked PR after its base is stable. Do not reopen or expand the frozen PR by default. |
 | E17 | Human smoke | A defined manual smoke scenario produces a reproducible failure | Treat it as acceptance evidence, classify P0–P3, and route it. Do not dismiss it because automation is green. |
@@ -46,92 +52,48 @@ Do not log routine commands, lock transfers, or progress polling. Those belong i
 | E19 | External wait | Progress depends only on CI, human smoke, approval, or another task | Release unused locks and use event-driven/bounded waits instead of repetitive state reads. |
 | E20 | Authority | The next action is merge, base/readiness change, thread mutation, force-push, destructive recovery, or another ungranted mutation | Stop and present one precise approval gate. |
 
-## Evidence-complete subagent cutoffs
-
-Bound subagents by evidence rather than duration or output volume. Each prompt names:
-
-- one exact question;
-- an exact SHA and bounded diff, paths, state transitions, or tests;
-- what counts as sufficient evidence;
-- at most the adjacent call sites or test files needed to verify the answer;
-- the uncertainty that forces escalation rather than speculation.
-
-Recommended defaults:
-
-- zero subagents for a small, well-understood change;
-- one Explorer and one Test Designer for safety-critical or unfamiliar work;
-- one targeted follow-up for an unresolved question;
-- no recursive delegation;
-- no subagent tests unless it explicitly owns the test lock.
-
-Stop after two consecutive passes reveal no new relevant path, invariant, or risk. Stop test design once every acceptance criterion has the smallest proving scenario plus only the necessary recovery or concurrency variant.
-
-## Evaluation and validation cutoffs
-
-Run the cheapest useful evaluation first:
-
-```text
-focused static check
-        │ pass
-        ▼
-focused regression tests
-        │ pass
-        ▼
-required full suite
-        │ pass
-        ▼
-targeted audits
-        │ pass
-        ▼
-one authoritative exact-head run
-```
-
-When a rung fails, do not spend time on later rungs that cannot change the decision. After correction, resume at the cheapest rung capable of reproducing the failure, then finish the remaining required rungs.
-
-Reuse evidence only when the exact head and relevant code, tests, command, toolchain, and environment inputs are unchanged. “Previously green” without provenance is not reusable evidence.
-
-## Preventing review paralysis
-
-The default evaluation sequence is:
-
-1. writer self-evaluation;
-2. one complete independent evaluation when risk requires it;
-3. one correction batch;
-4. original evaluator's targeted verification;
-5. one exact-head validation;
-6. practical freeze and merge gate.
-
-Missing exhaustive permutations are not automatically blocking. Neither are stylistic comments, speculative refactors, documentation polish, or a desire for a different design when the accepted contract is met.
-
-Run a second fresh evaluation only under E09. Do not run a third without the E10 exception. Once E13 fires, reopen only under E14.
-
-## Human evaluation and follow-up routing
-
-A Mac smoke test, hardware test, or other user-observed result is part of the evaluation loop when the acceptance plan names it. Reserve the test lock while the human test is active if it shares fixed state with automation.
-
-If smoke testing reveals an adjacent defect after the core PR is otherwise frozen:
-
-1. reproduce and classify the defect;
-2. keep the validated core PR frozen unless the defect violates its acceptance contract;
-3. route the fix to the narrowest owning layer;
-4. use a stacked follow-up PR when that preserves scope and evidence;
-5. evaluate the follow-up against the observed scenarios rather than repeating the entire parent review.
-
-This is how new evidence moves the product forward without restarting every prior evaluation.
-
 ## Durable entry format
 
-Use [`TEMPLATE.md`](TEMPLATE.md). Every entry includes:
+Append one copy of this entry to [`DECISIONS.md`](DECISIONS.md) for each material decision. Keep work orders and evaluation prompts in their own files.
 
-- date;
-- PR/layer and exact relevant SHAs;
-- decision/cutoff;
-- reason and evidence;
-- completed scope;
-- explicit deferrals;
-- residual risk and severity;
-- exact revisit trigger or acceptance condition;
-- status;
-- resolving PR/SHA.
+```markdown
+## CUT-<next number> — <short decision name>
 
-Append later resolution metadata rather than editing the original rationale.
+- Date: <YYYY-MM-DD>
+- PR/layer and exact relevant SHA(s): <PR link or feature; base, failed head, final head, and integration SHA as applicable>.
+- Decision/cutoff: <the finish, correction, deferral, routing, freeze, or reopen decision>.
+- Reason and evidence: <acceptance scenarios, evaluator result, CI run, human smoke result, or reproduced failure supporting the decision>.
+- What was completed: <the exact shipped or evaluated scope>.
+- What was explicitly deferred: <permutations, cleanup, follow-up work, or “none”>.
+- Residual risk/severity: <P0–P3 and concrete remaining risk>.
+- Exact revisit trigger or acceptance condition: <specific evidence that reopens work, or exact finish line still required>.
+- Status: proposed | accepted | deferred | reopened | superseded | resolved
+- Resolving PR/SHA: <PR and exact SHA, or “none/pending”>.
+```
+
+When later evidence changes the decision, append metadata instead of rewriting the original rationale:
+
+```markdown
+## Resolution metadata appended <YYYY-MM-DD>
+
+- CUT-<number>: <new evidence, status, resolving PR/SHA, and whether the original revisit trigger fired>.
+```
+
+A reopen under E14 is recorded the same way: append metadata to the original entry with status `reopened` and the evidence that fired the revisit trigger, then append later resolution metadata when the reopened work closes.
+
+### Worked example
+
+```markdown
+## CUT-042 — PR #99 practical freeze
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): PR #99; base `<base SHA>`; final head `<head SHA>`.
+- Decision/cutoff: Freeze after the enumerated acceptance scenarios, one complete independent evaluation, targeted verification of its findings, and one green exact-head platform run. No additional complete review is required.
+- Reason and evidence: All listed scenarios pass; the evaluator found no remaining P0/P1 issue; exact-head validation is green.
+- What was completed: The feature contract and focused regressions.
+- What was explicitly deferred: Exhaustive permutations and unrelated cleanup.
+- Residual risk/severity: P2; untested permutations with no demonstrated guard bypass.
+- Exact revisit trigger or acceptance condition: Reopen only for a reproduced acceptance regression, a demonstrated guard bypass, invalidated validation, or new P0/P1 evidence.
+- Status: accepted
+- Resolving PR/SHA: PR #99 / `<head SHA>`.
+```
