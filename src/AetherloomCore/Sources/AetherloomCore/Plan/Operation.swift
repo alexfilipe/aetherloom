@@ -189,6 +189,7 @@ public struct OperationSchedule: Codable, Hashable, Sendable {
         try validateDependenciesPrecedeOperations()
         try validateParentsBeforeChildren()
         try validateTransfersBeforeTrash()
+        try validateDescendantsBeforeDirectoryTrash()
         try validatePerItemChains(decisions: decisions)
         try validateCaseFoldedTargetCollisions()
     }
@@ -240,6 +241,35 @@ public struct OperationSchedule: Codable, Hashable, Sendable {
         }
     }
 
+    private func validateDescendantsBeforeDirectoryTrash() throws {
+        let directoryTrashOperations = operations.enumerated().compactMap {
+            index,
+            operation -> (index: Int, location: LocationID, path: SyncPath)? in
+            guard case let .trash(itemRef) = operation.kind,
+                  itemRef.kind == .folder else {
+                return nil
+            }
+            return (index, operation.location, itemRef.path)
+        }
+
+        for directory in directoryTrashOperations {
+            for (descendantIndex, operation) in operations.enumerated()
+            where operation.location == directory.location {
+                let descendant = operation.kind.targetPath
+                guard descendant != directory.path,
+                      descendant.isDescendant(of: directory.path),
+                      descendantIndex > directory.index else {
+                    continue
+                }
+                throw OperationScheduleValidationError.directoryTrashBeforeDescendant(
+                    directory: directory.path,
+                    descendant: descendant,
+                    location: directory.location
+                )
+            }
+        }
+    }
+
     private func validatePerItemChains(decisions: [ItemDecision]) throws {
         let indexes = operationIndexes()
         for decision in decisions where decision.operations.count > 1 {
@@ -285,6 +315,7 @@ public enum OperationScheduleValidationError: Error, Equatable, Sendable {
     case dependencyAfterOperation(operation: OperationID, dependency: OperationID)
     case parentAfterChild(parent: SyncPath, child: SyncPath, location: LocationID)
     case transferAfterTrash(OperationID)
+    case directoryTrashBeforeDescendant(directory: SyncPath, descendant: SyncPath, location: LocationID)
     case unknownDecisionOperation(decision: UUID)
     case itemChainOutOfOrder(decision: UUID)
     case itemChainMissingDependency(decision: UUID, operation: OperationID)

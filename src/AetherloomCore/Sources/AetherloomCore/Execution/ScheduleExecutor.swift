@@ -873,14 +873,16 @@ public struct ScheduleExecutor: Sendable {
                     provider: provider
                 )
                 if current.isTrashed {
-                    return matchingObservationVersion(
+                    return matchingTrashAuthority(
                         current,
                         itemRef.observation
                     ) ? .alreadySatisfied(current) : .preconditionMismatch(
                         itemRef.path
                     )
                 }
-                return matchingObservationVersion(current, itemRef.observation) ? .needsApply : .preconditionMismatch(itemRef.path)
+                return matchingTrashAuthority(current, itemRef.observation)
+                    ? .needsApply
+                    : .preconditionMismatch(itemRef.path)
             } catch ProviderError.notFound {
                 return .alreadySatisfied(nil)
             }
@@ -993,7 +995,7 @@ public struct ScheduleExecutor: Sendable {
                     of: itemRef.observation,
                     provider: provider
                 )
-                guard matchingObservationVersion(
+                guard matchingTrashAuthority(
                     current,
                     itemRef.observation
                 ) else {
@@ -1301,6 +1303,24 @@ private func matchingObservationVersion(_ lhs: ItemObservation, _ rhs: ItemObser
         return false
     }
     return lhs.version.isSameVersion(as: rhs.version)
+}
+
+private func matchingTrashAuthority(
+    _ current: ItemObservation,
+    _ expected: ItemObservation
+) -> Bool {
+    guard current.path == expected.path,
+          current.kind == expected.kind else {
+        return false
+    }
+    if current.itemID != nil && expected.itemID != nil
+        && current.itemID != expected.itemID {
+        return false
+    }
+    if expected.isFolder {
+        return true
+    }
+    return current.version.isSameVersion(as: expected.version)
 }
 
 private func matchingContent(_ lhs: ItemVersion, _ rhs: ItemVersion) -> Bool {

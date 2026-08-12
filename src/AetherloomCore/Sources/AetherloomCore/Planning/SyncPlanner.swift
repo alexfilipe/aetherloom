@@ -234,7 +234,19 @@ private struct PlanLowerer {
             )
         }
 
-        let orderedOperations = state.operations.filter { !$0.kind.isTrash } + state.operations.filter { $0.kind.isTrash }
+        let nonTrashOperations = state.operations.filter { !$0.kind.isTrash }
+        let trashOperations = state.operations.enumerated()
+            .filter { $0.element.kind.isTrash }
+            .sorted { lhs, rhs in
+                let lhsDepth = lhs.element.kind.targetPath.components.count
+                let rhsDepth = rhs.element.kind.targetPath.components.count
+                if lhsDepth != rhsDepth {
+                    return lhsDepth > rhsDepth
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+        let orderedOperations = nonTrashOperations + trashOperations
         let schedule = OperationSchedule(operations: orderedOperations)
         assert((try? schedule.validate(decisions: state.decisions)) != nil)
         return LoweredPlan(

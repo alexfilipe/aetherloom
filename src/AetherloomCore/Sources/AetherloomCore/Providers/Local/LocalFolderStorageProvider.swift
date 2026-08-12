@@ -2060,12 +2060,23 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 try hook.beforeMutation(receipt)
                 try await requireAvailable()
                 if let existing = try existingEntry(at: expected.path) {
-                    let verified = try await verifiedEntry(
-                        existing,
-                        matching: expected.version,
-                        path: expected.path,
-                        allowWeak: expected.kind != .file
-                    )
+                    let verified: LocalExistingEntry
+                    if expected.kind == .folder {
+                        guard existing.observation.kind == .folder else {
+                            throw ProviderError.preconditionFailed(
+                                provider: locationID,
+                                path: expected.path
+                            )
+                        }
+                        verified = existing
+                    } else {
+                        verified = try await verifiedEntry(
+                            existing,
+                            matching: expected.version,
+                            path: expected.path,
+                            allowWeak: expected.kind != .file
+                        )
+                    }
                     try await requireCurrentRootIdentity()
                     try await trashCurrent(
                         verified.observation,
@@ -2203,12 +2214,23 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     path: current.path
                 )
             }
-            let immediatelyCurrent = try await verifiedEntry(
-                immediateEntry,
-                matching: current.version,
-                path: current.path,
-                allowWeak: current.kind != .file
-            ).observation
+            let immediatelyCurrent: ItemObservation
+            if current.kind == .folder {
+                guard immediateEntry.observation.kind == .folder else {
+                    throw ProviderError.preconditionFailed(
+                        provider: locationID,
+                        path: current.path
+                    )
+                }
+                immediatelyCurrent = immediateEntry.observation
+            } else {
+                immediatelyCurrent = try await verifiedEntry(
+                    immediateEntry,
+                    matching: current.version,
+                    path: current.path,
+                    allowWeak: current.kind != .file
+                ).observation
+            }
 
             if capabilities.hasNativeTrash {
                 var trashReceipt = LocalTrashReceipt(
@@ -2224,6 +2246,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 let nativeTrashFailed: Bool
                 do {
                     try await requireCurrentRootIdentity()
+                    try await requireEmptyDirectory(
+                        immediatelyCurrent,
+                        source: source
+                    )
                     resultingURL = try nativeTrash.trashItem(at: source)
                     nativeTrashFailed = false
                 } catch {
@@ -2245,18 +2271,24 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     throw ProviderError.mutationIndeterminate(mutationReceipt)
                 }
                 if let remainingSource {
+                    try await requireEmptyDirectory(
+                        immediatelyCurrent,
+                        source: remainingSource.url
+                    )
                     guard nativeTrashFailed else {
                         throw ProviderError.mutationIndeterminate(mutationReceipt)
                     }
-                    do {
-                        _ = try await verifiedEntry(
-                            remainingSource,
-                            matching: current.version,
-                            path: current.path,
-                            allowWeak: current.kind != .file
-                        )
-                    } catch {
-                        throw ProviderError.mutationIndeterminate(mutationReceipt)
+                    if current.kind != .folder {
+                        do {
+                            _ = try await verifiedEntry(
+                                remainingSource,
+                                matching: current.version,
+                                path: current.path,
+                                allowWeak: current.kind != .file
+                            )
+                        } catch {
+                            throw ProviderError.mutationIndeterminate(mutationReceipt)
+                        }
                     }
                 } else {
                     guard !nativeTrashFailed,
@@ -2304,6 +2336,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             try persistTrashReceipt(quarantineReceipt)
             do {
                 try await requireCurrentRootIdentity()
+                try await requireEmptyDirectory(
+                    immediatelyCurrent,
+                    source: source
+                )
                 try quarantine.moveItem(at: source, to: recoveryURL)
             } catch let moveError {
                 do {
@@ -2318,15 +2354,22 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     throw ProviderError.mutationIndeterminate(mutationReceipt)
                 }
                 if let remainingSource {
-                    do {
-                        _ = try await verifiedEntry(
-                            remainingSource,
-                            matching: current.version,
-                            path: current.path,
-                            allowWeak: current.kind != .file
+                    if current.kind == .folder {
+                        try await requireEmptyDirectory(
+                            immediatelyCurrent,
+                            source: remainingSource.url
                         )
-                    } catch {
-                        throw ProviderError.mutationIndeterminate(mutationReceipt)
+                    } else {
+                        do {
+                            _ = try await verifiedEntry(
+                                remainingSource,
+                                matching: current.version,
+                                path: current.path,
+                                allowWeak: current.kind != .file
+                            )
+                        } catch {
+                            throw ProviderError.mutationIndeterminate(mutationReceipt)
+                        }
                     }
                     throw moveError
                 }
@@ -2348,6 +2391,37 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 mutationReceipt: mutationReceipt
             )
             await artifacts.recordRecovery(recoveryURL, for: current.path)
+        }
+
+        private func requireEmptyDirectory(
+            _ current: ItemObservation,
+            source: URL
+        ) async throws {
+            guard current.kind == .folder else { return }
+            try await requireCurrentRootIdentity()
+            let names: [String]
+            do {
+                names = try FileManager.default.contentsOfDirectory(
+                    atPath: source.path
+                )
+            } catch {
+                throw ProviderError.itemUnavailable(
+                    provider: locationID,
+                    path: current.path
+                )
+            }
+            try await requireCurrentRootIdentity()
+            guard names.isEmpty,
+                  let immediateEntry = try existingEntry(at: current.path),
+                  immediateEntry.url.standardizedFileURL
+                    == source.standardizedFileURL,
+                  immediateEntry.observation.kind == .folder else {
+                throw ProviderError.preconditionFailed(
+                    provider: locationID,
+                    path: current.path
+                )
+            }
+            try await requireCurrentRootIdentity()
         }
 
         private func existingEntry(at path: SyncPath) throws -> LocalExistingEntry? {
