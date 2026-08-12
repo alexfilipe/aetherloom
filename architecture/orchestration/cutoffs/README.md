@@ -43,7 +43,7 @@ An entry is ready to retire when its pull request or feature has landed or been 
 2. For each condition that binds future work rather than waiting to be scheduled, add a line to the standing constraints instead.
 3. Add the entry to the closed index with its outcome in one line, noting anything that would otherwise be misread — an entry left at `proposed` whose work in fact landed, or a PR number that was later reassigned.
 4. Delete the entry and any metadata blocks that reference it.
-5. Update the retrieval pointer at the top of `DECISIONS.md` to the commit that still holds the retired entries, so one command returns the full prior log.
+5. Open a new batch heading in the closed index for the entries you are retiring, naming the last commit in which they are still present — the parent of your pruning commit — and give it the `git show` command that returns that copy of the file. Never repoint an existing batch's commit: each batch keeps its own, because the commit before a later pruning no longer contains the entries an earlier one retired.
 
 Never let pruning retire an unfired trigger, downgrade a severity, drop a safety constraint, or remove an entry whose work is unfinished. If you cannot tell whether something is still open, leave the entry in place — an over-long log costs context, while a silently dropped deferral costs safety.
 
