@@ -381,10 +381,6 @@ struct RealLocalSyncEndToEndTests {
                 == expectedOrder
         )
         try plan.schedule.validate(decisions: plan.decisions)
-        let expectedObservations = localE2ETrashObservations(
-            in: plan,
-            location: world.locationB.id
-        )
         await world.providerB.clearMutationCalls()
 
         let summary = try await world.orchestrator.execute(
@@ -397,6 +393,12 @@ struct RealLocalSyncEndToEndTests {
             await world.providerB.mutationCalls()
                 == expectedOrder.map { .trash($0) }
         )
+        let appliedTrash = summary.appliedOperations.filter { operation in
+            operation.location == world.locationB.id
+                && expectedOrder.contains(operation.path)
+        }
+        #expect(appliedTrash.map(\.path) == expectedOrder)
+        #expect(appliedTrash.allSatisfy { $0.observation?.isTrashed == true })
         #expect(quarantine.moveCount() == expectedOrder.count)
         for path in expectedOrder {
             #expect(
@@ -426,12 +428,6 @@ struct RealLocalSyncEndToEndTests {
                     isDirectory: &isDirectory
                 ) && isDirectory.boolValue
             )
-        }
-        for observation in expectedObservations {
-            let current = try await world.localProviderB.currentState(
-                of: observation
-            )
-            #expect(current.isTrashed)
         }
         try await world.expectEmptyPreview()
     }

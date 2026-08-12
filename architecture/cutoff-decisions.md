@@ -265,3 +265,16 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Accept only when the append-only disposition commit is the clean local/upstream/origin/PR head, is descended from the exact base, and one clear-queue macOS CI run at that exact head passes the full package suite including all listed regressions. Reopen for a reproduced unplanned-descendant move, parent-before-descendant execution, non-recoverable deletion, a listed regression failure, invalidated exact-head validation, or new P0/P1 evidence.
 - Status: proposed
 - Resolving PR/SHA: Draft PR #18 and final disposition commit pending; focused implementation is `d60c0928956756990f741c113bbed0e2e41a0e0c`.
+
+## CUT-019 — PR #18 permitted test-fixture correction
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): draft PR [#18](https://github.com/alexfilipe/aetherloom/pull/18); failed exact head `19ccab332c2111ac824a796f9f598b2599cdc251`; macOS CI [run 31564897909](https://github.com/alexfilipe/aetherloom/actions/runs/31564897909); exact base `3e29a6b9ba9eaaa5755dec905e9f01d13358625d`.
+- Decision/cutoff: Permit one test-only correction and one replacement exact-head macOS CI run. Replace the clean nested recovery test's post-run `currentState` calls made with stale pre-child-removal folder observations with assertions over the executor's applied trashed observations; retain the existing exact physical recovery-artifact, move-count, ordering, live-path absence, content, and convergence assertions. No production change or broader retry is authorized.
+- Reason and evidence: Run 31564897909 compiled and linked all production and test targets, then ran 329 tests in 8 suites. The only unexpected issue was `.notFound` in `approvedCleanNestedDirectoryDeletionIsDeepestFirstAndRecoverable`; nine separately declared provider-conformance known issues remained known. Deepest-first child trash legitimately changes ancestor directory metadata, so querying recovery with the plan's stale folder observation is expected to fail closed. The executor had already returned a fresh applied trashed observation for each successful operation, which is the correct assertion surface. No listed safety scenario failed and no production defect was demonstrated.
+- What was completed: Exact failure extraction and a correction limited to the stale test assertion. The late-grandchild fail-closed test, schedule validation, production compilation, and all existing suites otherwise passed.
+- What was explicitly deferred: Every production change, additional fixture change, cleanup/refactor, exhaustive race permutations, and any CI run beyond the single replacement.
+- Residual risk/severity: P2 until the replacement exact-head run is green; the failure was test-observation staleness, not ambiguous destructive authority.
+- Exact revisit trigger or acceptance condition: Freeze after one replacement run at the clean corrected local/upstream/origin/PR head. Green completes validation; red requires stopping without another edit or dispatch unless new explicit authority is granted.
+- Status: accepted
+- Resolving PR/SHA: Test-only correction commit and replacement run pending.
