@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Verify that AGENTS.md and CLAUDE.md are byte-identical mirrors.
+#
+# The two files carry the same agent instructions for different harnesses, so
+# every edit must land in both. This hook blocks a commit whose staged versions
+# differ. Enable it once per clone with:
+#
+#   git config core.hooksPath .githooks
+#
+# Delete this file when the two documents are meant to diverge.
+set -euo pipefail
+
+# Only check commits that stage a change to either mirror file.
+if git diff --cached --quiet -- AGENTS.md CLAUDE.md; then
+  exit 0
+fi
+
+# Compare the staged (index) versions, not the working tree. Skip the check
+# when either file is absent from the index, e.g. during a deliberate removal.
+if ! git cat-file -e :AGENTS.md 2>/dev/null || ! git cat-file -e :CLAUDE.md 2>/dev/null; then
+  exit 0
+fi
+
+if ! diff -u <(git show :AGENTS.md) <(git show :CLAUDE.md) 1>&2; then
+  echo "" >&2
+  echo "pre-commit: AGENTS.md and CLAUDE.md must stay byte-identical mirrors." >&2
+  echo "pre-commit: apply the same edit to both files, re-stage them, and commit again." >&2
+  exit 1
+fi

@@ -132,7 +132,10 @@ public struct Reconciler: Sendable {
         }
 
         if changedLocations.count >= 2 {
-            if changedVersionsConverged(changedLocations, facts: facts) {
+            if base.kind != .file || changedVersionsConverged(
+                changedLocations,
+                facts: facts
+            ) {
                 return .inSync
             }
             return conflict(.editEdit, path: primaryPath, observations: observations, locations: changedLocations)
@@ -340,7 +343,7 @@ private func changedVersionsConverged(_ locations: [LocationID], facts: [Locatio
     guard versions.count > 1 else { return true }
     for lhsIndex in versions.indices {
         for rhsIndex in versions.index(after: lhsIndex)..<versions.endIndex {
-            if versions[lhsIndex].comparison(to: versions[rhsIndex]) != .same {
+            if versions[lhsIndex].comparison(to: versions[rhsIndex]) != .strong {
                 return false
             }
         }
@@ -349,11 +352,11 @@ private func changedVersionsConverged(_ locations: [LocationID], facts: [Locatio
 }
 
 private func appearedVersionsConverged(_ observations: [ItemObservation]) -> Bool {
-    let fileObservations = observations.filter { !$0.isFolder }
+    let fileObservations = observations.filter { $0.kind == .file }
     guard fileObservations.count > 1 else { return true }
     for lhsIndex in fileObservations.indices {
         for rhsIndex in fileObservations.index(after: lhsIndex)..<fileObservations.endIndex {
-            if fileObservations[lhsIndex].version.comparison(to: fileObservations[rhsIndex].version) != .same {
+            if fileObservations[lhsIndex].version.comparison(to: fileObservations[rhsIndex].version) != .strong {
                 return false
             }
         }

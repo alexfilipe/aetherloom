@@ -268,7 +268,9 @@ struct RunResultToast: View {
 
         init(summary: SyncRunSummary) {
             runID = summary.runID
-            if !summary.failedOperations.isEmpty || summary.outcome.isFailure {
+            if case .mutationIndeterminate = summary.outcome {
+                detail = "A filesystem operation is finishing safely — Aetherloom will reconcile it before the next preview"
+            } else if !summary.failedOperations.isEmpty || summary.outcome.isFailure {
                 detail = "\(summary.appliedOperations.count) applied, \(summary.failedOperations.count) failed — see Activity"
             } else {
                 detail = "\(summary.appliedOperations.count) applied · \(summary.skippedOperations.count) skipped · 0 failed"
@@ -286,6 +288,9 @@ struct RunResultToast: View {
             case .stoppedForReplan:
                 title = "Files changed — preview again"
                 tone = .attention
+            case .mutationIndeterminate:
+                title = "Sync paused for recovery"
+                tone = .paused
             case .cancelled:
                 title = "Sync cancelled"
                 tone = .neutral
@@ -293,6 +298,13 @@ struct RunResultToast: View {
                 title = "Sync stopped"
                 tone = .attention
             }
+        }
+
+        init(recovery entry: ActivityEntry) {
+            runID = entry.runID ?? entry.id
+            title = "Interrupted run checked"
+            detail = "The old schedule was not resumed. Aetherloom preserved the safest state — see Activity"
+            tone = .healthy
         }
     }
 

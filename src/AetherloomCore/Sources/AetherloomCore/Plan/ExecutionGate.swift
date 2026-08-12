@@ -18,6 +18,15 @@ public enum ExecutionGate: Codable, Hashable, Sendable {
         return []
     }
 
+    /// Whether a reviewed plan may proceed with a time-limited approval.
+    ///
+    /// A mass-deletion threshold is a safety stop, not an approval prompt. The
+    /// operator must first change the underlying files or sync configuration so
+    /// that a fresh plan no longer contains the hold.
+    public var permitsApproval: Bool {
+        !isClear && holdReasons.allSatisfy(\.permitsApproval)
+    }
+
     public func addingHolds(_ reasons: [HoldReason]) -> ExecutionGate {
         guard !reasons.isEmpty else {
             return self
@@ -100,6 +109,15 @@ public enum HoldReason: Codable, Hashable, Sendable {
             return ActivityMessageCatalog.manyEdits
         case .deletionsNeedReview:
             return ActivityMessageCatalog.deletionsNeedReview
+        }
+    }
+
+    public var permitsApproval: Bool {
+        switch self {
+        case .massDeletion:
+            return false
+        case .conflicts, .massEdit, .deletionsNeedReview:
+            return true
         }
     }
 }

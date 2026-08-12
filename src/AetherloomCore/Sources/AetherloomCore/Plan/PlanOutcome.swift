@@ -38,6 +38,7 @@ public struct SyncRefusal: Codable, Hashable, Sendable {
 public enum RefusalReason: Codable, Hashable, Sendable {
     case locationUnavailable(LocationID, LocationUnavailabilityReason)
     case scanIncomplete(LocationID, detail: String)
+    case evidenceUnavailable(LocationID, path: SyncPath, detail: String)
     case baseStateUnreadable(detail: String)
 
     public var message: String {
@@ -46,6 +47,8 @@ public enum RefusalReason: Codable, Hashable, Sendable {
             return ActivityMessageCatalog.providerUnavailable
         case .scanIncomplete:
             return ActivityMessageCatalog.scanIncomplete
+        case .evidenceUnavailable:
+            return "Sync paused because strong content evidence could not be acquired."
         case .baseStateUnreadable:
             return ActivityMessageCatalog.baseStateUnreadable
         }
