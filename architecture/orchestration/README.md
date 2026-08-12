@@ -43,6 +43,8 @@ Before implementation, record:
 
 The finish line must be testable. “Review until nobody can find anything else” is not a finish line.
 
+Record the definition where it is durable: scope, acceptance scenarios, and validation requirements belong in the owning track's `agents/` work order (see [`../README.md`](../README.md)) or the PR description; the finish line, evaluation budget, residual-risk policy, and reopen triggers belong in the cutoff decision log per [`cutoffs/README.md`](cutoffs/README.md).
+
 ### 2. Implement
 
 Use one writer for one branch/worktree. Preserve unrelated work. For safety-critical or unfamiliar areas, dispatch bounded read-only exploration and test-design subagents before editing. For a small, understood change, the writer may work directly without manufacturing extra tasks.
@@ -92,6 +94,8 @@ Use these classes to decide what may stop the loop:
 | P3 | Style, naming, cleanup, speculative refactor, or unrelated improvement | Defer outside the loop. |
 
 Severity is based on demonstrated impact and evidence, not reviewer confidence or comment count. A P2 becomes blocking only when new evidence shows a P0/P1 failure mode.
+
+When the writer and an evaluator disagree on a finding's class, treat the finding at the higher class until the orchestrator or the user resolves the disagreement at a gate. A P0/P1 claim is never downgraded by writer preference alone.
 
 ## Evaluation budget
 

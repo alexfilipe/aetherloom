@@ -10,6 +10,8 @@ Cutoffs never waive a safety invariant, a listed acceptance scenario, or require
 
 Material decisions go in `architecture/cutoff-decisions.md`, separate from work orders, implementation plans, and chat transcripts. The file is append-only: preserve existing entries and append resolution or supersession metadata instead of rewriting history.
 
+Claim the next `CUT-<number>` from the log on the default branch at publication time, not from a stale local copy: parallel branches can otherwise claim the same number. Re-check for a collision when rebasing or merging; if a collision has already landed, keep the first-merged entry's number and re-designate the later entry with appended metadata rather than rewriting either entry.
+
 Add a durable entry when:
 
 - setting the evaluation finish line for a PR or feature;
@@ -38,7 +40,7 @@ Do not log routine commands, lock transfers, or progress polling. Those belong i
 | E11 | Exact-head CI | One authoritative exact-head run passes | Do not rerun for reassurance. Preserve its SHA, command, environment, result, known issues, and skips. |
 | E12 | Narrow correction | First authoritative run fails only on a bounded compile, test-fixture, or transient infrastructure problem before any safety scenario fails | Permit one focused correction and one replacement run; record the decision. |
 | E13 | Practical freeze | Acceptance scenarios pass, no P0/P1 remains, exact-head validation is green, and residual risk is P2 or lower | Mark the evaluation complete and present the merge gate. Do not keep searching for work. |
-| E14 | Reopen | New evidence shows immediate data loss, ambiguous destructive authority, a listed-scenario regression, or invalidated exact-head evidence | Reopen narrowly for that evidence. Reviewer preference, style, or hypothetical permutations do not reopen. |
+| E14 | Reopen | New evidence shows a P0/P1 failure mode (for example immediate data loss, ambiguous destructive authority, or a concurrency/persistence defect), a listed-scenario regression, or invalidated exact-head evidence | Reopen narrowly for that evidence. Reviewer preference, style, or hypothetical permutations do not reopen. |
 | E15 | Residual risk | Gap is missing permutation coverage or hardening with no demonstrated guard bypass | Record as P2 with an exact trigger; it does not block merge by default. |
 | E16 | Scope routing | A reproduced defect belongs to an adjacent layer or would destabilize a frozen PR | Create a narrowly scoped follow-up/stacked PR after its base is stable. Do not reopen or expand the frozen PR by default. |
 | E17 | Human smoke | A defined manual smoke scenario produces a reproducible failure | Treat it as acceptance evidence, classify P0–P3, and route it. Do not dismiss it because automation is green. |

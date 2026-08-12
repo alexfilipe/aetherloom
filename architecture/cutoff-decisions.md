@@ -315,3 +315,20 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Accept the freeze when the final documentation-only head is clean and equal across local/upstream/origin/PR state, one macOS CI run at that exact head passes the full suite, PR #12 remains CLEAN/MERGEABLE against the exact base, and no new P0/P1 evidence appears. Reopen only for a reproduced unplanned descendant move, permanent deletion, silent overwrite, deletion inferred from incomplete/unavailable truth, recovery ambiguity that authorizes mutation, a listed regression, invalidated exact-head CI, changed base, deterministic conflict-idempotence failure under CUT-017, or another evidenced P0/P1 defect.
 - Status: accepted
 - Resolving PR/SHA: PR #12; final documentation-only freeze commit and exact-head CI pending.
+
+## CUT-022 — Evaluation-loop framework refinement finish line
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): evaluation-loop documentation on branch `claude/orchestration-framework-review-07538f`; base `main` at `1f1b9e1202252f8c7b9c367b5c69e5aa383c0fcf`; final publication SHA pending.
+- Decision/cutoff: Refine the framework from a full documentation review without changing its structure or defaults: align cutoff E14's reopen triggers with the framework's "newly evidenced P0/P1" rule, name where Define artifacts are recorded, default severity disagreements to the higher class until resolved at a gate, add a `reopened` status to the durable-entry template, and link the framework and the two documented tracks it governs from the root README's layout and AI-first sections. Documentation-only, low risk: writer self-evaluation plus link checks; no subagents, no independent evaluation, no test run.
+- Reason and evidence: E14 as introduced enumerated only data loss, ambiguous destructive authority, scenario regression, and invalidated evidence, so a newly evidenced P1 concurrency/persistence defect would not have reopened a frozen PR despite the P1 class table requiring a block; the remaining gaps were unlinked or drift-prone cross-references found by inspecting every path the framework documents.
+- What was completed: The E14 alignment, Define-artifact locations, severity-disagreement default, `reopened` status, root-README and architecture-index cross-references, CUT-numbering guidance, and the CUT-009 collision re-designation below.
+- What was explicitly deferred: The `AGENTS.md`/`CLAUDE.md` mirror-drift guard, routed per user direction to PR [#19](https://github.com/alexfilipe/aetherloom/pull/19), which verifies parity with a pre-commit hook rather than a symlink so the check can be deleted when the two documents must diverge; runtime enforcement tooling for this framework; and any restructuring of the framework's sections.
+- Residual risk/severity: P3; procedural documentation refinement with no behavior change.
+- Exact revisit trigger or acceptance condition: Revisit if a recorded reopen shows the E14 wording still excludes a blocking finding class.
+- Status: proposed
+- Resolving PR/SHA: Pending publication of this documentation change.
+
+## ID-collision metadata appended 2026-08-12
+
+- CUT-009: The number was claimed twice on parallel branches: “Promote the cutoff log through PR #12” (first merged) and “Evaluation-loop framework finish line”. The first-merged promotion entry keeps CUT-009. The evaluation-loop framework finish-line entry is re-designated CUT-023 and should be cited as CUT-023 from now on; its recorded content is unchanged. Future entries claim the next number from the default branch's log at publication time per `architecture/orchestration/cutoffs/README.md`.

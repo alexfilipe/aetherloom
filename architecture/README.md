@@ -9,7 +9,7 @@ Canonical design documentation for Aetherloom, split by layer:
 | [providers/](providers/README.md) | Real storage-provider integrations — the track that moves the real-data boundary: the provider conformance suite, the local-folder/NAS provider, `WorkspaceEngineSession`, and later iCloud Drive and cloud backends. Work orders in [providers/agents/](providers/agents/README.md). |
 | [orchestration/](orchestration/README.md) | The evaluation-loop development framework for every feature and PR: define, implement, evaluate, decide; bounded subagents and reviews; practical merge cutoffs; writer/test locks; and durable [cutoff decisions](orchestration/cutoffs/README.md). |
 
-Reading order for newcomers: [core/00-overview.md](core/00-overview.md) first — the safety invariants there are the constitution for everything, including the UI — then either track's README.
+Reading order for newcomers: [core/00-overview.md](core/00-overview.md) first — the safety invariants there are the constitution for everything, including the UI — then any track's README.
 
 The tracks share two contracts: **the engine decides, the UI presents** (no sync rules in SwiftUI views; no UI concerns in `AetherloomCore`; the seam is specified in [ui/03-engine-session.md](ui/03-engine-session.md)), and **every real provider is held to the fake's contract** (the conformance suite in [providers/00-overview.md](providers/00-overview.md) is the merge gate for any backend the orchestrator composes).
 

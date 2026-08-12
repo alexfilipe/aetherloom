@@ -13,7 +13,7 @@ Append one copy of this entry to `architecture/cutoff-decisions.md` for each mat
 - What was explicitly deferred: <permutations, cleanup, follow-up work, or “none”>.
 - Residual risk/severity: <P0–P3 and concrete remaining risk>.
 - Exact revisit trigger or acceptance condition: <specific evidence that reopens work, or exact finish line still required>.
-- Status: proposed | accepted | deferred | superseded | resolved
+- Status: proposed | accepted | deferred | reopened | superseded | resolved
 - Resolving PR/SHA: <PR and exact SHA, or “none/pending”>.
 ```
 
@@ -24,6 +24,8 @@ When later evidence changes the decision, append metadata instead of rewriting i
 
 - CUT-<number>: <new evidence, status, resolving PR/SHA, and whether the original revisit trigger fired>.
 ```
+
+A reopen under E14 is recorded the same way: append metadata to the original entry with status `reopened` and the evidence that fired the revisit trigger, then append later resolution metadata when the reopened work closes.
 
 ## Evaluation-budget example
 
