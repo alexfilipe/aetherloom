@@ -12,7 +12,7 @@ This file defines the decision log, its pruning rules, the default cutoff catalo
 
 Material decisions go in [`DECISIONS.md`](DECISIONS.md) beside this policy, separate from work orders, implementation plans, and chat transcripts. Closed entries are retired from it; see [Pruning](#pruning) below.
 
-Decision content is durable: never revise a recorded rationale, scope, risk, evidence, or trigger after the fact — append resolution or supersession metadata instead. Durable does not mean permanently resident. An entry may be retired from the log and an open deferral may be distilled into a backlog line, because neither changes what was decided, and git keeps the entry verbatim regardless. What is forbidden is rewriting a decision, or dropping one whose work is unfinished.
+Decision content is durable: never revise a recorded rationale, scope, risk, evidence, or trigger after the fact — append resolution or supersession metadata instead. Durable does not mean permanently resident. An entry may be retired from the log and an open deferral may be summarized into a backlog row, because neither changes what was decided, and git keeps the entry verbatim regardless. What is forbidden is rewriting a decision, or dropping one whose work is unfinished.
 
 There is deliberately no archive file. Git already stores every retired entry immutably and retrieves it on request; a second copy in the repository would need hand-maintained byte-identity, and being greppable it would be read into context by the agents this log is kept short for.
 
