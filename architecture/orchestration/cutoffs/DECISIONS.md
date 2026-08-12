@@ -229,11 +229,11 @@ The policy governing these decisions, the default cutoff catalog, and the entry 
 
 - Date: 2026-08-12
 - PR/layer and exact relevant SHA(s): PR [#12](https://github.com/alexfilipe/aetherloom/pull/12), branch `claude/local-sync-work-order`; pre-merge integration head `dc7cde3d4df405bb52f1ecd5bb984ca0793c1e1a`; merged `main` head `26878abcdedfbfd009b9c1d13c789c722c5f1dc1`; common ancestor `23177b20c93820cda70b6e31c43f9d339e4050a0`.
-- Decision/cutoff: Merge current `main` into the PR #12 integration branch with a normal merge commit after explicit user authorization. Preserve both independently added cutoff-log histories verbatim, including their duplicated `CUT-009` identifiers, and document the collision here rather than resolving it during the merge. (The duplicate label was later corrected by renumbering the evaluation-loop framework entry to `CUT-023`; no decision content changed.)
+- Decision/cutoff: Merge current `main` into the PR #12 integration branch with a normal merge commit after explicit user authorization. Preserve both independently added cutoff-log histories verbatim, including their historically duplicated `CUT-009` identifiers, and document the collision here instead of renumbering or rewriting either entry.
 - Reason and evidence: PR #12 had become conflicting after PR #16 advanced `main`. The integration branch was clean and synchronized, no Swift workflow was active, and the only Git merge conflict was the add/add cutoff log.
 - What was completed: All code and framework-documentation changes from `main` were merged automatically. The sole cutoff-log conflict retained every entry from both sides and removed only Git conflict markers.
 - What was explicitly deferred: Any product-level conflict-idempotence correction, PR #18 target selection, conflict-thread resolution, PR #12 readiness/merge, and merge-result validation beyond static checks until the exact merge commit is published and macOS CI completes.
-- Residual risk/severity: Medium until exact-head macOS CI validates the combined branch. The duplicate `CUT-009` labels were a documentation ambiguity only, since titles and SHAs disambiguated them; the later label has since been renumbered to `CUT-023`.
+- Residual risk/severity: Medium until exact-head macOS CI validates the combined branch. The duplicate historical `CUT-009` labels are a documentation ambiguity only; titles and SHAs disambiguate them.
 - Exact revisit trigger or acceptance condition: Accept the integration only after `git diff --check`, ancestry/cleanliness verification, normal push, and one green exact-head macOS CI run. Reopen merge resolution only for a combined-branch regression or lost historical cutoff entry.
 - Status: accepted
 - Resolving PR/SHA: Merge commit and exact-head CI pending.
@@ -330,3 +330,7 @@ The policy governing these decisions, the default cutoff catalog, and the entry 
 - Exact revisit trigger or acceptance condition: Revisit if a recorded reopen shows the E14 wording still excludes a blocking finding class, if a rule is found stated in two documents again, or if a rule that existed before this change is found in neither.
 - Status: proposed
 - Resolving PR/SHA: Pending publication of this documentation change.
+
+## Renumbering metadata appended 2026-08-12
+
+- CUT-009 “Evaluation-loop framework finish line” is renumbered to CUT-023. Two branches claimed `CUT-009` in parallel; the first-merged entry, “Promote the cutoff log through PR #12”, keeps the number. Only the identifier and its one citation changed — the entry's date, SHAs, decision, reason, scope, deferrals, risk, trigger, and status are untouched. CUT-016 recorded the decision not to resolve the collision during that merge and is preserved verbatim; this supersedes it for the label alone. `CUT-009` was cited nowhere outside this log when the change was made.
