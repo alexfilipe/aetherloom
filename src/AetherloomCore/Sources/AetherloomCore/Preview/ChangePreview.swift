@@ -342,6 +342,8 @@ public struct ChangePreviewRenderer: Sendable {
             return "\(locationName(location, locations: locations)): \(reason.detail)"
         case let .scanIncomplete(location, detail):
             return "\(locationName(location, locations: locations)): \(detail)"
+        case let .evidenceUnavailable(location, path, detail):
+            return "\(locationName(location, locations: locations)) \(path.rawValue): \(detail)"
         case let .baseStateUnreadable(detail):
             return detail
         }
@@ -366,7 +368,9 @@ public struct ChangePreviewRenderer: Sendable {
 private extension RefusalReason {
     var locationID: LocationID? {
         switch self {
-        case let .locationUnavailable(location, _), let .scanIncomplete(location, _):
+        case let .locationUnavailable(location, _),
+             let .scanIncomplete(location, _),
+             let .evidenceUnavailable(location, _, _):
             return location
         case .baseStateUnreadable:
             return nil

@@ -195,7 +195,7 @@ import Testing
     #expect(overwriteCount(plan) == 0)
 }
 
-@Test func degradedHashEqualSizeAndMtimeProducesNoAction() async throws {
+@Test func degradedHashEqualSizeAndMtimeCannotProveConvergence() async throws {
     var capabilities = ProviderCapabilities.fullFidelity
     capabilities.hasContentHashes = false
     let syncSet = makeSyncSet([.localFolder, .nasFolder])
@@ -208,8 +208,9 @@ import Testing
 
     let plan = await makePlan(syncSet: syncSet, records: [record], providers: [local, nas])
 
-    #expect(plan.schedule.operations.isEmpty)
-    #expect(plan.conflicts.isEmpty)
+    #expect(plan.conflicts.count == 1)
+    #expect(conflictCopyCount(plan) == 2)
+    #expect(overwriteCount(plan) == 0)
 }
 
 @Test func iCloudPlaceholderDoesNotProduceDeleteActions() async throws {
@@ -759,12 +760,13 @@ import Testing
 @Test func versionComparisonMatrixTreatsUnknownAsNotEqual() {
     let baseDate = fixedDate
 
-    #expect(ItemVersion(contentHash: "a", size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(contentHash: "a", size: 2, modifiedAt: baseDate.addingTimeInterval(1), revisionToken: "2")) == .same)
+    #expect(ItemVersion(contentHash: "a", size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(contentHash: "a", size: 2, modifiedAt: baseDate.addingTimeInterval(1), revisionToken: "2")) == .strong)
     #expect(ItemVersion(contentHash: "a").comparison(to: ItemVersion(contentHash: "b")) == .different)
-    #expect(ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "2")) == .same)
+    #expect(ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "1").comparison(to: ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "2")) == .different)
     #expect(ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "sha256-a").comparison(to: ItemVersion(size: 1, modifiedAt: baseDate, revisionToken: "sha256-b")) == .different)
     #expect(ItemVersion(size: 1, modifiedAt: baseDate).comparison(to: ItemVersion(size: 2, modifiedAt: baseDate)) == .different)
-    #expect(ItemVersion(revisionToken: "1").comparison(to: ItemVersion(revisionToken: "1")) == .same)
+    #expect(ItemVersion(size: 1, modifiedAt: baseDate).comparison(to: ItemVersion(size: 1, modifiedAt: baseDate)) == .weak)
+    #expect(ItemVersion(revisionToken: "1").comparison(to: ItemVersion(revisionToken: "1")) == .weak)
     #expect(ItemVersion(revisionToken: "1").comparison(to: ItemVersion(revisionToken: "2")) == .different)
     #expect(ItemVersion(contentHash: "a").comparison(to: ItemVersion(revisionToken: "a")) == .unknown)
     #expect(ItemVersion().comparison(to: ItemVersion()) == .unknown)

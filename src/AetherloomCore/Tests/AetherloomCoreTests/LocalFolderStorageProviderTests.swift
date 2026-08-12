@@ -374,6 +374,196 @@ struct LocalFolderStorageProviderTests {
         #expect(snapshot.observations.byPath["/MetadataOnly.txt"]?.version.contentHash == nil)
     }
 
+    @Test func selectiveEvidenceUsesIncrementalSHA256WithoutChangingScanCapability() async throws {
+        let root = try makeRoot("selective-evidence-sha256")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data(repeating: 0x5a, count: ContentHashing.chunkSize * 2 + 17)
+        try bytes.write(to: root.appendingPathComponent("Large.bin"))
+        let provider = await makeProvider(
+            root: root,
+            inspector: ScriptedVolumeInspector()
+        )
+        let snapshot = await provider.scan(.entireDrive)
+        let weak = try #require(snapshot.observations.byPath["/Large.bin"])
+
+        let refined = try await provider.refineEvidence(for: weak)
+
+        #expect(provider.capabilities.hasContentHashes == false)
+        #expect(weak.version.contentHash == nil)
+        #expect(refined.version.contentHash == ContentHashing.hash(bytes))
+        #expect(refined.version.size == Int64(bytes.count))
+    }
+
+    @Test func timedOutEvidenceReadRetainsOwnedLeaseUntilHashPhysicallyCompletes() async throws {
+        let root = try makeRoot("evidence-timeout-owned-lease")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("lease".utf8).write(
+            to: root.appendingPathComponent("Lease.txt")
+        )
+        let clock = ProviderMutationManualClock()
+        let hasher = BlockingLocalFileHasher()
+        let hook = RecordingLocalMutationHook()
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            deadlines: ProviderDeadlines(
+                probeNanoseconds: 101,
+                scanNanoseconds: 102,
+                ioNanoseconds: 103,
+                clock: clock
+            ),
+            hashing: hasher,
+            mutationHook: hook,
+            registry: LocalRootIORegistry()
+        )
+        let snapshot = await provider.scan(.entireDrive)
+        await clock.waitUntilIdle()
+        let observation = try #require(
+            snapshot.observations.byPath["/Lease.txt"]
+        )
+        let evidenceTask = Task {
+            try await provider.refineEvidence(for: observation)
+        }
+        await hasher.waitUntilStarted()
+        await clock.waitUntilSleeping(nanoseconds: 103, count: 1)
+        await clock.fireAll()
+
+        await #expect(throws: ProviderError.self) {
+            _ = try await evidenceTask.value
+        }
+
+        let mutationTask = Task {
+            try await provider.makeFolder(at: "/After-Evidence")
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(hook.kinds().isEmpty)
+
+        hasher.release()
+        _ = try await mutationTask.value
+        #expect(hook.kinds() == [.makeFolder])
+    }
+
+    @Test func providerLastLineHashRejectsSameMetadataOverwriteDrift() async throws {
+        let root = try makeRoot("last-line-overwrite-hash")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("Destination.dat")
+        let modifiedAt = Date(timeIntervalSince1970: 1_800_000_100)
+        try Data("base".utf8).write(to: destination)
+        try FileManager.default.setAttributes(
+            [.modificationDate: modifiedAt],
+            ofItemAtPath: destination.path
+        )
+        let hook = SameMetadataDriftHook(
+            url: destination,
+            bytes: Data("drft".utf8),
+            modifiedAt: modifiedAt,
+            kind: .store
+        )
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: hook,
+            registry: LocalRootIORegistry()
+        )
+        let snapshot = await provider.scan(.entireDrive)
+        let weak = try #require(
+            snapshot.observations.byPath["/Destination.dat"]
+        )
+        let strong = try await provider.refineEvidence(for: weak)
+        let staged = root.appendingPathComponent("staged-outside-scope")
+        try Data("next".utf8).write(to: staged)
+
+        await #expect(throws: ProviderError.self) {
+            _ = try await provider.store(
+                from: staged,
+                at: strong.path,
+                options: StoreOptions(
+                    overwrite: .ifVersionMatches(strong.version)
+                )
+            )
+        }
+
+        #expect(try Data(contentsOf: destination) == Data("drft".utf8))
+    }
+
+    @Test func providerLastLineHashRejectsSameMetadataTrashDrift() async throws {
+        let root = try makeRoot("last-line-trash-hash")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("Trash.dat")
+        let modifiedAt = Date(timeIntervalSince1970: 1_800_000_200)
+        try Data("base".utf8).write(to: destination)
+        try FileManager.default.setAttributes(
+            [.modificationDate: modifiedAt],
+            ofItemAtPath: destination.path
+        )
+        let hook = SameMetadataDriftHook(
+            url: destination,
+            bytes: Data("drft".utf8),
+            modifiedAt: modifiedAt,
+            kind: .trash
+        )
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: hook,
+            registry: LocalRootIORegistry()
+        )
+        let snapshot = await provider.scan(.entireDrive)
+        let weak = try #require(snapshot.observations.byPath["/Trash.dat"])
+        let strong = try await provider.refineEvidence(for: weak)
+
+        await #expect(throws: ProviderError.self) {
+            try await provider.trash(strong)
+        }
+
+        #expect(try Data(contentsOf: destination) == Data("drft".utf8))
+        #expect(await provider.recoveryURL(for: strong.path) == nil)
+    }
+
+    @Test func providerLastLineHashRejectsSameMetadataRelocateDrift() async throws {
+        let root = try makeRoot("last-line-relocate-hash")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Source.dat")
+        let modifiedAt = Date(timeIntervalSince1970: 1_800_000_300)
+        try Data("base".utf8).write(to: source)
+        try FileManager.default.setAttributes(
+            [.modificationDate: modifiedAt],
+            ofItemAtPath: source.path
+        )
+        let provider = await LocalFolderStorageProvider.make(
+            location: localLocation(),
+            rootURL: root,
+            volumes: ScriptedVolumeInspector(),
+            mutationHook: SameMetadataDriftHook(
+                url: source,
+                bytes: Data("drft".utf8),
+                modifiedAt: modifiedAt,
+                kind: .relocate
+            ),
+            registry: LocalRootIORegistry()
+        )
+        let weak = try #require(
+            (await provider.scan(.entireDrive)).observations.byPath[
+                "/Source.dat"
+            ]
+        )
+        let strong = try await provider.refineEvidence(for: weak)
+
+        await #expect(throws: ProviderError.self) {
+            _ = try await provider.relocate(strong, to: "/Moved.dat")
+        }
+
+        #expect(try Data(contentsOf: source) == Data("drft".utf8))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("Moved.dat").path
+            )
+        )
+    }
+
     @Test func fetchRejectsSourceDriftBeforeCopy() async throws {
         let root = try makeRoot("fetch-source-drift")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -902,10 +1092,11 @@ struct LocalFolderStorageProviderTests {
                 options: StoreOptions(overwrite: .neverOverwrite)
             )
         }
-        let source = try #require(
+        let weakSource = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Source.txt"]
         )
+        let source = try await provider.refineEvidence(for: weakSource)
         await #expect(
             throws: ProviderError.itemAlreadyExists(
                 provider: provider.locationID,
@@ -937,10 +1128,11 @@ struct LocalFolderStorageProviderTests {
         await inspector.setVolumeIdentity("source-volume", at: sourceURL)
         await inspector.setVolumeIdentity("destination-volume", at: destinationFolder)
         let provider = await makeProvider(root: root, inspector: inspector)
-        let source = try #require(
+        let weakSource = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Source.txt"]
         )
+        let source = try await provider.refineEvidence(for: weakSource)
 
         let moved = try await provider.relocate(
             source,
@@ -978,10 +1170,11 @@ struct LocalFolderStorageProviderTests {
             volumes: inspector,
             relocation: relocation
         )
-        let source = try #require(
+        let weakSource = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Source.txt"]
         )
+        let source = try await provider.refineEvidence(for: weakSource)
         let destinationPath: SyncPath = "/Destination/Moved.txt"
 
         await #expect(
@@ -1034,10 +1227,11 @@ struct LocalFolderStorageProviderTests {
             volumes: inspector,
             relocation: relocation
         )
-        let source = try #require(
+        let weakSource = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Source.txt"]
         )
+        let source = try await provider.refineEvidence(for: weakSource)
         let destinationPath: SyncPath = "/Destination/Moved.txt"
 
         await #expect(
@@ -1082,10 +1276,11 @@ struct LocalFolderStorageProviderTests {
             [.modificationDate: repeatedModifiedAt],
             ofItemAtPath: sourceURL.path
         )
-        let first = try #require(
+        let weakFirst = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Document.txt"]
         )
+        let first = try await provider.refineEvidence(for: weakFirst)
         try await provider.trash(first)
         let firstRecovery = try #require(
             await provider.recoveryURL(for: first.path)
@@ -1096,10 +1291,11 @@ struct LocalFolderStorageProviderTests {
             [.modificationDate: repeatedModifiedAt],
             ofItemAtPath: sourceURL.path
         )
-        let second = try #require(
+        let weakSecond = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Document.txt"]
         )
+        let second = try await provider.refineEvidence(for: weakSecond)
         try await provider.trash(second)
         let secondRecovery = try #require(
             await provider.recoveryURL(for: second.path)
@@ -1124,10 +1320,11 @@ struct LocalFolderStorageProviderTests {
             rootURL: root,
             volumes: ScriptedVolumeInspector()
         )
-        let original = try #require(
+        let weakOriginal = try #require(
             (await firstProvider.scan(.entireDrive))
                 .observations.byPath["/Recoverable.txt"]
         )
+        let original = try await firstProvider.refineEvidence(for: weakOriginal)
         try await firstProvider.trash(original)
         let recoveryURL = try #require(
             await firstProvider.recoveryURL(for: original.path)
@@ -1165,10 +1362,11 @@ struct LocalFolderStorageProviderTests {
             rootURL: root,
             volumes: ScriptedVolumeInspector()
         )
-        let original = try #require(
+        let weakOriginal = try #require(
             (await firstProvider.scan(.entireDrive))
                 .observations.byPath["/Journaled.txt"]
         )
+        let original = try await firstProvider.refineEvidence(for: weakOriginal)
         let operationID = OperationID(
             UUID(uuidString: "aa000000-0000-0000-0000-000000000002")!
         )
@@ -1278,10 +1476,11 @@ struct LocalFolderStorageProviderTests {
             root: root,
             inspector: ScriptedVolumeInspector()
         )
-        let observation = try #require(
+        let weakObservation = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Keep.txt"]
         )
+        let observation = try await provider.refineEvidence(for: weakObservation)
 
         await #expect(
             throws: ProviderError.itemUnavailable(
@@ -1314,10 +1513,11 @@ struct LocalFolderStorageProviderTests {
             nativeTrash: AlwaysFailingNativeTrashPerformer()
         )
         #expect(provider.capabilities.hasNativeTrash)
-        let observation = try #require(
+        let weakObservation = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Fallback.txt"]
         )
+        let observation = try await provider.refineEvidence(for: weakObservation)
 
         try await provider.trash(observation)
         let recoveryURL = try #require(
@@ -1352,11 +1552,12 @@ struct LocalFolderStorageProviderTests {
                 outside: outside
             )
         )
-        let observation = try #require(
+        let weakObservation = try #require(
             (await provider.scan(.entireDrive)).observations.byPath[
                 "/Prepared.txt"
             ]
         )
+        let observation = try await provider.refineEvidence(for: weakObservation)
 
         await #expect(throws: ProviderError.self) {
             try await provider.trash(observation)
@@ -1415,11 +1616,13 @@ struct LocalFolderStorageProviderTests {
             trashReceiptPersistence: FailAfterFirstTrashReceiptPersister()
         )
         await clock.waitUntilIdle()
-        let observation = try #require(
+        let weakObservation = try #require(
             (await provider.scan(.entireDrive)).observations.byPath[
                 "/Prepared.txt"
             ]
         )
+        await clock.waitUntilIdle()
+        let observation = try await provider.refineEvidence(for: weakObservation)
         await clock.waitUntilIdle()
         let correlation = ProviderMutationCorrelation(
             runID: UUID(uuidString: "a3000000-0000-0000-0000-000000000003")!,
@@ -1453,6 +1656,9 @@ struct LocalFolderStorageProviderTests {
         #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
         #expect(FileManager.default.fileExists(atPath: nativeRecovery.path))
         #expect(await provider.indeterminateMutationReceipt() == receipt)
+        await #expect(throws: ProviderError.self) {
+            _ = try await provider.refineEvidence(for: observation)
+        }
 
         let syncSetID = UUID(
             uuidString: "a3000000-0000-0000-0000-000000000002"
@@ -1611,11 +1817,12 @@ struct LocalFolderStorageProviderTests {
             quarantine: ThrowWithoutMovingQuarantinePerformer(),
             mutationHook: hook
         )
-        let observation = try #require(
+        let weakObservation = try #require(
             (await provider.scan(.entireDrive)).observations.byPath[
                 "/Preserved.txt"
             ]
         )
+        let observation = try await provider.refineEvidence(for: weakObservation)
 
         await #expect(
             throws: ProviderError.itemUnavailable(
@@ -1781,11 +1988,13 @@ struct LocalFolderStorageProviderTests {
             trashReceiptPersistence: trashReceiptPersistence
         )
         await clock.waitUntilIdle()
-        let observation = try #require(
+        let weakObservation = try #require(
             (await provider.scan(.entireDrive)).observations.byPath[
                 "/Uncommitted.txt"
             ]
         )
+        await clock.waitUntilIdle()
+        let observation = try await provider.refineEvidence(for: weakObservation)
         await clock.waitUntilIdle()
 
         let operationID = OperationID(
@@ -2079,9 +2288,13 @@ struct LocalFolderStorageProviderTests {
                 precondition: .pathAbsent
             )
         case .replacementStore:
-            let existing = try #require(
+            let weakExisting = try #require(
                 initialSnapshot.observations.byPath[targetPath]
             )
+            let existing = try await provider.refineEvidence(
+                for: weakExisting
+            )
+            await clock.waitUntilIdle()
             let source = await remote.putFile(
                 path: "/ReplacementSource.txt",
                 contents: Data("replacement store".utf8),
@@ -2107,9 +2320,11 @@ struct LocalFolderStorageProviderTests {
         case .sameVolumeRelocate,
              .crossVolumePostCopy,
              .crossVolumePostTrash:
-            let source = try #require(
+            let weakSource = try #require(
                 initialSnapshot.observations.byPath["/RelocateSource.txt"]
             )
+            let source = try await provider.refineEvidence(for: weakSource)
+            await clock.waitUntilIdle()
             operation = AetherloomCore.Operation(
                 id: operationID,
                 location: location.id,
@@ -2371,9 +2586,10 @@ struct LocalFolderStorageProviderTests {
             ),
             registry: LocalRootIORegistry()
         )
-        let source = try #require(
+        let weakSource = try #require(
             (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
         )
+        let source = try await provider.refineEvidence(for: weakSource)
         let destinationPath: SyncPath = "/Destination/Moved.txt"
         let correlation = ProviderMutationCorrelation(
             runID: UUID(uuidString: "a6000000-0000-0000-0000-000000000001")!,
@@ -2492,10 +2708,11 @@ struct LocalFolderStorageProviderTests {
             mutationHook: hook,
             registry: LocalRootIORegistry()
         )
-        let source = try #require(
+        let weakSource = try #require(
             (await firstProvider.scan(.entireDrive))
                 .observations.byPath["/Source.txt"]
         )
+        let source = try await firstProvider.refineEvidence(for: weakSource)
         let destinationPath: SyncPath = "/Destination/Moved.txt"
         let operationID = OperationID(
             UUID(uuidString: "a6000000-0000-0000-0000-000000000013")!
@@ -2906,10 +3123,11 @@ struct LocalFolderStorageProviderTests {
             }
             return
         }
-        let observation = try #require(
+        let weakObservation = try #require(
             (await provider.scan(.entireDrive))
                 .observations.byPath["/Native.txt"]
         )
+        let observation = try await provider.refineEvidence(for: weakObservation)
         try await provider.trash(observation)
         let recoveryURL = try #require(
             await provider.recoveryURL(for: observation.path)
@@ -2936,21 +3154,29 @@ struct LocalFolderStorageProviderTests {
         let staging = root.appendingPathComponent("Staging.bin")
         try Data("first".utf8).write(to: staging)
 
-        let first = try await provider.store(
+        let firstStored = try await provider.store(
             from: staging,
             at: "/Owned.txt",
             options: StoreOptions()
         )
+        let first = try await provider.refineEvidence(for: firstStored)
         try Data("second".utf8).write(to: staging)
-        let replaced = try await provider.store(
+        let replacedStored = try await provider.store(
             from: staging,
             at: first.path,
             options: StoreOptions(overwrite: .ifVersionMatches(first.version))
         )
+        let replaced = try await provider.refineEvidence(for: replacedStored)
         _ = try await provider.makeFolder(at: "/Folder")
         let fetched = root.appendingPathComponent("Owned.fetch")
         try await provider.fetch(replaced, to: fetched)
-        let relocated = try await provider.relocate(replaced, to: "/Moved.txt")
+        let relocatedResult = try await provider.relocate(
+            replaced,
+            to: "/Moved.txt"
+        )
+        let relocated = try await provider.refineEvidence(
+            for: relocatedResult
+        )
         try await provider.trash(relocated)
 
         #expect(
@@ -3881,6 +4107,9 @@ struct LocalFolderStorageProviderTests {
             atPath: alias.path,
             withDestinationPath: firstRoot.path
         )
+        try Data("enrolled root".utf8).write(
+            to: firstRoot.appendingPathComponent("Evidence.txt")
+        )
 
         let registry = LocalRootIORegistry()
         let aliasHook = RecordingLocalMutationHook()
@@ -3907,6 +4136,11 @@ struct LocalFolderStorageProviderTests {
             volumes: ScriptedVolumeInspector(),
             registry: registry
         )
+        let enrolledObservation = try #require(
+            (await aliasProvider.scan(.entireDrive)).observations.byPath[
+                "/Evidence.txt"
+            ]
+        )
 
         try FileManager.default.removeItem(at: alias)
         try FileManager.default.createSymbolicLink(
@@ -3921,6 +4155,11 @@ struct LocalFolderStorageProviderTests {
         guard case .unavailable = (await aliasProvider.scan(.entireDrive)).status else {
             Issue.record("A retargeted enrolled symlink produced scan truth.")
             return
+        }
+        await #expect(throws: ProviderError.self) {
+            _ = try await aliasProvider.refineEvidence(
+                for: enrolledObservation
+            )
         }
         await #expect(throws: ProviderError.self) {
             _ = try await aliasProvider.makeFolder(at: "/Escaped")
@@ -4402,9 +4641,10 @@ struct LocalFolderStorageProviderTests {
             quarantine: quarantine,
             registry: LocalRootIORegistry()
         )
-        let source = try #require(
+        let weakSource = try #require(
             (await provider.scan(.entireDrive)).observations.byPath["/Source.txt"]
         )
+        let source = try await provider.refineEvidence(for: weakSource)
 
         let receipt: ProviderMutationReceipt
         do {
@@ -5511,6 +5751,87 @@ private final class RecordingLocalMutationHook:
 
     func kinds() -> [ProviderMutationKind] {
         lock.withLock { recorded }
+    }
+}
+
+private final class BlockingLocalFileHasher:
+    LocalFileHashing,
+    @unchecked Sendable
+{
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+
+    func hashFile(
+        at url: URL,
+        chunkSize: Int
+    ) throws -> (hash: String, size: Int64) {
+        condition.lock()
+        started = true
+        condition.broadcast()
+        while !released {
+            condition.wait()
+        }
+        condition.unlock()
+        #expect(chunkSize == ContentHashing.chunkSize)
+        return try ContentHashing.hashFile(at: url)
+    }
+
+    func waitUntilStarted() async {
+        while !hasStarted() {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private func hasStarted() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return started
+    }
+}
+
+private final class SameMetadataDriftHook:
+    LocalMutationStarting,
+    @unchecked Sendable
+{
+    private let url: URL
+    private let bytes: Data
+    private let modifiedAt: Date
+    private let kind: ProviderMutationKind
+    private let lock = NSLock()
+    private var didMutate = false
+
+    init(
+        url: URL,
+        bytes: Data,
+        modifiedAt: Date,
+        kind: ProviderMutationKind
+    ) {
+        self.url = url
+        self.bytes = bytes
+        self.modifiedAt = modifiedAt
+        self.kind = kind
+    }
+
+    func beforeMutation(_ receipt: ProviderMutationReceipt) throws {
+        let shouldMutate = lock.withLock { () -> Bool in
+            guard !didMutate, receipt.kind == kind else { return false }
+            didMutate = true
+            return true
+        }
+        guard shouldMutate else { return }
+        try bytes.write(to: url)
+        try FileManager.default.setAttributes(
+            [.modificationDate: modifiedAt],
+            ofItemAtPath: url.path
+        )
     }
 }
 

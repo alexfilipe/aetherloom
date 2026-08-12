@@ -15,6 +15,21 @@ public protocol StorageProvider: Sendable {
     func relocate(_ observation: ItemObservation, to newPath: SyncPath) async throws -> ItemObservation
     func trash(_ observation: ItemObservation) async throws
     func currentState(of observation: ItemObservation) async throws -> ItemObservation
+    func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation
+}
+
+public extension StorageProvider {
+    func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
+        let current = try await currentState(of: observation)
+        guard current.kind != .file || current.version.hasStrongEvidence else {
+            throw ProviderError.evidenceUnavailable(
+                provider: locationID,
+                path: observation.path,
+                reason: "The provider could not supply strong content evidence."
+            )
+        }
+        return current
+    }
 }
 
 public struct ProviderMutationIdentity: Codable, Hashable, Sendable {
@@ -324,6 +339,7 @@ public enum ProviderError: Error, Equatable, Sendable {
     case notFound(provider: LocationID, path: SyncPath)
     case itemAlreadyExists(provider: LocationID, path: SyncPath)
     case preconditionFailed(provider: LocationID, path: SyncPath)
+    case evidenceUnavailable(provider: LocationID, path: SyncPath, reason: String)
     case unsupported(provider: LocationID, reason: String)
     /// The mutation never received permission to start, so no side effect is
     /// possible from this attempt.

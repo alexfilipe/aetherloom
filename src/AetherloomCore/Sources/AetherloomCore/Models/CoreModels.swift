@@ -215,7 +215,8 @@ public enum ItemKind: Codable, Hashable, Sendable {
 }
 
 public enum VersionComparison: Codable, Hashable, Sendable {
-    case same
+    case strong
+    case weak
     case different
     case unknown
 }
@@ -240,29 +241,60 @@ public struct ItemVersion: Codable, Hashable, Sendable {
 
     public func comparison(to other: ItemVersion) -> VersionComparison {
         if let contentHash, let otherHash = other.contentHash {
-            return contentHash == otherHash ? .same : .different
+            return contentHash == otherHash ? .strong : .different
         }
-        if let revisionToken,
-           let otherRevisionToken = other.revisionToken,
-           revisionToken.hasPrefix("sha256-"),
-           otherRevisionToken.hasPrefix("sha256-") {
-            return revisionToken == otherRevisionToken ? .same : .different
+        if contentHash != nil {
+            if let size, let otherSize = other.size, size != otherSize {
+                return .different
+            }
+            return .unknown
         }
-        if let size, let modifiedAt, let otherSize = other.size, let otherModifiedAt = other.modifiedAt {
-            return size == otherSize && modifiedAt == otherModifiedAt ? .same : .different
+        if other.contentHash != nil {
+            if let size, let otherSize = other.size, size != otherSize {
+                return .different
+            }
+            if let size,
+               let modifiedAt,
+               let otherSize = other.size,
+               let otherModifiedAt = other.modifiedAt,
+               size == otherSize,
+               modifiedAt == otherModifiedAt {
+                return .weak
+            }
+            return .unknown
         }
         if let revisionToken, let otherRevisionToken = other.revisionToken {
-            return revisionToken == otherRevisionToken ? .same : .different
+            let matches = revisionToken == otherRevisionToken
+            if revisionToken.hasPrefix("sha256-"),
+               otherRevisionToken.hasPrefix("sha256-") {
+                return matches ? .strong : .different
+            }
+            return matches ? .weak : .different
+        }
+        if let size, let modifiedAt, let otherSize = other.size, let otherModifiedAt = other.modifiedAt {
+            return size == otherSize && modifiedAt == otherModifiedAt ? .weak : .different
+        }
+        if let size, let otherSize = other.size, size != otherSize {
+            return .different
         }
         return .unknown
     }
 
     public func itemChanged(vs base: ItemVersion) -> Bool {
-        comparison(to: base) != .same
+        switch comparison(to: base) {
+        case .strong, .weak:
+            return false
+        case .different, .unknown:
+            return true
+        }
     }
 
     public func isSameVersion(as other: ItemVersion) -> Bool {
-        comparison(to: other) == .same
+        comparison(to: other) == .strong
+    }
+
+    public var hasStrongEvidence: Bool {
+        contentHash != nil || revisionToken?.hasPrefix("sha256-") == true
     }
 }
 

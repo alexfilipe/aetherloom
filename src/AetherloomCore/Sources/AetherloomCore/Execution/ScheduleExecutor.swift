@@ -723,10 +723,19 @@ public struct ScheduleExecutor: Sendable {
         let existing = matchingBaseRecord(decision: decision, observations: observations, baseRecords: baseRecords)
         let now = environment.now()
         let kind = observations.sorted { $0.location < $1.location }.first?.kind ?? existing?.kind ?? .file
-        let version = observations.first(where: { !$0.isTrashed && !$0.isFolder })?.version
+        let observedVersion = observations.first(where: { !$0.isTrashed && !$0.isFolder })?.version
             ?? observations.first(where: { !$0.isTrashed })?.version
             ?? existing?.version
             ?? ItemVersion()
+        let version: ItemVersion
+        if kind == .file,
+           !observedVersion.hasStrongEvidence,
+           let existingVersion = existing?.version,
+           existingVersion.hasStrongEvidence {
+            version = existingVersion
+        } else {
+            version = observedVersion
+        }
         let path = observations.first(where: { !$0.isTrashed })?.path
             ?? existing?.path
             ?? decision.path
@@ -803,7 +812,26 @@ public struct ScheduleExecutor: Sendable {
 
         case let .transfer(content, path, _):
             do {
-                let current = try await provider.currentState(of: ItemObservation(location: operation.location, path: path, kind: content.kind))
+                let destinationExpectation: ItemObservation
+                if case let .versionMatches(expected) = operation.precondition {
+                    destinationExpectation = ItemObservation(
+                        location: operation.location,
+                        path: path,
+                        kind: content.kind,
+                        version: expected
+                    )
+                } else {
+                    destinationExpectation = ItemObservation(
+                        location: operation.location,
+                        path: path,
+                        kind: content.kind,
+                        version: content.expectedVersion
+                    )
+                }
+                let current = try await stronglyRecheckedState(
+                    of: destinationExpectation,
+                    provider: provider
+                )
                 if matchingContent(current.version, content.expectedVersion) {
                     return .alreadySatisfied(current)
                 }
@@ -821,9 +849,17 @@ public struct ScheduleExecutor: Sendable {
 
         case let .relocate(itemRef, newPath):
             do {
-                let current = try await provider.currentState(of: itemRef.observation)
+                let current = try await stronglyRecheckedState(
+                    of: itemRef.observation,
+                    provider: provider
+                )
                 if current.path == newPath {
-                    return .alreadySatisfied(current)
+                    return matchingObservationVersion(
+                        current,
+                        itemRef.observation
+                    ) ? .alreadySatisfied(current) : .preconditionMismatch(
+                        itemRef.path
+                    )
                 }
                 return matchingObservationVersion(current, itemRef.observation) ? .needsApply : .preconditionMismatch(itemRef.path)
             } catch ProviderError.notFound {
@@ -832,9 +868,17 @@ public struct ScheduleExecutor: Sendable {
 
         case let .trash(itemRef):
             do {
-                let current = try await provider.currentState(of: itemRef.observation)
+                let current = try await stronglyRecheckedState(
+                    of: itemRef.observation,
+                    provider: provider
+                )
                 if current.isTrashed {
-                    return .alreadySatisfied(current)
+                    return matchingObservationVersion(
+                        current,
+                        itemRef.observation
+                    ) ? .alreadySatisfied(current) : .preconditionMismatch(
+                        itemRef.path
+                    )
                 }
                 return matchingObservationVersion(current, itemRef.observation) ? .needsApply : .preconditionMismatch(itemRef.path)
             } catch ProviderError.notFound {
@@ -874,7 +918,7 @@ public struct ScheduleExecutor: Sendable {
                 let staged = try await stage.materialize(content, from: source)
                 materialized = staged
                 let stored = try await provider.store(from: staged.url, at: path, options: StoreOptions(overwrite: overwrite))
-                let verified = try await provider.currentState(of: stored)
+                let verified = try await provider.refineEvidence(for: stored)
                 guard verified.kind == content.kind, !verified.isTrashed else {
                     return .failed("Stored item kind could not be verified at \(path.rawValue).")
                 }
@@ -906,10 +950,28 @@ public struct ScheduleExecutor: Sendable {
 
         case let .relocate(itemRef, newPath):
             do {
-                let current = try await provider.currentState(of: itemRef.observation)
+                let current = try await stronglyRecheckedState(
+                    of: itemRef.observation,
+                    provider: provider
+                )
+                guard matchingObservationVersion(
+                    current,
+                    itemRef.observation
+                ) else {
+                    return .stoppedForReplan(itemRef.path)
+                }
                 let relocated = try await provider.relocate(current, to: newPath)
-                let verified = try await provider.currentState(of: relocated)
-                guard verified.path == newPath, !verified.isTrashed else {
+                var relocatedExpectation = relocated
+                relocatedExpectation.version = itemRef.expectedVersion
+                let verified = itemRef.kind == .file
+                    ? try await provider.refineEvidence(for: relocatedExpectation)
+                    : try await provider.currentState(of: relocated)
+                guard verified.path == newPath,
+                      !verified.isTrashed,
+                      matchingObservationVersion(
+                          verified,
+                          relocatedExpectation
+                      ) else {
                     return .failed("Relocate verification failed at \(newPath.rawValue).")
                 }
                 return .applied(verified, staged: nil)
@@ -927,7 +989,16 @@ public struct ScheduleExecutor: Sendable {
 
         case let .trash(itemRef):
             do {
-                let current = try await provider.currentState(of: itemRef.observation)
+                let current = try await stronglyRecheckedState(
+                    of: itemRef.observation,
+                    provider: provider
+                )
+                guard matchingObservationVersion(
+                    current,
+                    itemRef.observation
+                ) else {
+                    return .stoppedForReplan(itemRef.path)
+                }
                 try await provider.trash(current)
                 let verified = try await provider.currentState(of: current)
                 guard verified.isTrashed else {
@@ -953,6 +1024,19 @@ public struct ScheduleExecutor: Sendable {
             throw ScheduleExecutionError.missingProvider(id)
         }
         return provider
+    }
+
+    private func stronglyRecheckedState(
+        of expected: ItemObservation,
+        provider: any StorageProvider
+    ) async throws -> ItemObservation {
+        let current = try await provider.currentState(of: expected)
+        guard expected.kind == .file,
+              expected.version.hasStrongEvidence,
+              !current.isTrashed else {
+            return current
+        }
+        return try await provider.refineEvidence(for: current)
     }
 
     private func appendActivity(

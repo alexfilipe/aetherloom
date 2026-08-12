@@ -980,6 +980,44 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: staged.url.path))
 }
 
+@Test func weakStageKeysNeverReusePinnedStaleBytes() async throws {
+    var capabilities = ProviderCapabilities.fullFidelity
+    capabilities.hasContentHashes = false
+    let source = FakeStorageProvider(
+        locationID: .googleDrive,
+        capabilities: capabilities
+    )
+    let firstObservation = await source.putFile(
+        path: "/Weak-Key.dat",
+        contents: Data("first".utf8),
+        modifiedAt: phase06Date
+    )
+    var weakRef = ContentRef(firstObservation)
+    weakRef.expectedVersion.revisionToken = nil
+    let stage = ContentStage(
+        rootDirectory: try temporaryDirectory("phase06-weak-stage-key"),
+        byteLimit: 10_000_000
+    )
+
+    let first = try await stage.materialize(weakRef, from: source)
+    _ = await source.putFile(
+        path: firstObservation.path,
+        contents: Data("other".utf8),
+        modifiedAt: phase06Date,
+        itemID: firstObservation.itemID
+    )
+    let second = try await stage.materialize(weakRef, from: source)
+
+    #expect(first.url != second.url)
+    #expect(try Data(contentsOf: first.url) == Data("first".utf8))
+    #expect(try Data(contentsOf: second.url) == Data("other".utf8))
+    let fetches = await source.callLog().filter { $0.operation == .fetch }
+    #expect(fetches.count == 2)
+
+    await stage.release(first)
+    await stage.release(second)
+}
+
 @Test func baseRecordUpdatesLandBeforeRunFinished() async throws {
     let recorder = EventRecorder()
     let baseRecords = RecordingBaseRecordStore(delegate: InMemoryBaseRecordStore(), recorder: recorder)

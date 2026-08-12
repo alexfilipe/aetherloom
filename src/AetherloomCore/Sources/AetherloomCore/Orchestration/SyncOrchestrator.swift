@@ -103,26 +103,49 @@ public actor SyncOrchestrator {
 
         try Task.checkCancellation()
         await appendStage("Scan", syncSetID: syncSet.id, runID: runID, started: true)
-        let snapshots = await scan(syncSet)
+        var snapshots = await scan(syncSet)
         await appendStage("Scan", syncSetID: syncSet.id, runID: runID, started: false)
 
         try Task.checkCancellation()
         await appendStage("Plan", syncSetID: syncSet.id, runID: runID, started: true)
         let baseRead = await baseRecords(for: syncSet.id)
         let resolvedConflicts = try await stores.conflicts.resolvedConflicts(for: syncSet.id)
-        let outcome = SyncPlanner().plan(
-            SyncPlanningInput(
-                syncSet: syncSet,
-                locations: locationsFor(syncSet),
-                records: baseRead.records,
-                snapshots: snapshots,
-                settings: syncSet.settings,
-                baseStateUnreadableDetail: baseRead.unreadableDetail,
-                resolvedConflicts: resolvedConflicts
-            ),
-            environment: planningEnvironment()
+        var outcome = plan(
+            syncSet,
+            snapshots: snapshots,
+            baseRead: baseRead,
+            resolvedConflicts: resolvedConflicts
         )
         await appendStage("Plan", syncSetID: syncSet.id, runID: runID, started: false)
+
+        if case .plan = outcome {
+            try Task.checkCancellation()
+            await appendStage("Evidence", syncSetID: syncSet.id, runID: runID, started: true)
+            do {
+                (snapshots, outcome) = try await refineEvidenceUntilSafe(
+                    for: syncSet,
+                    snapshots: snapshots,
+                    initialOutcome: outcome,
+                    baseRead: baseRead,
+                    resolvedConflicts: resolvedConflicts
+                )
+            } catch let failure as EvidenceRefinementFailure {
+                outcome = .refusal(
+                    SyncRefusal(
+                        syncSetID: syncSet.id,
+                        reasons: [
+                            .evidenceUnavailable(
+                                failure.location,
+                                path: failure.path,
+                                detail: failure.detail
+                            )
+                        ],
+                        occurredAt: environment.now()
+                    )
+                )
+            }
+            await appendStage("Evidence", syncSetID: syncSet.id, runID: runID, started: false)
+        }
 
         try Task.checkCancellation()
         return try await finishPreparation(outcome, syncSet: syncSet, runID: runID, baseRecords: baseRead.records)
@@ -314,6 +337,107 @@ public actor SyncOrchestrator {
         } catch {
             return ([], baseStateUnreadableDetail(syncSetID: syncSetID, error: error))
         }
+    }
+
+    private func plan(
+        _ syncSet: SyncSet,
+        snapshots: [LocationSnapshot],
+        baseRead: (records: [BaseRecord], unreadableDetail: String?),
+        resolvedConflicts: [ConflictResolutionRecord]
+    ) -> PlanOutcome {
+        SyncPlanner().plan(
+            SyncPlanningInput(
+                syncSet: syncSet,
+                locations: locationsFor(syncSet),
+                records: baseRead.records,
+                snapshots: snapshots,
+                settings: syncSet.settings,
+                baseStateUnreadableDetail: baseRead.unreadableDetail,
+                resolvedConflicts: resolvedConflicts
+            ),
+            environment: planningEnvironment()
+        )
+    }
+
+    private func refineEvidenceUntilSafe(
+        for syncSet: SyncSet,
+        snapshots initialSnapshots: [LocationSnapshot],
+        initialOutcome: PlanOutcome,
+        baseRead: (records: [BaseRecord], unreadableDetail: String?),
+        resolvedConflicts: [ConflictResolutionRecord]
+    ) async throws -> ([LocationSnapshot], PlanOutcome) {
+        var snapshots = initialSnapshots
+        var outcome = initialOutcome
+        var refinedKeys: Set<EvidenceTargetKey> = []
+
+        while case let .plan(currentPlan) = outcome {
+            let targets = evidenceTargets(
+                for: currentPlan,
+                snapshots: snapshots
+            ).filter { !refinedKeys.contains($0.key) }
+            guard !targets.isEmpty else {
+                if let unsafe = evidenceTargets(
+                    for: currentPlan,
+                    snapshots: snapshots
+                ).first {
+                    throw EvidenceRefinementFailure(
+                        location: unsafe.observation.location,
+                        path: unsafe.observation.path,
+                        detail: "A content-displacing operation still lacks strong version evidence."
+                    )
+                }
+                return (snapshots, outcome)
+            }
+
+            for target in targets.sorted(by: evidenceTargetSort) {
+                try Task.checkCancellation()
+                guard let provider = providers[target.observation.location] else {
+                    throw EvidenceRefinementFailure(
+                        location: target.observation.location,
+                        path: target.observation.path,
+                        detail: "The provider is missing."
+                    )
+                }
+                let refined: ItemObservation
+                do {
+                    refined = try await provider.refineEvidence(
+                        for: target.observation
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw EvidenceRefinementFailure(
+                        location: target.observation.location,
+                        path: target.observation.path,
+                        detail: String(describing: error)
+                    )
+                }
+                guard refined.location == target.observation.location,
+                      refined.path == target.observation.path,
+                      refined.kind == target.observation.kind,
+                      refined.version.hasStrongEvidence else {
+                    throw EvidenceRefinementFailure(
+                        location: target.observation.location,
+                        path: target.observation.path,
+                        detail: "The provider returned incomplete or mismatched evidence."
+                    )
+                }
+                snapshots = replacingObservation(
+                    target.observation,
+                    with: refined,
+                    in: snapshots
+                )
+                refinedKeys.insert(target.key)
+            }
+
+            outcome = plan(
+                syncSet,
+                snapshots: snapshots,
+                baseRead: baseRead,
+                resolvedConflicts: resolvedConflicts
+            )
+        }
+        return (snapshots, outcome)
     }
 
     private func locationsFor(_ syncSet: SyncSet) -> [SyncLocation] {
@@ -633,6 +757,114 @@ public actor SyncOrchestrator {
     }
 }
 
+private struct EvidenceTargetKey: Hashable, Sendable {
+    var location: LocationID
+    var itemID: String?
+    var path: SyncPath
+}
+
+private struct EvidenceTarget: Hashable, Sendable {
+    var key: EvidenceTargetKey
+    var observation: ItemObservation
+
+    init(_ observation: ItemObservation) {
+        self.key = EvidenceTargetKey(
+            location: observation.location,
+            itemID: observation.itemID,
+            path: observation.path
+        )
+        self.observation = observation
+    }
+}
+
+private struct EvidenceRefinementFailure: Error, Sendable {
+    var location: LocationID
+    var path: SyncPath
+    var detail: String
+}
+
+private func evidenceTargets(
+    for plan: SyncPlan,
+    snapshots: [LocationSnapshot]
+) -> [EvidenceTarget] {
+    var targets: [EvidenceTargetKey: EvidenceTarget] = [:]
+
+    func add(_ observation: ItemObservation) {
+        guard observation.kind == .file,
+              !observation.version.hasStrongEvidence else {
+            return
+        }
+        let target = EvidenceTarget(observation)
+        targets[target.key] = target
+    }
+
+    func destinationObservation(
+        location: LocationID,
+        path: SyncPath
+    ) -> ItemObservation? {
+        guard let snapshot = snapshots.first(where: { $0.location == location }) else {
+            return nil
+        }
+        return snapshot.observations.byPath[path]
+            ?? snapshot.observations.byCaseFoldedPath[path.caseInsensitiveKey]
+    }
+
+    for operation in plan.schedule.operations {
+        switch operation.kind {
+        case let .transfer(content, path, overwrite):
+            guard case .ifVersionMatches = overwrite else { continue }
+            add(content.observation)
+            if let destination = destinationObservation(
+                location: operation.location,
+                path: path
+            ) {
+                add(destination)
+            }
+
+        case let .relocate(itemRef, _), let .trash(itemRef):
+            add(itemRef.observation)
+
+        case .makeFolder:
+            break
+        }
+    }
+    return Array(targets.values)
+}
+
+private func replacingObservation(
+    _ expected: ItemObservation,
+    with refined: ItemObservation,
+    in snapshots: [LocationSnapshot]
+) -> [LocationSnapshot] {
+    snapshots.map { snapshot in
+        guard snapshot.location == expected.location else { return snapshot }
+        let observations = snapshot.observations.all.map { candidate in
+            let sameItem = expected.itemID != nil
+                && candidate.itemID == expected.itemID
+            return sameItem || candidate.path == expected.path
+                ? refined
+                : candidate
+        }
+        return LocationSnapshot(
+            location: snapshot.location,
+            scope: snapshot.scope,
+            observations: observations,
+            status: snapshot.status,
+            scannedAt: snapshot.scannedAt
+        )
+    }
+}
+
+private func evidenceTargetSort(
+    _ lhs: EvidenceTarget,
+    _ rhs: EvidenceTarget
+) -> Bool {
+    if lhs.observation.location != rhs.observation.location {
+        return lhs.observation.location < rhs.observation.location
+    }
+    return lhs.observation.path < rhs.observation.path
+}
+
 private struct AdvisoryAnnotations: Sendable {
     var advice: [ConflictAdvice] = []
     var triageNotes: [HoldTriageNote] = []
@@ -751,7 +983,9 @@ private extension SyncOrchestrator {
 private extension RefusalReason {
     var locationID: LocationID? {
         switch self {
-        case let .locationUnavailable(location, _), let .scanIncomplete(location, _):
+        case let .locationUnavailable(location, _),
+             let .scanIncomplete(location, _),
+             let .evidenceUnavailable(location, _, _):
             return location
         case .baseStateUnreadable:
             return nil
@@ -764,6 +998,8 @@ private extension RefusalReason {
             return reason.detail
         case let .scanIncomplete(_, detail):
             return detail
+        case let .evidenceUnavailable(_, path, detail):
+            return "\(path.rawValue): \(detail)"
         case let .baseStateUnreadable(detail):
             return detail
         }
