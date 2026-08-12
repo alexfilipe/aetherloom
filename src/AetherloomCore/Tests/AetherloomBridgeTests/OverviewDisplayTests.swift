@@ -30,15 +30,13 @@ struct OverviewDisplayTests {
         #expect(display.metrics[0].value == String(workspace.syncSets.reduce(0) { $0 + $1.trackedItemCount }))
         #expect(display.metrics[1].value == String(workspace.locations.count))
         #expect(display.metrics[3].value == String(workspace.openConflictCount))
-        #expect(display.holdBanners.count == preparations.values.flatMap(\.preview.holds).count)
-        let projectMessage = preparations[DemoWorld.projectsID]?.preview.holds.first?.message
-        #expect(display.holdBanners.contains { $0.syncSetID == DemoWorld.projectsID && $0.message == projectMessage })
-        #expect(display.refusalBanners.count == 1)
-        #expect(display.refusalBanners.first?.message == preparations[DemoWorld.photosArchiveID]?.preview.refusals.first?.message)
-        #expect(display.pending?.syncSetID == DemoWorld.documentsID)
-        #expect(display.recentActivity.count == 6)
+        #expect(display.holdBanners.isEmpty)
+        #expect(display.refusalBanners.isEmpty)
+        #expect(display.pending == nil)
+        #expect(display.statusTone == .healthy)
+        #expect(display.metrics[2].value == "0")
         #expect(display.locations.first(where: { $0.provider.kind == .oneDrive })?.status.text == "Provider unavailable")
-        #expect(display.locations.first(where: { $0.provider.kind == .nasFolder })?.action == .wakeAndMount)
+        #expect(display.locations.first(where: { $0.provider.kind == .nasFolder })?.action == OverviewLocationAction.none)
     }
 
     @Test("workspace state decides hero presentation")

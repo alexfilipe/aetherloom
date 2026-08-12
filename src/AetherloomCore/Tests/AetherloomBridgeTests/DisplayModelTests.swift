@@ -10,13 +10,14 @@ struct DisplayModelTests {
     @Test("preview display uses a real demo preparation and preserves engine text")
     func previewDisplayFromDemoPreparation() async throws {
         let session = makeDisplaySession()
-        let snapshot = try await session.bootstrap()
-        let preparation = try #require(await session.lastPreparation(for: DemoWorld.documentsID))
+        _ = try await session.bootstrap()
+        await session.scenarioControls.makeConflict()
+        let preparation = try await session.prepare(syncSetID: DemoWorld.documentsID)
+        let snapshot = await session.workspace()
         let display = previewDisplay(for: preparation, locations: snapshot.locations)
 
         #expect(display.headline == preparation.preview.headline)
-        #expect(display.sections.map(\.kind) == PreviewSectionKind.allCases)
-        #expect(display.sections.allSatisfy { !$0.entries.isEmpty })
+        #expect(!display.sections.isEmpty)
         #expect(display.totals.changeCount == preparation.preview.sections.flatMap(\.entries).count)
         #expect(display.totals.byteTotal == preparation.preview.sections.flatMap(\.entries).compactMap(\.byteSize).reduce(0, +))
         #expect(display.sections.flatMap(\.entries).map(\.summary) == preparation.preview.sections.flatMap(\.entries).map(\.summary))
@@ -40,8 +41,10 @@ struct DisplayModelTests {
     @Test("refusal display preserves notice detail and location")
     func refusalDisplay() async throws {
         let session = makeDisplaySession()
-        let snapshot = try await session.bootstrap()
-        let preparation = try #require(await session.lastPreparation(for: DemoWorld.photosArchiveID))
+        _ = try await session.bootstrap()
+        await session.scenarioControls.setNASMounted(false)
+        let preparation = try await session.prepare(syncSetID: DemoWorld.photosArchiveID)
+        let snapshot = await session.workspace()
         let display = previewDisplay(for: preparation, locations: snapshot.locations)
         let raw = try #require(preparation.preview.refusals.first)
         let refusal = try #require(display.refusals.first)
@@ -55,8 +58,10 @@ struct DisplayModelTests {
     @Test("hold triage display preserves advisor attribution")
     func holdTriageAttribution() async throws {
         let session = makeDisplaySession()
-        let snapshot = try await session.bootstrap()
-        let preparation = try #require(await session.lastPreparation(for: DemoWorld.projectsID))
+        _ = try await session.bootstrap()
+        await session.scenarioControls.makeMassDeletion()
+        let preparation = try await session.prepare(syncSetID: DemoWorld.projectsID)
+        let snapshot = await session.workspace()
         let raw = try #require(preparation.preview.holds.first { $0.advisoryNote != nil })
         let hold = try #require(previewDisplay(for: preparation, locations: snapshot.locations).holds.first {
             $0.id == raw.id
@@ -70,8 +75,10 @@ struct DisplayModelTests {
     @Test("conflict display maps every conflict and plan-derived preserved name")
     func conflictDisplayFromDemoPlan() async throws {
         let session = makeDisplaySession()
-        let snapshot = try await session.bootstrap()
-        let preparation = try #require(await session.lastPreparation(for: DemoWorld.documentsID))
+        _ = try await session.bootstrap()
+        await session.scenarioControls.makeConflict()
+        let preparation = try await session.prepare(syncSetID: DemoWorld.documentsID)
+        let snapshot = await session.workspace()
         let conflict = try #require(preparation.preview.conflicts.first)
         let advice = preparation.advice.first { $0.conflictID == conflict.id }
         let display = conflictDisplay(

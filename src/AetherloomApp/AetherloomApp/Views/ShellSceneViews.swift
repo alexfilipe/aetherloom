@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 struct AetherloomCommands: Commands {
-    var appModel: AppModel
+    @ObservedObject var appModel: AppModel
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -47,12 +47,10 @@ struct AetherloomCommands: Commands {
 
         if appModel.isDemoSession {
             CommandMenu("Demo") {
-                Button(appModel.oneDriveIsReachable
-                       ? "Make OneDrive Unreachable"
-                       : "Make OneDrive Reachable") {
+                Button(appModel.oneDriveDemoActionTitle) {
                     Task { await appModel.performDemoAction(.toggleOneDrive) }
                 }
-                Button(appModel.nasIsMounted ? "Unmount NAS “Tank”" : "Mount NAS “Tank”") {
+                Button(appModel.nasDemoActionTitle) {
                     Task { await appModel.performDemoAction(.toggleNAS) }
                 }
                 Divider()

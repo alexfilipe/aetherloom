@@ -344,6 +344,9 @@ public struct ScheduleExecutor: Sendable {
         guard !plan.gate.isClear else {
             return false
         }
+        guard plan.gate.permitsApproval else {
+            throw ScheduleExecutionError.planNeedsReview
+        }
         guard let approval else {
             throw ScheduleExecutionError.planNeedsReview
         }

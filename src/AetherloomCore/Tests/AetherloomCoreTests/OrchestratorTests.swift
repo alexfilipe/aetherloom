@@ -273,7 +273,7 @@ import Testing
     let preview = try await orchestrator.prepare(syncSet).preview
     let evidence = try #require(preview.holds.compactMap(\.evidence).first)
 
-    #expect(preview.headline == "Needs review")
+    #expect(preview.headline == "Paused for safety")
     #expect(preview.holds.map(\.message).contains(ActivityMessageCatalog.manyDeletions))
     #expect(evidence.groups == [ChangeGroup(ancestor: "/Photos/2019", intentCount: 3)])
 }

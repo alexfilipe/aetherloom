@@ -299,6 +299,13 @@ struct RunResultToast: View {
                 tone = .attention
             }
         }
+
+        init(recovery entry: ActivityEntry) {
+            runID = entry.runID ?? entry.id
+            title = "Interrupted run checked"
+            detail = "The old schedule was not resumed. Aetherloom preserved the safest state — see Activity"
+            tone = .healthy
+        }
     }
 
     var model: Model

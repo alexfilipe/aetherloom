@@ -197,7 +197,7 @@ public struct ChangePreviewRenderer: Sendable {
 
     private func headline(for plan: SyncPlan) -> String {
         if !plan.gate.isClear {
-            return "Needs review"
+            return plan.gate.permitsApproval ? "Needs review" : "Paused for safety"
         }
         let count = plan.decisions.count
         return count == 1 ? "1 change ready to sync" : "\(count) changes ready to sync"

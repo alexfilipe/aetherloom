@@ -145,7 +145,7 @@ public actor SyncOrchestrator {
             return SyncRunSummary(runID: preparation.runID, syncSetID: syncSetID, outcome: .refused)
 
         case let .plan(plan):
-            if !plan.gate.isClear, approval == nil {
+            if !plan.gate.isClear, approval == nil || !plan.gate.permitsApproval {
                 await logHolds(plan.gate.holdReasons, syncSetID: syncSetID, runID: preparation.runID)
                 await appendActivity(
                     syncSetID: syncSetID,

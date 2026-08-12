@@ -53,6 +53,10 @@ struct PreviewChangesSheet: View {
         display.sections.count == 1 && display.sections.first?.kind == .waiting
     }
 
+    private var isPausedBySafetyHold: Bool {
+        !display.holds.isEmpty && display.approvalRequirement == nil
+    }
+
     private var anotherRunIsActive: Bool {
         !isExecuting && !isRefreshing && appModel.isBusy(syncSetID: preparation.preview.syncSetID)
     }
@@ -296,6 +300,16 @@ struct PreviewChangesSheet: View {
     private var footer: some View {
         if isRefusal || anotherRunIsActive || isEmptyPlan {
             closeOnlyFooter
+        } else if isPausedBySafetyHold {
+            HStack {
+                Label("Paused for safety", systemImage: "shield.lefthalf.filled")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Tone.paused.color)
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(20)
         } else if isWaitingOnly {
             HStack {
                 Text("These files can sync after their content finishes downloading.")

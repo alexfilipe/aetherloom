@@ -387,12 +387,12 @@ private struct DemoSettingsPane: View {
                     .background(Theme.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
 
                     demoAction(
-                        appModel.oneDriveIsReachable ? "Make OneDrive Unreachable" : "Make OneDrive Reachable",
+                        appModel.oneDriveDemoActionTitle,
                         detail: "Change the fake provider’s availability and observe the next safety check.",
                         action: .toggleOneDrive
                     )
                     demoAction(
-                        appModel.nasIsMounted ? "Unmount NAS “Tank”" : "Mount NAS “Tank”",
+                        appModel.nasDemoActionTitle,
                         detail: "Change the fake NAS mount state without touching a real volume.",
                         action: .toggleNAS
                     )
