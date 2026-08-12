@@ -115,6 +115,12 @@ The ground rules are simple:
 - Sync logic goes in `src/AetherloomCore` with tests, never in SwiftUI views.
 - Run `swift test --package-path src/AetherloomCore` before submitting changes.
 
+Enable the repository's hooks once per clone so staged changes are checked before they commit:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 Start with [architecture/core/README.md](architecture/core/README.md) for how the engine fits together, or [architecture/ui/README.md](architecture/ui/README.md) for the app's UI design.
 
 ## Contact
