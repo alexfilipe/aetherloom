@@ -191,3 +191,16 @@ This append-only log records deliberate scope decisions. Existing entries remain
 - Exact revisit trigger or acceptance condition: Freeze at the corrected exact head; publish draft PR #17 only if the one authorized run is green and all SHA, ancestry, cleanliness, and PR relationship checks pass. A red result ends work unpublished.
 - Status: accepted
 - Resolving PR/SHA: Corrected commit, final CI run, and draft PR #17 URL pending.
+
+## CUT-015 — Verify hash-backed revision tokens at staging
+
+- Date: 2026-08-12
+- PR/layer and exact relevant SHA(s): draft PR [#17](https://github.com/alexfilipe/aetherloom/pull/17), strong-version evidence; prior frozen head `d7c0910d149fa25b030f28f2d29f04d55ffaf394`; prior exact-head macOS CI [run 31554154719](https://github.com/alexfilipe/aetherloom/actions/runs/31554154719).
+- Decision/cutoff: Correct only the independent P1 finding that hash-token-only evidence could authorize staging without comparing fetched bytes. Treat `sha256-` revision tokens as strong only when followed by exactly 64 hexadecimal digits, normalize the parsed digest for comparison, and require ContentStage's bounded SHA-256 result to match that digest before any destination mutation.
+- Reason and evidence: The prior run passed 324 tests in 8 suites with 0 failures, 9 known issues, and 1 opt-in skip, but its staging check consulted only `contentHash`. A corrupt or truncated fetch under a hash-token-only expected version could therefore reach canonical storage without proving the staged bytes matched the token.
+- What was completed: Strict revision-token parsing, token-backed staged-byte verification, malformed-token strength coverage, and a deterministic corrupt-fetch executor regression that requires zero destination mutations.
+- What was explicitly deferred: Every unrelated production change, review thread or PR metadata mutation, cleanup, refactor, exhaustive token/provider permutations, and any new synchronization layer.
+- Residual risk/severity: Low after a green exact-head macOS run; providers using malformed or non-SHA revision tokens remain weak and must refine or fail closed at destructive authority boundaries.
+- Exact revisit trigger or acceptance condition: Accept only if focused token/staging coverage and the full package suite pass on the one new exact head, static safety audits pass, and exactly one clear-queue macOS CI run succeeds. The immutable tested SHA and CI URL belong in the frozen report because appending them afterward would create a different, untested head.
+- Status: accepted
+- Resolving PR/SHA: Pending the focused correction commit and its single exact-head macOS CI run.

@@ -773,6 +773,34 @@ import Testing
     #expect(ItemVersion(contentHash: "a").isSameVersion(as: ItemVersion(revisionToken: "a")) == false)
 }
 
+@Test func sha256RevisionTokenRequiresCompleteHexDigest() {
+    let lowercase = "sha256-" + String(repeating: "a5", count: 32)
+    let uppercase = "sha256-" + String(repeating: "A5", count: 32)
+
+    #expect(ItemVersion(revisionToken: lowercase).sha256RevisionHash == lowercase)
+    #expect(ItemVersion(revisionToken: uppercase).sha256RevisionHash == lowercase)
+    #expect(ItemVersion(revisionToken: lowercase).hasStrongEvidence)
+    #expect(
+        ItemVersion(revisionToken: lowercase).comparison(
+            to: ItemVersion(revisionToken: uppercase)
+        ) == .strong
+    )
+
+    for malformed in [
+        "sha256-",
+        "sha256-a",
+        "sha256-" + String(repeating: "a", count: 63),
+        "sha256-" + String(repeating: "a", count: 65),
+        "sha256-" + String(repeating: "g", count: 64),
+        "SHA256-" + String(repeating: "a", count: 64),
+    ] {
+        let version = ItemVersion(revisionToken: malformed)
+        #expect(version.sha256RevisionHash == nil)
+        #expect(!version.hasStrongEvidence)
+        #expect(version.comparison(to: version) == .weak)
+    }
+}
+
 private func makeSyncSet(_ locations: [LocationID] = [.iCloudDrive, .googleDrive, .oneDrive]) -> SyncSet {
     SyncSet(
         name: "Documents",

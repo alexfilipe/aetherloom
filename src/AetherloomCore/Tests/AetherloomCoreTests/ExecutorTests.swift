@@ -72,6 +72,64 @@ import Testing
     #expect(errors.contains { $0.message == ActivityMessageCatalog.verificationFailed })
 }
 
+@Test func hashTokenOnlyMismatchFailsBeforeDestinationMutation() async throws {
+    let sourceBase = FakeStorageProvider(locationID: .googleDrive)
+    let source = CorruptFetchProvider(
+        base: sourceBase,
+        replacement: Data("corrupt".utf8)
+    )
+    let destination = FakeStorageProvider(locationID: .oneDrive)
+    let truth = Data("hash-token truth".utf8)
+    var sourceItem = await sourceBase.putFile(
+        path: "/HashToken.txt",
+        contents: truth,
+        modifiedAt: phase06Date
+    )
+    sourceItem.version.contentHash = nil
+    sourceItem.version.revisionToken = ContentHashing.hash(truth)
+    let transfer = operation(
+        "000000000211",
+        location: .oneDrive,
+        kind: .transfer(
+            content: ContentRef(sourceItem),
+            to: sourceItem.path,
+            overwrite: .neverOverwrite
+        ),
+        precondition: .pathAbsent
+    )
+    let stores = EngineStores.inMemory()
+    let executor = try executor(
+        providerMap: [.googleDrive: source, .oneDrive: destination],
+        stores: stores,
+        name: "hash-token-mismatch"
+    )
+
+    let summary = try await executor.execute(
+        planForOperations([transfer], path: sourceItem.path),
+        runID: uuid("000000000212")
+    )
+    let errors = await stores.activity.entries(
+        matching: ActivityQuery(categories: [.error], limit: 10)
+    )
+    let destinationMutations: Set<FakeProviderOperation> = [
+        .store,
+        .makeFolder,
+        .relocate,
+        .trash,
+    ]
+
+    #expect(sourceItem.version.contentHash == nil)
+    #expect(sourceItem.version.hasStrongEvidence)
+    #expect(summary.failedOperations.count == 1)
+    #expect(await destination.item(at: sourceItem.path) == nil)
+    #expect(errors.contains { $0.message == ActivityMessageCatalog.verificationFailed })
+    #expect(
+        await destination.callLog().allSatisfy {
+            !destinationMutations.contains($0.operation)
+        }
+    )
+}
+
 @Test func postWriteVerificationFailureIsRecordedAndRunContinues() async throws {
     let source = FakeStorageProvider(locationID: .googleDrive)
     let destinationBase = FakeStorageProvider(locationID: .oneDrive)
@@ -1385,7 +1443,8 @@ private actor CorruptFetchProvider: StorageProvider {
     }
 
     func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
-        try await base.fetch(observation, to: stagingURL)
+        let current = try await base.currentState(of: observation)
+        try await base.fetch(current, to: stagingURL)
         try replacement.write(to: stagingURL)
     }
 

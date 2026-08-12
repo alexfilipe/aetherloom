@@ -350,7 +350,9 @@ private func materializeEntry(
         try await provider.fetch(ref.observation, to: temporaryURL)
         let evidence = try ContentHashing.hashFile(at: temporaryURL)
         let actualHash = evidence.hash
-        if let expectedHash = ref.expectedVersion.contentHash, expectedHash != actualHash {
+        let expectedHash = ref.expectedVersion.contentHash
+            ?? ref.expectedVersion.sha256RevisionHash
+        if let expectedHash, expectedHash != actualHash {
             try? FileManager.default.removeItem(at: temporaryURL)
             throw ContentStageError.hashMismatch(path: ref.path, expected: expectedHash, actual: actualHash)
         }

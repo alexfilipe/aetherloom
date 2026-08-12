@@ -263,12 +263,12 @@ public struct ItemVersion: Codable, Hashable, Sendable {
             }
             return .unknown
         }
+        if let revisionHash = sha256RevisionHash,
+           let otherRevisionHash = other.sha256RevisionHash {
+            return revisionHash == otherRevisionHash ? .strong : .different
+        }
         if let revisionToken, let otherRevisionToken = other.revisionToken {
             let matches = revisionToken == otherRevisionToken
-            if revisionToken.hasPrefix("sha256-"),
-               otherRevisionToken.hasPrefix("sha256-") {
-                return matches ? .strong : .different
-            }
             return matches ? .weak : .different
         }
         if let size, let modifiedAt, let otherSize = other.size, let otherModifiedAt = other.modifiedAt {
@@ -294,7 +294,24 @@ public struct ItemVersion: Codable, Hashable, Sendable {
     }
 
     public var hasStrongEvidence: Bool {
-        contentHash != nil || revisionToken?.hasPrefix("sha256-") == true
+        contentHash != nil || sha256RevisionHash != nil
+    }
+
+    public var sha256RevisionHash: String? {
+        guard let revisionToken,
+              revisionToken.hasPrefix("sha256-") else {
+            return nil
+        }
+        let digest = revisionToken.dropFirst("sha256-".count)
+        guard digest.utf8.count == 64,
+              digest.utf8.allSatisfy({ byte in
+                  (byte >= 48 && byte <= 57)
+                      || (byte >= 65 && byte <= 70)
+                      || (byte >= 97 && byte <= 102)
+              }) else {
+            return nil
+        }
+        return "sha256-" + digest.lowercased()
     }
 }
 
