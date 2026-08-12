@@ -118,6 +118,8 @@ A third complete-diff evaluation is not part of the default loop. It requires ex
 
 After the finish line is met, freeze the PR. Reopen only for a newly evidenced P0/P1 issue, a listed-scenario regression, loss of exact-head validation, or a changed base that invalidates the evidence.
 
+In catalog terms: run a second fresh evaluation only under E09, do not run a third without the E10 exception, and once E13 fires reopen only under E14.
+
 ## Roles and boundaries
 
 ### Writer
@@ -139,7 +141,7 @@ Use a subagent only for an independent question whose answer can shorten or de-r
 - **Explorer:** maps relevant code paths, invariants, state transitions, and failure modes with file-and-line evidence.
 - **Test Designer:** maps acceptance criteria to current coverage and proposes the smallest proving regression set.
 
-Subagents do not edit, publish, mutate GitHub state, acquire the writer lock, or recursively create agents.
+Subagents do not edit, publish, mutate GitHub state, acquire the writer lock, run a locked shared test suite, or recursively create agents. A subagent stops once every assigned question has a cited answer, or once two consecutive passes reveal no new relevant path, invariant, or risk (E04). Test design stops once every acceptance criterion has its smallest proving scenario plus only the necessary recovery or concurrency variant.
 
 ## Triggering bounded subagents
 
@@ -225,9 +227,23 @@ Stop at the first failure that requires code changes. Resume after the fix from 
 
 One narrow correction and one replacement authoritative run are allowed when a first exact-head run fails for a clearly bounded compile error, test-fixture error, or transient infrastructure problem and no behavioral safety scenario failed. Broader or repeated failure returns to the normal correction loop and may require a new cutoff decision.
 
-Reuse prior evidence only when the exact head SHA and relevant code, tests, toolchain, environment, and command inputs are unchanged. Never report skipped or unavailable validation as passed.
+Reuse prior evidence only when the exact head SHA and relevant code, tests, toolchain, environment, and command inputs are unchanged. “Previously green” without provenance is not reusable evidence. Never report skipped or unavailable validation as passed.
 
 Integrating a new base into the branch changes the head and therefore invalidates prior exact-head evidence, even when the merge is clean and conflict-free. Run one fresh authoritative run at the integrated head and record both the new base and that head. This is required revalidation, not the reassurance rerun E11 forbids.
+
+## Human evaluation and follow-up routing
+
+A Mac smoke test, hardware test, or other user-observed result is part of the evaluation loop when the acceptance plan names it. Reserve the test lock while the human test is active if it shares fixed state with automation. A reproducible manual failure is acceptance evidence: classify it P0–P3 and route it rather than dismissing it because automation is green (E17).
+
+If smoke testing reveals an adjacent defect after the core PR is otherwise frozen:
+
+1. reproduce and classify the defect;
+2. keep the validated core PR frozen unless the defect violates its acceptance contract;
+3. route the fix to the narrowest owning layer;
+4. use a stacked follow-up PR when that preserves scope and evidence;
+5. evaluate the follow-up against the observed scenarios rather than repeating the entire parent review.
+
+This is how new evidence moves the product forward without restarting every prior evaluation.
 
 ## Locks
 
@@ -241,7 +257,7 @@ Integrating a new base into the branch changes the head and therefore invalidate
 
 Cutoffs are part of the evaluation loop, not an escape from it. They define when evidence is enough, what is intentionally deferred, and exactly what would reopen the work.
 
-Record material cutoff decisions in a file separate from work orders and implementation plans. Everything about cutoffs lives in [`cutoffs/`](cutoffs/README.md): the policy and defaults in [`cutoffs/README.md`](cutoffs/README.md), the entry template in [`cutoffs/TEMPLATE.md`](cutoffs/TEMPLATE.md), and the project's append-only decision log in [`cutoffs/DECISIONS.md`](cutoffs/DECISIONS.md).
+Record material cutoff decisions in a file separate from work orders and implementation plans. Everything about cutoffs lives in [`cutoffs/`](cutoffs/README.md): the policy, default catalog, and entry format in [`cutoffs/README.md`](cutoffs/README.md), and the project's append-only decision log in [`cutoffs/DECISIONS.md`](cutoffs/DECISIONS.md).
 
 At minimum, add or update a durable decision when:
 
@@ -267,4 +283,4 @@ A feature or PR is ready for its merge approval gate when:
 - the branch is frozen and locks are released;
 - the cutoff decision log states the finish line and disposition.
 
-Exhaustive permutations, unrelated cleanup, broad documentation polish, and additional full reviews are not implicit merge requirements.
+Exhaustive permutations, unrelated cleanup, broad documentation polish, and additional full reviews are not implicit merge requirements. Neither are stylistic comments, speculative refactors, or a preference for a different design once the accepted contract is met.
