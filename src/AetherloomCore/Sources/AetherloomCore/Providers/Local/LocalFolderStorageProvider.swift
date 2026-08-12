@@ -2625,7 +2625,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         ) async throws {
             try await requireCurrentRootIdentity()
             do {
-                _ = try matchingCurrentState(of: source)
+                _ = try await matchingCurrentState(of: source)
             } catch {
                 throw ProviderError.mutationIndeterminate(mutationReceipt)
             }
@@ -2659,7 +2659,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 throw ProviderError.mutationIndeterminate(mutationReceipt)
             }
             do {
-                _ = try matchingCurrentState(of: source)
+                _ = try await matchingCurrentState(of: source)
             } catch {
                 throw ProviderError.mutationIndeterminate(mutationReceipt)
             }
