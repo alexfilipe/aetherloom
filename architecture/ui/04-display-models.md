@@ -85,12 +85,14 @@ public struct PreviewDisplay: Sendable, Hashable {
                                                      // per-entry: path, summary, causality, destination chips, size
     public var totals: PreviewTotals                 // per-kind counts + byte total
     public var confirmationRequirement: ConfirmationRequirement? // nil for refusal or non-approvable hold
+    public var canReviewIntentionalDeletions: Bool   // true only for ordinary massDeletion
 }
 
 public struct ConfirmationRequirement: Sendable, Hashable {
     public var fingerprint: PlanFingerprint
     public var trashCount: Int          // == plan.approvalTrashCount
     public var conflictCount: Int       // == plan.approvalConflictCount
+    public var executionAuthorityExpiresAt: Date? // reviewed-plan display ceiling; not bearer authority
 }
 
 public func previewDisplay(for preparation: SyncPreparation, locations: [LocationState]) -> PreviewDisplay
@@ -100,7 +102,7 @@ public func makeConfirmation(
 ) -> WorkspaceExecutionConfirmation
 ```
 
-`previewDisplay` emits a requirement exactly for executable preparations: `gate == .clear`, or `gate == .hold && gate.permitsApproval`. A hold containing `massDeletion` emits no requirement even when it also contains approvable reasons. `makeConfirmation` is the **only** execution-authority constructor in the UI stack. It takes the fingerprint and exact counts from the plan-derived requirement, so the UI cannot confirm a plan or counts it did not show. Every nonzero count must be acknowledged before this constructor is called; clear does not imply zero counts. It sets the confirmation/expiry window (15 minutes); the sheet surfaces “Confirmation expires…” from `expiresAt`. Only the bridge derives a core `PlanApproval?`.
+`previewDisplay` emits a requirement for an otherwise executable preparation: `gate == .clear`, or `gate == .hold && gate.permitsApproval`. An ordinary hold containing `massDeletion` emits no requirement even when it also contains approvable reasons; it alone sets `canReviewIntentionalDeletions`, which exposes a review intent rather than execution authority. An exact-match `reviewedMassDeletion` preparation emits a requirement for its distinct reviewed fingerprint, exact counts, and display-only reservation expiry ceiling. The opaque reservation itself never enters a display model, and the reviewed plan/requirement is not authority without the core-owned live reservation. `makeConfirmation` is the **only** confirmation constructor in the UI stack. It takes the fingerprint and exact counts from the plan-derived requirement, so the UI cannot confirm a plan or counts it did not show. Every nonzero count must be acknowledged before this constructor is called; clear does not imply zero counts. It sets `expiresAt` to 15 minutes after confirmation, capped by `executionAuthorityExpiresAt` when present; an already-expired ceiling creates no confirmation. The sheet surfaces “Confirmation expires in 15 minutes” or a countdown from the effective `expiresAt`. Only the bridge derives a core `PlanApproval?`, and only core consumes a reservation.
 
 ## 5. Conflict display
 
@@ -138,4 +140,4 @@ One `DisplayFormatting` namespace: relative dates ("2 minutes ago", `now`-inject
 
 ## 8. Testing (see [12-testing-strategy.md](12-testing-strategy.md))
 
-Every function above gets table-driven Swift Testing coverage in `AetherloomBridgeTests`, including: tone matrix over all `LocationUnavailabilityReason` cases; status-line priority; clear/no-count; clear/nonzero-trash acknowledgement; approvable hold with exact acknowledgements; non-approvable `massDeletion`; mixed hold containing `massDeletion`; `makeConfirmation` fingerprint/time/expiry/count fidelity; and preview display against a real `SyncPreparation` produced by the demo world (not hand-built fixtures).
+Every function above gets table-driven Swift Testing coverage in `AetherloomBridgeTests`, including: tone matrix over all `LocationUnavailabilityReason` cases; status-line priority; clear/no-count; clear/nonzero-trash acknowledgement; approvable hold with exact acknowledgements; ordinary non-approvable `massDeletion` with review intent only; mixed ordinary `massDeletion`; reviewed mass deletion with a distinct fingerprint, exact-count confirmation, and capped authority expiry; already-expired reviewed authority creates no confirmation; `makeConfirmation` fingerprint/time/expiry/count fidelity; and preview display against a real `SyncPreparation` produced by the demo world (not hand-built fixtures).

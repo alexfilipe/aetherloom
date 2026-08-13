@@ -43,7 +43,7 @@ One run of one sync set. Stages 1–5 are read-only against providers; nothing m
 7 REPORT        activity entries throughout; run summary at the end           [08]
 ```
 
-A **refusal** means *no plan exists*. A **hold** means a plan and its evidence exist, but execution is stopped. Some holds are approvable; a hold containing `massDeletion` is not. A non-approvable hold exposes preview evidence but no confirmation or execution path. It remains stopped until the user changes the underlying files or sync configuration and explicitly prepares a fresh executable plan. This is still a hold, not a refusal. Making refusal and hold different types — instead of a `.pause` sentinel action inside the plan, as the historical scaffold did — keeps their evidence and recovery paths explicit.
+A **refusal** means *no plan exists*. A **hold** means a plan and its evidence exist, but execution is stopped. Some holds are approvable; an ordinary hold containing `massDeletion` is not. It exposes preview evidence but no confirmation or execution path. An intentional large deletion becomes reachable only through the distinct **Review intentional deletions** flow: a single-use, expiring review authorization triggers a fresh prepare, which must reproduce the exact original plan and deletion evidence before it can emit a distinct reviewed plan and atomically install a separate in-memory, expiring, one-shot execution reservation. That reviewed plan still needs normal exact-count confirmation, and core consumes the matching live reservation before constructing an executor; the reviewed value alone is not authority. A durable evidence latch prevents threshold edits from bypassing that review. This is still a hold, not a refusal. Making refusal and hold different types — instead of a `.pause` sentinel action inside the plan, as the historical scaffold did — keeps their evidence and recovery paths explicit.
 
 ## Layering
 
@@ -94,6 +94,8 @@ Engine-emitted user-facing strings use these verbatim; the UI adds detail beneat
 - Preferred phrases: "Preview changes", "Move to trash", "Needs review", "Paused for safety", "Both versions preserved", "Provider unavailable".
 
 (Refusals and holds both render as "Paused for safety" to users; the distinction is architectural, not linguistic.)
+
+For an ordinary `massDeletion` hold, “review” in the canonical sentence means the explicit **Review intentional deletions** flow in [04 §4](04-planning-and-gating.md#4-gating), not ordinary confirmation and not a persistent threshold edit. The original held plan remains non-approvable throughout that flow.
 
 ## Relationship to the current code
 

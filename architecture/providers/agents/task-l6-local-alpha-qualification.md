@@ -6,7 +6,7 @@ Qualify, but do not expand, the integrated Local Workspace MVP. Begin only after
 
 ## Exact scope
 
-- Re-run the targeted local safety, persistence, bridge, startup, relaunch, recovery, package/metadata, overlap, conflict, pause, and deletion-to-trash suites against the exact integrated head.
+- Re-run the targeted local safety, persistence, bridge, startup, relaunch, recovery, package/metadata, realistic exclusion-volume, overlap, conflict, pause, one-shot reviewed-mass-deletion, latch, and deletion-to-trash suites against the exact integrated head.
 - Run the complete Swift suite, configured app build, startup guardrail, and a user-performed disposable-folder local-alpha script.
 - Produce a release-gate evidence record with exact SHA, commands, environments, results, artifacts, known skips, accepted P2 risks/triggers, and go/no-go decision.
 

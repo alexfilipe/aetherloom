@@ -21,9 +21,9 @@ Deterministic: inject `EngineEnvironment(now:makeID:)` with a stepped clock and 
 
 **Demo world & session**
 
-- Bootstrap produces exactly the scripted state: 4 sync sets with expected phases/tones; Documents preparation has all six section kinds; Projects has a non-approvable `massDeletion` hold with evidence but no execution authority; Photos Archive a `volumeNotMounted` refusal.
-- Converging pass leaves real `BaseRecord`s (spot-check counts); second Documents run after approval is empty (idempotence through the seam).
-- Confirmation/gate matrix: clear/no-count enables immediately; clear/nonzero-trash requires acknowledgement; approvable hold requires exact acknowledgements; non-approvable `massDeletion` and a mixed hold containing it construct no confirmation and make zero executor calls; changing reality/settings still requires an explicit fresh prepare. Executable cases prove `makeConfirmation` fingerprint/counts == plan, time/expiry enforcement, held `PlanApproval` derivation, and clear internal `nil` only after confirmation validation.
+- Bootstrap produces exactly the scripted state: 4 sync sets with expected phases/tones; Documents preparation has all six section kinds; Projects has an ordinary non-approvable `massDeletion` hold with evidence and review intent but no confirmation/execution authority; Photos Archive a `volumeNotMounted` refusal.
+- Converging pass leaves real `BaseRecord`s (spot-check counts); second Documents run after confirmation is empty (idempotence through the seam).
+- Confirmation/gate matrix: clear/no-count enables immediately; clear/nonzero-trash requires acknowledgement; approvable hold requires exact acknowledgements; ordinary non-approvable `massDeletion` and a mixed hold containing it construct no confirmation and make zero executor calls. Exact threshold control/preference/update tests pin delete `1...25`/`0.01...0.25` and edit `1...50`/`0.01...0.50`; an allowed in-range increase leaves matching latched evidence held. **Review intentional deletions** performs a fresh prepare and exact original-fingerprint/evidence/counts/sync-set/settings/world match; different generated IDs, display/scan timestamps, and enumeration order with identical semantics reproduce the unreviewed fingerprint, while semantic drift changes it. Exact match atomically exchanges the single-use authorization for an opaque expiring non-persistent reservation bound to the distinct reviewed fingerprint/run/preparation. Reviewed plans still require normal exact counts and an effective expiry capped by that reservation. Missing/expired/reused/relaunch-lost/wrong-fingerprint/wrong-run/wrong-preparation reservation cases return held/rejected and assert zero executor construction/calls. Executable cases prove `makeConfirmation` fingerprint/counts == plan, time/expiry enforcement, held `PlanApproval` derivation, and clear internal `nil` only after confirmation validation.
 - Late-drift presentation: one earlier operation applies, a later operation returns `stoppedForReplan`; summary/activity retains the applied operation, excludes the stopped operation from applied results, and renders the exact operation/location copy without promising rollback.
 - Pause: paused set skipped by scan-all; `prepare` on it throws `syncSetPaused`.
 - Conflict loop: resolve `.makeCanonical` → next run converges → fake contents match the chosen version → conflict closed.
@@ -53,13 +53,13 @@ A ten-minute pass exercising what automation can't judge — feel, wording, appe
 
 1. Launch → branded loading → Overview matches [05 acceptance] in light *and* dark mode.
 2. Documents: Preview → acknowledge → Sync Now → toast → Activity run group complete.
-3. Projects: review mass-deletion evidence; verify execution is unavailable; change the demo reality/settings; explicitly prepare a fresh executable plan before any later sync.
+3. Projects: inspect the ordinary mass-deletion evidence; verify execution is unavailable; choose **Review intentional deletions**; verify the fresh reviewed fingerprint/live-reservation/count acknowledgement/confirmation path, then repeat with changed evidence, expired review, and an attempted above-ceiling threshold update to prove all fail closed.
 4. Photos Archive: refusal is calm; Demo ▸ Mount NAS → next scan clears it.
 5. Conflict: advice expand → dismiss → choose version → next sync converges.
 6. Interrupted-run scenario → recovery entry.
 7. New sync set wizard end-to-end; delete it.
 8. Settings: advice toggle off/on; placeholder sweep — every 🎭 control labeled and inert.
-9. Keyboard-only approval pass; VoiceOver spot-check on Overview and the approval sheet.
+9. Keyboard-only confirmation pass; VoiceOver spot-check on Overview and the confirmation sheet.
 10. Reduce Motion on: mesh frozen, no hover lift.
 
 For any change to `AetherloomAppApp`, `ContentView`, `AppModel`, scene declarations, or menu-bar behavior, run the startup smoke pass before the full manual script. The bridge tests can prove `DemoEngineSession` bootstraps; only the built app can prove SwiftUI scene startup reaches `.ready`. See [13-startup-bootstrap-lessons.md](13-startup-bootstrap-lessons.md).

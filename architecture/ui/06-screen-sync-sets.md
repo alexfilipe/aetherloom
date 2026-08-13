@@ -32,13 +32,14 @@ Locations        one row per location: mark, name, scope path, availability badg
 Mode             SyncMode picker: Balanced mirror / Ask before deleting / Don't propagate deletes  ✅
                  (writes via updateSettings → affects real planning on next run)
 Safety           thresholds editor: mass-delete count/ratio, mass-edit count/ratio  ✅ (real SyncSettings)
-                 explanatory copy: "Aetherloom pauses and asks when changes exceed these."
+                 fixed ranges: delete 1...25 / 1...25%; edit 1...50 / 1...50%; defaults are maximums
+                 copy: "You can make these limits stricter. Larger changes use intentional review."
 Exclusions       list of SyncExclusion patterns + add/remove (matchStyle picker)  ✅
 Danger zone      Delete Sync Set  ✅
 History          last 10 runs: outcome, counts, link into Activity filtered to runID  ✅
 ```
 
-Every edit round-trips through `SyncSetDraft`/`updateSettings` and is visible in the next preparation (e.g. add exclusion `*.tmp` → excluded file disappears from preview). This is deliberate: settings are the one place the UI *configures* the engine, and it must use the engine's own types.
+Every edit round-trips through `SyncSetDraft`/`updateSettings` and is visible in the next preparation (e.g. add exclusion `*.tmp` → excluded file disappears from preview). Threshold controls expose only core's normalized safe ranges; pasted/decoded/out-of-range values normalize through the same core initializer before display or persistence. This is deliberate: settings are the one place the UI *configures* the engine, and it must use the engine's own types.
 
 ## 3. New Sync Set wizard (`⌘N`)
 
@@ -46,7 +47,7 @@ Three steps in a 520 pt sheet, replacing today's single form:
 
 1. **Name & mode** — name field (default "New Sync Set", validated non-empty/unique), `SyncMode` picker with plain-language descriptions.
 2. **Locations** — checklist of `LocationState`s (mark, name, availability). Rules enforced live: minimum 2; unavailable locations selectable but flagged "will pause sync until reachable" (informed, not forbidden). Scope per selected location: text field with the demo folder tree hint; a real folder picker is 🎭 (`PlaceholderChip("Picker arrives with real providers")`).
-3. **Review** — summary card mirroring the list card; note "Nothing syncs until you preview and approve the first plan."
+3. **Review** — summary card mirroring the list card; note "Nothing syncs until you preview and confirm the first plan."
 
 Create → `session.createSyncSet(draft)` → card appears as "Never synced" (neutral) → first **Sync Now** genuinely flows: scan → plan (creations propagate) → preview → execute. ✅
 
@@ -62,5 +63,5 @@ Whole-drive selection (`SyncScope.entireDrive`) is allowed but the review step p
 
 - Demo world renders 4 cards with states: Documents `attention` (holds), Projects `attention` (mass deletion), Photos Archive `paused` (refusal), Whole Drive Mirror `paused` (by user).
 - Creating "Test" over iCloud+Local, adding a file via Demo menu conflict control excluded — then Sync Now produces a real preview with real creations; executing converges it (verify via Activity).
-- Threshold edit on Projects (raise mass-delete absolute above 30) → next prepare has **no** mass-deletion hold: proof the settings path reaches the real gate. (Copy in the editor warns about weakening safety.)
+- Projects proves both boundaries: an attempted mass-delete count above `25` normalizes to `25`, while tightening below `25` and later increasing within range never clears the matching evidence latch. After underlying deletion evidence changes, a fresh plan is evaluated against the normalized persisted threshold. An arbitrarily large legitimate deletion remains reachable only through **Review intentional deletions**.
 - Deleting a sync set never emits any provider mutation (assert via fake call logs in bridge tests).

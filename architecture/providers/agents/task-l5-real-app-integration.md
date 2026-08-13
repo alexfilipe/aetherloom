@@ -6,7 +6,7 @@ Make the real workspace the production app path while retaining demo/preview fix
 
 ## Exact scope
 
-- Add read/write `NSOpenPanel` folder enrollment and the macOS adapter that creates/resolves app-scoped `.withSecurityScope` bookmarks and reports stale/denied access without implicit UI.
+- Add read/write `NSOpenPanel` folder enrollment and the macOS adapter that creates app-scoped `.withSecurityScope` bookmarks and resolves them with `.withSecurityScope`, `.withoutMounting`, and `.withoutUI`, reporting stale/denied access without implicit UI, mounts, or NAS wakeups.
 - Set the production user-selected-files entitlement to read/write and include app-scoped bookmark entitlement configuration.
 - Inject the app's Application Support workspace root, construct `WorkspaceEngineSession` by default, and present honest empty/corrupt/unavailable/recovery onboarding.
 - Wire AppModel/UI intents to metadata-only enrollment/editing and the mandatory prepare → preview → explicit-confirm flow. Require reauthorization for stale bookmarks.
@@ -26,7 +26,7 @@ Run the full Swift suite, retain the app build command, and make this authoritat
 xcodebuild -project src/AetherloomApp/AetherloomApp.xcodeproj -scheme AetherloomApp -destination 'platform=macOS' test
 ```
 
-Also run `xcodebuild -project src/AetherloomApp/AetherloomApp.xcodeproj -scheme AetherloomApp -destination 'platform=macOS' build`. Audit the entitlements and ensure bookmark canary bytes never enter UI/log/activity/diagnostics. Freeze/publish and prove equality before evaluation, then complete exact-head CI and user smoke. The handoff MUST name clean disposable folders and verify selection, relaunch access, first-run preview, explicit confirmation, create/edit/folder propagation, recoverable trash, exclusion visibility, refusal with zero mutation, pause persistence, and startup guardrails.
+Also run `xcodebuild -project src/AetherloomApp/AetherloomApp.xcodeproj -scheme AetherloomApp -destination 'platform=macOS' build`. Audit the entitlements and ensure bookmark canary bytes never enter UI/log/activity/diagnostics. Tests MUST prove bootstrap/prepare bookmark resolution uses `.withoutMounting` and `.withoutUI` and cannot mount or wake an unavailable network volume. Freeze/publish and prove equality before evaluation, then complete exact-head CI and user smoke. The handoff MUST name clean disposable folders and verify selection, relaunch access, first-run preview, explicit confirmation, create/edit/folder propagation, recoverable trash, exclusion visibility, refusal with zero mutation, pause persistence, and startup guardrails.
 
 ## Finish and stop
 

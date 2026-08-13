@@ -11,7 +11,7 @@ The defining constraint: the engine ([../core/](../core/README.md)) is far ahead
 1. **The engine decides, the UI presents.** The UI never computes a sync decision, a threshold, a conflict, or a deletion inference. It renders `ChangePreview`, `HoldNotice`, `RefusalNotice`, `ConflictDecision`, `ActivityEntry` — values the engine already explains in user language.
 2. **Trust through specificity.** Vague spinners breed suspicion. Every state shows *what* and *why*: which provider is unreachable, which folder tripped the mass-delete gate, which two versions diverged and when.
 3. **Refusals are calm, not alarming.** A refusal means "nothing will happen until reality changes" — render it as patience ("Paused for safety", "Provider unavailable"), never as a red error with a retry-harder button. There is **no force-sync affordance anywhere in the app.**
-4. **Confirmation is informed and explicit.** Every executable preparation requires a bridge-owned `WorkspaceExecutionConfirmation`. Any nonzero trash/conflict count requires its matching acknowledgement before "Sync now" enables, including on a clear plan. A non-approvable hold exposes evidence but no confirmation or execution action. The bridge validates fingerprint, time, expiry, and exact counts before it derives any internal core approval.
+4. **Confirmation is informed and explicit.** Every executable preparation requires a bridge-owned `WorkspaceExecutionConfirmation`. Any nonzero trash/conflict count requires its matching acknowledgement before "Sync now" enables, including on a clear plan. An ordinary `massDeletion` hold exposes evidence and **Review intentional deletions**, but no confirmation or execution action; only an exact-match fresh reviewed plan backed by core's opaque live execution reservation becomes confirmable. The bridge validates fingerprint, time, expiry, and exact counts before it derives any internal core approval; core consumes the reservation before executor construction, so the reviewed value alone is never authority.
 5. **Advice wears a badge.** AI suggestions render as clearly attributed, dismissible annotations with a rationale — never as pre-selected defaults, never auto-applied.
 6. **Placeholders are honest.** Future capabilities appear (so the app frame is complete) but are labeled and inert; see the conventions in [11-functioning-vs-placeholder.md](11-functioning-vs-placeholder.md#placeholder-conventions).
 7. **Native first.** Standard macOS structure — `NavigationSplitView`, toolbar, menu commands, Settings scene, keyboard access, VoiceOver labels — with brand character layered on top, not instead.
@@ -53,11 +53,15 @@ View button ─▶ AppModel.syncNow(setID)
         availability → scan → reconcile → plan → gate → ChangePreview (+ advice)
   ◀─ SyncPreparation
   ─▶ AppModel presents PreviewChangesSheet for clear or held plans
-       non-approvable hold → evidence only; change reality/settings, prepare again
+       ordinary massDeletion → evidence + Review intentional deletions; no execution
+          ─▶ one-shot authorization → fresh full prepare → exact binding match
+              → atomic exchange for opaque in-memory execution reservation
+          ◀─ distinct reviewed plan + expiry ceiling (or fresh ordinary hold on failure)
        executable plan → every nonzero trash/conflict count requires acknowledgement
        ─▶ WorkspaceExecutionConfirmation(fingerprint, times, counts)
        ─▶ EngineSession.execute(…, confirmation)
-            bridge validates and derives internal core PlanApproval? (nil only for clear)
+            bridge validates confirmation and derives internal core PlanApproval? (nil only for clear)
+            reviewed plan: core atomically consumes matching fingerprint/run/preparation reservation
             all-location preflight → journal → verify → apply → verify → BaseRecords
        ◀─ SyncRunSummary → toast + Activity refresh
        late drift ⇒ stoppedForReplan ⇒

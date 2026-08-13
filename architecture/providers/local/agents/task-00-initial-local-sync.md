@@ -24,7 +24,7 @@ Baseline first: `swift test --package-path src/AetherloomCore` green before any 
 ## Safety invariants (override everything in this prompt)
 
 1. **No permanent-delete call exists anywhere in the provider, including private helpers.** `grep` for it will run in acceptance.
-2. **Failure never masquerades as emptiness.** No code path returns a `.complete` snapshot after any enumeration error, timeout, or unavailability signal. `.complete` + zero observations requires positive verification that the scope exists and is empty.
+2. **Failure never masquerades as emptiness.** No code path returns a `.complete` snapshot after any enumeration error, timeout, unavailability signal, or unaccounted path. `.complete` requires every path to be an observation or typed exclusion; zero observations requires positive proof that the scope is empty or entirely accounted for by exclusions.
 3. **A missing root is classified volume-first**: `volumeNotMounted` / `volumeUnreachable` are ruled out *before* `scopeMissing` may be reported.
 4. **Placeholders are presence.** Dataless/ubiquitous-not-downloaded items observe with `isPlaceholder = true`, never as absent, never as edited; scanning and `fetch` never trigger materialization.
 5. **Everything that can hang has an injected deadline**; expiry maps to `.incomplete` (scan) or `volumeUnreachable` (probe), never a truncated success.

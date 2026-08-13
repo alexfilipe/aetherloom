@@ -18,8 +18,14 @@ public actor SyncOrchestrator {
     /// Stages 1–5. Read-only against providers. Always safe.
     public func prepare(_ syncSet: SyncSet) async -> SyncPreparation
 
+    /// Explicit one-shot review: issue an in-memory authorization, run a fresh
+    /// full prepare, and atomically exchange it for an execution reservation
+    /// only when the original unreviewed fingerprint/evidence match exactly.
+    public func prepareReviewedMassDeletion(from original: SyncPreparation) async -> SyncPreparation
+
     /// Stage 6–7. Runs only a clear-gated plan, or an approvable held plan
-    /// with a valid approval. A mass-deletion hold is never approvable.
+    /// with a valid approval. Reviewed mass deletion additionally consumes its
+    /// actor-owned live reservation before executor construction.
     public func execute(_ preparation: SyncPreparation, approval: PlanApproval? = nil) async throws -> SyncRunSummary
 }
 
@@ -28,18 +34,31 @@ public struct SyncPreparation: Sendable {
     public var preview: ChangePreview          // rendered for both cases [06]
     public var advice: [ConflictAdvice]        // possibly empty
     public var runID: UUID
+    public var preparationID: UUID             // ephemeral identity; excluded from fingerprints
+    public var executionAuthorityExpiresAt: Date? // display ceiling only; never bearer authority
+}
+
+/// Internal actor state only: deliberately not public and not Codable.
+internal struct MassDeletionExecutionReservation: Sendable {
+    let nonce: UUID
+    let reviewedFingerprint: PlanFingerprint
+    let runID: UUID
+    let preparationID: UUID
+    let expiresAt: Date
 }
 ```
 
-Prepare/execute is a hard split: the UI holds a `SyncPreparation`, shows the preview, and collects a bridge-owned `WorkspaceExecutionConfirmation` only when its gate is executable. Nothing is recomputed between what the user saw and what runs, and reality is *still* re-verified per operation. A non-approvable hold never reaches this core execute entry point through the production bridge.
+Prepare/execute is a hard split: the UI holds a `SyncPreparation`, shows the preview, and collects a bridge-owned `WorkspaceExecutionConfirmation` only when its gate is executable. Nothing is recomputed between what the user saw and what runs, and reality is *still* re-verified per operation. An ordinary non-approvable hold never reaches this core execute entry point through the production bridge.
+
+`prepareReviewedMassDeletion(from:)` is a second provider-read-only preparation path, not execution and not gate mutation. It accepts only the exact ordinary `massDeletion` preparation displayed to the user; issues the opaque in-memory authorization described in [04 §4](04-planning-and-gating.md#one-shot-review-for-intentional-deletions); records issuance; performs the entire stage 1–5 path again; and on an exact match atomically consumes that authorization while installing an opaque actor-owned execution reservation bound to the reviewed fingerprint, `runID`, and `preparationID`. Only after the transition and its audit record are durable may it expose `reviewedMassDeletion`. Expiry or mismatch consumes/rejects the authorization and returns the fresh ordinary outcome with no reservation and no provider mutation. The bearer authorization, bearer reservation, and reviewed preparation are never restored as authority after relaunch. `executionAuthorityExpiresAt` lets presentation cap its countdown to the reservation's expiry; it is descriptive metadata, not authority.
 
 **Stage checklist** (each bracketed by activity entries with the shared `runID`, [08](08-observability.md)):
 
 1. **Recover** — if the journal has an unfinished run for this set, run recovery (§4) first.
 2. **Availability** — `checkAvailability()` concurrently; any unavailable ⇒ `refusal`, and *no scans run* (a partial view must never coexist with mutation decisions).
 3. **Scan** — concurrent `scan(_:)` with per-location timeout (default 120 s; a hang becomes `unavailable`).
-4. **Reconcile + plan + gate** — pure calls ([03], [04]) with the injected environment.
-5. **Preview + advice** — render preview; if held and an advisor exists, request advice under budget ([07 §5]); persist `ConflictDecision`s.
+4. **Reconcile + plan + gate** — load the existing mass-deletion latch, call pure reconciliation/planning/gating with it as an injected value, then durably apply the returned latch transition before exposing any preparation ([03], [04]). Planner/gate code performs no store I/O.
+5. **Preview + advice** — only after latch persistence succeeds, render preview; if held and an advisor exists, request advice under budget ([07 §5]); persist `ConflictDecision`s.
 6. **Execute** — §3.
 7. **Summarize** — `SyncRunSummary { outcome: completed | refused | held | stoppedForReplan(location, path) | mutationIndeterminate(location, path, receiptID) | cancelled | failed(message), appliedOperations, skippedOperations, failedOperations, indeterminateOperations, perItemResults }`. Older persisted summaries decode a missing `indeterminateOperations` field as an empty list.
 
@@ -93,7 +112,11 @@ Append-only write-ahead log per run (`journal-<runID>.jsonl`, [09 §3]): `runSta
 
 ## 5. Execution gate enforcement
 
-Core `execute` has a single choke point: `gate == .clear` runs; `gate == .hold && gate.permitsApproval` requires `approval.validate(against: plan, at: now) == .accepted` (fingerprint match, unexpired, acknowledged counts equal actual — [06 §3]); any other hold returns `.held` without an executor call; refusals are unexecutable by type. In the production seam, every executable preparation first requires a valid non-optional `WorkspaceExecutionConfirmation`: the bridge derives `PlanApproval` for an approvable hold, and passes `nil` for a clear plan only after validating that confirmation itself. Approval acceptance is logged as a `safety` activity entry. Per-operation preconditions apply identically with or without the internal approval value — authority never bypasses current-reality checks.
+Core `execute` has a single choke point: `gate == .clear` runs; `gate == .hold && gate.permitsApproval` requires `approval.validate(against: plan, at: now) == .accepted` (fingerprint match, unexpired, acknowledged counts equal actual — [06 §3]); any other hold returns `.held` without an executor call; refusals are unexecutable by type. Ordinary `massDeletion` never permits approval. For `reviewedMassDeletion`, a valid approval is necessary but insufficient: immediately before constructing `ScheduleExecutor`, the orchestrator atomically looks up and consumes its actor-owned live `MassDeletionExecutionReservation`, matching the exact reviewed fingerprint, `runID`, and `preparationID`. Missing, expired, already-consumed, relaunch-lost, or mismatched reservation state returns `.held` or a typed rejection with zero executor construction and zero executor/provider calls. Consumption remains one-shot even if later construction or execution fails; the durable latch remains until the successful reconciliation condition below. The Codable reviewed hold, its audit digests, and a valid confirmation cannot recreate or replace the reservation.
+
+In the production seam, every otherwise executable preparation first requires a valid non-optional `WorkspaceExecutionConfirmation`: the bridge derives `PlanApproval` for an approvable hold, and passes `nil` for a clear plan only after validating that confirmation itself. For a reviewed plan, `expiresAt` MUST NOT exceed `executionAuthorityExpiresAt`; core independently checks the reservation clock at consumption. Confirmation and reservation consumption are logged as `safety` activity/journal events without bearer values. Per-operation preconditions apply identically with or without the internal approval value — authority never bypasses current-reality checks.
+
+The executor clears a matching `MassDeletionSafetyLatch` only after every deletion decision in the reviewed plan is applied or safely already satisfied, the corresponding base-record/tombstone updates and `runFinished(.completed)` are durable, and the journal is reconciled. Partial success, replan stops, indeterminate mutation, journal/store failure, cancellation, or failed post-write verification leaves the latch intact.
 
 ## 6. Changing the current code
 

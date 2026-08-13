@@ -6,8 +6,8 @@ Implement the durable boundary in [workspace contract §5](../01-workspace-engin
 
 ## Exact scope
 
-- Add file-backed core conflict, advice-cache, and location stores; retain the existing base-record, journal, and activity stores.
-- Add a versioned bridge-owned manifest/store for sync sets, pause, first/last-run markers and digests, location/access/store references, and recovery references.
+- Add file-backed core conflict, advice-cache, location, and mass-deletion safety-latch stores; retain the existing base-record, journal, and activity stores. Add typed safety-journal events for latch lifecycle, one-shot review issuance/transition/rejection, and execution-reservation consumption/expiry/rejection audit digests.
+- Add a versioned bridge-owned manifest/store for sync sets, pause, first/last-run markers and digests, location/access/store/latch references, and recovery references. Never persist a bearer mass-deletion review authorization, execution reservation, or reviewed preparation as restorable authority.
 - Add separate `FolderAccessRecord` persistence for opaque capability bytes and persistent owned `stage/` and `quarantine/` directories under an injected workspace root.
 - Implement atomic sibling-temp/flush/rename writes, schema checks, corrupt-byte preservation/quarantine, artifact discovery, and fail-closed consistency validation.
 - Keep Application Support path selection out of core/bridge logic; tests inject only owned temporary roots.
@@ -18,7 +18,7 @@ Do not construct real providers, implement the production session, add AppKit/bo
 
 L3 solely owns [LW-09](local-workspace-mvp.md#acceptance-matrix--one-owner-per-scenario). Supporting cases MUST prove every store and manifest round-trips; old-or-new atomicity under injected failures at write/flush/rename boundaries; unsupported/unreadable/partial generations fail closed; missing manifest plus any recognized artifact fails closed; truly absent workspace is fresh; missing referenced location/access data fails closed; corrupt bytes are retained; sync-set metadata deletion has no provider surface; and orphan metadata remains safe.
 
-Capability secrecy tests MUST scan encoded manifest, `SyncLocation`, activity, diagnostics, and exported values for a canary bookmark byte/string and find none outside the referenced file under `folder-access/`. Stage-pin tests MUST prove receipt-bound artifacts survive reconstruction and remain until journal reconciliation. Run focused store/manifest tests, the complete Swift suite, static Application Support/capability-secrecy audits, and exact-head macOS/user validation.
+Capability secrecy tests MUST scan encoded manifest, `SyncLocation`, activity, diagnostics, and exported values for a canary bookmark byte/string and find none outside the referenced file under `folder-access/`. Latch tests MUST prove atomic round-trip, compare-and-clear, survival across relaunch and threshold changes, corrupt/unreadable fail-closed behavior, and that audit records contain review/reservation digests/bindings/results but no reusable bearer authority. A canary scan proves neither bearer authorization nor reservation is encodable in or restored from any manifest/store; only the latch is durable safety state. Stage-pin tests MUST prove receipt-bound artifacts survive reconstruction and remain until journal reconciliation. Run focused store/manifest tests, the complete Swift suite, static Application Support/capability-secrecy audits, and exact-head macOS/user validation.
 
 ## Finish and stop
 

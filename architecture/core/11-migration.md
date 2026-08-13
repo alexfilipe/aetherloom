@@ -49,11 +49,12 @@ Each phase = one agent work order ([agents/](agents/)); the graph is 1 → 2 →
 - **Phase 8 — Advisory** (`task-08`): core advisory + heuristics + validator + orchestrator seam; `AetherloomIntelligence` target.
 - **Phase 9 — Test expansion** (`task-09`): decision-table sweep, simulation suite, wording locks, coverage audit.
 
-## 4. Deliberate behavior changes (exactly three; everything else is structure)
+## 4. Deliberate behavior changes
 
 1. **Threshold counting** ([04 §4]): intents instead of fan-out operations. Two existing mass-change tests update expected counts; gating becomes topology-independent.
 2. **Silent rows become loud** ([03 §3] rows 7, 10, 18): edit-delete now emits a conflict + re-propagation (was: silent no-op), move-move and type-clash now warn + preserve (was: silent fall-through/skip). Strictly more conservative.
 3. **Placeholders** ([03] row 13, Phase 7): item-level `waiting` instead of whole-set pause. The existing placeholder test's *assertion that no trash is planned* is preserved; its "whole plan pauses" expectation relaxes to "the placeholder item is excluded and reported". Until Phase 7, current behavior stands.
+4. **Bounded mass-change settings and intentional-deletion review** ([04 §4]): the existing defaults become unexceedable safety maxima; a durable evidence latch prevents an allowed in-range setting increase from clearing an already observed deletion set; and an arbitrarily large legitimate deletion requires the explicit fresh-prepare authorization → live one-shot execution-reservation path. This is a stricter safety boundary except for the deliberately explicit reviewed route.
 
 ## 5. What must never regress mid-migration
 

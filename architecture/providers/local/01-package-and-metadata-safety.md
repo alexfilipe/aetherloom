@@ -30,19 +30,19 @@ public enum MetadataKind: Codable, Hashable, Sendable {
 }
 ```
 
-Names may change during implementation, but the semantics may not. An exclusion proves **present but unsupported** at a path. It is neither absence nor an ordinary observation. Duplicate reasons SHOULD be normalized into one stable exclusion per root path.
+Names may change during implementation, but the semantics may not. An exclusion proves **present but unsupported** at a path. It is neither absence nor an ordinary observation. A complete scan accounts for every in-scope path as an observation or as covered by one of these item/subtree exclusions; no path may remain unaccounted. Duplicate reasons SHOULD be normalized into one stable exclusion per root path.
 
-Planner/reconciler treatment is exclusion/waiting, not deletion: the path or subtree MUST NOT be transferred, base-recorded, overwritten, relocated, trashed, or described as converged. If an existing base record's path becomes excluded, its prior memory remains and the decision becomes visible waiting/excluded. It MUST never become a deletion candidate.
+Planner/reconciler treatment is exclusion/waiting, not deletion: the path or subtree MUST NOT be transferred, base-recorded, overwritten, relocated, trashed, or described as converged. Every existing `BaseRecord` whose path equals an item exclusion, equals a subtree exclusion root, or lies below a subtree exclusion root retains its prior memory and derives visible waiting/excluded at **every** location. No covered root or descendant may derive absence, `missing`, or a deletion decision, even though the provider correctly emitted no descendant observations. Coverage MUST use the same component-aware normalized and case/diacritic-folded `SyncPath` ancestry relation as reconciliation joins, never a raw string prefix.
 
 An exclusion at any location blocks mutations for the affected path or subtree at **all** locations. This prevents a supported-looking copy elsewhere from overwriting, deleting, or falsely converging content whose full truth is unsupported on one side. An approval cannot override an exclusion. A future scan that positively proves the exclusion is gone may return the scope to ordinary reconciliation; prior base memory is then evaluated against fresh truth.
 
-Every exclusion MUST appear in preview and activity with its sync-relative path and a stable human-readable reason. A run containing exclusions MUST NOT use an all-synced/success presentation for the affected scope.
+Every exclusion root MUST be durably recorded and remain individually inspectable in preview and activity with its exact sync-relative path, scope, and stable human-readable reason. Display grouping is aggregation only: it MUST NOT discard or merge away root evidence. One directory exclusion represents its whole subtree and MUST NOT fabricate descendant absence, descendant observations, or thousands of synthetic per-descendant rows. A run containing exclusions MUST NOT use an all-synced/success presentation for the affected scope.
 
 ## 2. macOS package directories
 
-The provider MUST request and inspect [`URLResourceKey.isPackageKey`](https://developer.apple.com/documentation/foundation/urlresourcekey/ispackagekey) for the selected root and every enumerated directory.
+The provider MUST request and inspect [`URLResourceKey.isPackageKey`](https://developer.apple.com/documentation/foundation/urlresourcekey/ispackagekey) for the selected root and every enumerated directory. During enrollment, while live security-scoped access is held, the session MUST canonicalize the selected root and walk that canonical root plus each ancestor **only through the volume root**. It rejects the selection if the selected root or any walked ancestor is a package. Failure to read reliable package metadata for any walked path fails closed before enrollment; the walk never crosses the selected volume root.
 
-- A selected root whose `isPackage` value is `true` is rejected during enrollment. No location or sync set is created.
+- A selected package root, or a directory selected anywhere inside a package, is rejected during enrollment. No location or sync set is created.
 - An encountered package is emitted as `.packageDirectory` with subtree scope.
 - The enumerator MUST NOT descend into it.
 - The provider, planner, and executor MUST NOT transfer, base-record, overwrite, relocate, or trash the package or any descendant in the MVP.
@@ -77,7 +77,9 @@ Any deviation from those exact baselines—including an executable bit on a regu
 
 User and group ownership are not synchronized from a source item. The supported baseline is ownership by the process's effective user ID and effective primary group ID at both source and destination. Any other ownership is `.unsupportedOwnership` (item or subtree as above); inability to prove ownership fails closed. Provider-created files and directories MUST be created and post-write verified with the exact `0644`/`0755` mode and baseline ownership. A failure to establish or verify that baseline is a failed/refused operation, never convergence. The selected root's mode, ACL, and ownership remain container metadata outside synchronized content.
 
-This baseline makes ordinary user-owned files usable without implying preservation of arbitrary permissions, ACLs, owners, or groups. General permission/ownership preservation remains outside L2.
+This conservative baseline intentionally excludes many otherwise ordinary files: `0664`/`0775` content produced by `umask 002`, regular files carrying any executable bit, directories whose mode is not exactly `0755`, private `0600` files, and foreign-owned content copied from another Mac or restored from backup. A non-baseline directory excludes its entire subtree. That breadth is an accepted MVP consequence; the provider MUST NOT normalize source metadata on read or silently broaden the baseline. General permission/ownership preservation remains outside L2.
+
+L2 qualification MUST measure realistic exclusion volume using disposable representative Documents and Projects trees containing ordinary umask, executable, private, and foreign-owned fixtures. It proves bounded scan/preparation behavior, individually inspectable durable evidence, stable display grouping, and one-row-per-exclusion-root subtree representation without synthetic descendant rows. Reopen this baseline in a separate architecture PR only if that qualification demonstrates that representative intended roots are impractical to enroll or preview, exclusion evidence cannot be inspected within the performance/UI acceptance budget, or a proven safe round-trip/normalization policy can broaden support without weakening ownership, recovery, or no-false-deletion guarantees.
 
 ## 5. All-location preflight, adjacent checks, and recovery
 
