@@ -36,13 +36,14 @@ One run of one sync set. Stages 1–5 are read-only against providers; nothing m
 4 PLAN + GATE   pure: verdicts → SyncPlan { decisions, operation schedule,
                 fingerprint, gate: clear | hold(reasons) }                    [04]
 5 PREVIEW       ChangePreview (+ optional on-device advice on conflicts)      [06,07]
-                gate == hold ⇒ wait for PlanApproval bound to the fingerprint
+                executable iff gate == clear OR (gate == hold && permitsApproval)
+                bridge confirmation binds fingerprint, time, and exact counts
 6 EXECUTE       journal intent → verify precondition → apply → verify result  [05]
                 → journal result → update BaseRecord (per item)
 7 REPORT        activity entries throughout; run summary at the end           [08]
 ```
 
-A **refusal** (stage 1–2, or deletion-safety conditions in stage 4) means *no executable plan exists* — there is nothing to approve; only reality changing clears it. A **hold** (conflicts, mass changes) means a plan exists but is withheld for review. Making these two different types — instead of a `.pause` sentinel action inside the plan, as the current code does — removes the entire class of "did every caller remember to check for pause first?" bugs.
+A **refusal** means *no plan exists*. A **hold** means a plan and its evidence exist, but execution is stopped. Some holds are approvable; a hold containing `massDeletion` is not. A non-approvable hold exposes preview evidence but no confirmation or execution path. It remains stopped until the user changes the underlying files or sync configuration and explicitly prepares a fresh executable plan. This is still a hold, not a refusal. Making refusal and hold different types — instead of a `.pause` sentinel action inside the plan, as the historical scaffold did — keeps their evidence and recovery paths explicit.
 
 ## Layering
 

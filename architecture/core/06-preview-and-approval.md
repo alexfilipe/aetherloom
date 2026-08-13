@@ -58,11 +58,11 @@ public struct PlanApproval: Codable, Hashable, Sendable {
 }
 ```
 
-Contract ([05 §5] enforces it at one choke point): `clear` plans run with or without approval (a stray approval is ignored); `hold` plans require a valid one; refusals are unexecutable by type. Approval expiry exists because the world drifts — and even a valid approval never bypasses per-operation preconditions. Approvals are logged: "You approved 6 items to move to trash for 'Documents'."
+Core contract ([05 §5] enforces it at one choke point): `clear` plans run without a core approval value; approvable held plans require a valid `PlanApproval`; a hold containing `massDeletion` is non-approvable and returns held without execution; refusals are unexecutable by type. Approval expiry exists because the world drifts — and even a valid approval never bypasses per-operation preconditions. Approvals are logged: "You approved 6 items to move to trash for 'Documents'."
 
 ## 4. UI contract
 
-The engine hands the preview sheet everything so no sync rule leaks into SwiftUI: headline, notices with canonical sentences, ordered sections with causality strings, conflicts with version metadata and advice, byte totals. Buttons map 1:1: “Preview changes” → `prepare`; any executable “Sync now”/“Approve and sync” action creates the non-optional bridge `WorkspaceExecutionConfirmation` bound to that preview; conflict choices become resolution inputs for the next prepare. The bridge alone maps a validated confirmation to the core `PlanApproval?` described in §3 ([production seam](../providers/01-workspace-engine-session.md#1-current-state-and-target-boundary)).
+The engine hands the preview sheet everything so no sync rule leaks into SwiftUI: headline, notices with canonical sentences, ordered sections with causality strings, conflicts with version metadata and advice, byte totals. Buttons map 1:1: “Preview changes” → `prepare`; an executable preparation is exactly a clear plan or an approvable held plan. Every executable “Sync now” action creates the non-optional bridge `WorkspaceExecutionConfirmation` bound to that preview. Any nonzero `approvalTrashCount` or `approvalConflictCount` requires its corresponding acknowledgement row before confirmation, including on a clear plan; a clear plan with both counts zero may enable immediately. A non-approvable hold shows evidence but exposes no confirmation or execution action. Conflict choices become resolution inputs for the next prepare. The bridge alone validates the confirmation and maps it to the core `PlanApproval?` described in §3 ([production seam](../providers/01-workspace-engine-session.md#1-current-state-and-target-boundary)).
 
 ## 5. Changing the current code
 

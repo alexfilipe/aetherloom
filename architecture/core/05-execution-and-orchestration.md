@@ -18,7 +18,8 @@ public actor SyncOrchestrator {
     /// Stages 1–5. Read-only against providers. Always safe.
     public func prepare(_ syncSet: SyncSet) async -> SyncPreparation
 
-    /// Stage 6–7. Runs only a clear-gated plan, or a held plan with a valid approval.
+    /// Stage 6–7. Runs only a clear-gated plan, or an approvable held plan
+    /// with a valid approval. A mass-deletion hold is never approvable.
     public func execute(_ preparation: SyncPreparation, approval: PlanApproval? = nil) async throws -> SyncRunSummary
 }
 
@@ -30,7 +31,7 @@ public struct SyncPreparation: Sendable {
 }
 ```
 
-Prepare/execute is a hard split: the UI holds a `SyncPreparation`, shows the preview, collects approval if held, and passes the same value back — nothing is recomputed between what the user saw and what runs, and reality is *still* re-verified per operation.
+Prepare/execute is a hard split: the UI holds a `SyncPreparation`, shows the preview, and collects a bridge-owned `WorkspaceExecutionConfirmation` only when its gate is executable. Nothing is recomputed between what the user saw and what runs, and reality is *still* re-verified per operation. A non-approvable hold never reaches this core execute entry point through the production bridge.
 
 **Stage checklist** (each bracketed by activity entries with the shared `runID`, [08](08-observability.md)):
 
@@ -92,7 +93,7 @@ Append-only write-ahead log per run (`journal-<runID>.jsonl`, [09 §3]): `runSta
 
 ## 5. Execution gate enforcement
 
-`execute` has a single choke point: `gate == .clear` runs; `gate == .hold` requires `approval.validate(against: plan, at: now) == .accepted` (fingerprint match, unexpired, acknowledged counts equal actual — [06 §3]); refusals are unexecutable by type (there is no plan to pass in). Approval acceptance is logged as a `safety` activity entry. Per-operation preconditions apply identically with or without approval — approval authorizes intent; reality is always re-checked.
+Core `execute` has a single choke point: `gate == .clear` runs; `gate == .hold && gate.permitsApproval` requires `approval.validate(against: plan, at: now) == .accepted` (fingerprint match, unexpired, acknowledged counts equal actual — [06 §3]); any other hold returns `.held` without an executor call; refusals are unexecutable by type. In the production seam, every executable preparation first requires a valid non-optional `WorkspaceExecutionConfirmation`: the bridge derives `PlanApproval` for an approvable hold, and passes `nil` for a clear plan only after validating that confirmation itself. Approval acceptance is logged as a `safety` activity entry. Per-operation preconditions apply identically with or without the internal approval value — authority never bypasses current-reality checks.
 
 ## 6. Changing the current code
 

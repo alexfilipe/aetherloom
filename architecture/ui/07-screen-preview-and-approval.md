@@ -11,10 +11,11 @@ The trust centerpiece: the sheet where a plan becomes visible and — only with 
 │    body: EmptyStateView "Nothing can sync until this clears — and nothing
 │          will be deleted while a provider is unreachable."
 │    footer: [Close] only. No approve path exists — a refusal has no plan.
-├ Holds strip (gated plans): SafetyBanner per HoldNotice
+├ Holds strip (held plans): SafetyBanner per HoldNotice
 │    massDeletion/massEdit → evidence summary ("all 30 under /Projects/Archive")
 │    + HoldTriageNote as AdviceChip when present (attributed, advisory)
 │    conflicts → link "Review conflicts" → [08]
+│    any hold containing massDeletion → evidence only; no confirmation/execution
 ├ Sections (engine order, empty sections omitted):
 │    Additions · Updates · Moves and renames · Waiting · Move to trash ·
 │    Both versions preserved
@@ -29,17 +30,19 @@ The trust centerpiece: the sheet where a plan becomes visible and — only with 
 ## 2. The approval footer — state machine
 
 ```text
-gate clear                     → [Cancel]  [Sync Now ⌘⏎]           (enabled immediately)
-gate hold, unacknowledged      → CountAcknowledgeRows + [Cancel] [Sync Now] (disabled)
-gate hold, all acknowledged    → [Sync Now ⌘⏎] enabled
+gate clear, no required counts → [Cancel]  [Sync Now ⌘⏎] enabled immediately
+gate clear, required counts    → CountAcknowledgeRows + [Cancel] [Sync Now] (disabled until exact acknowledgements)
+approvable hold, unacknowledged→ CountAcknowledgeRows + [Cancel] [Sync Now] (disabled)
+approvable hold, acknowledged  → [Sync Now ⌘⏎] enabled
+non-approvable hold            → evidence + [Close] only; no confirmation construction
 executing                      → progress ("Applying N changes…"), controls locked
 finished                       → RunResultToast + sheet dismiss
 ```
 
-- `ConfirmationRequirement` [04 §4] drives the rows: one checkbox per nonzero count — "Move **N** items to trash (recoverable from each provider's trash)" and "**N** conflicts — both versions preserved". Zero-count rows don't render; clear executable plans still carry a zero-count confirmation requirement.
-- Sync Now always builds a non-optional `WorkspaceExecutionConfirmation` from the displayed fingerprint, confirmation/expiry times, and actual acknowledgement counts, then calls `execute(preparation, confirmation:)`. The bridge validates it and derives core `PlanApproval?`; `nil` exists only inside the bridge for a validated clear plan.
+- `ConfirmationRequirement` [04 §4] exists only for executable preparations and drives the rows: one checkbox per nonzero count — "Move **N** items to trash (recoverable from each provider's trash)" and "**N** conflicts — both versions preserved". Zero-count rows don't render. Clear executable plans still carry a confirmation requirement, and nonzero clear-plan counts still require acknowledgement.
+- For an executable preparation, Sync Now builds a non-optional `WorkspaceExecutionConfirmation` from the displayed fingerprint, confirmation/expiry times, and actual acknowledgement counts, then calls `execute(preparation, confirmation:)`. The bridge validates it and derives core `PlanApproval?`; `nil` exists only inside the bridge for a validated clear plan. A non-approvable hold never enters this path.
 - **Expiry**: footer shows "Approval window: 15 minutes"; if `expiresAt` passes while the sheet is open, the footer flips to "This preview is stale — preview again" with a [Refresh Preview] button (re-runs `prepare`). The engine would reject the expired approval anyway; the UI just says it first.
-- **Drift**: `execute` returning `outcome == .stoppedForReplan(location:path:)` renders an InlineBanner: "Files changed while you were reviewing — nothing was applied to *path*. Preview again to see the current plan." with [Refresh Preview]. This is invariant 5 made visible.
+- **Late drift**: `execute` returning `outcome == .stoppedForReplan(location:path:)` renders an InlineBanner that names the stopped operation and its location/path: "Files changed while syncing. The *operation* at *location/path* was not applied. Earlier completed changes remain recorded. Preview again to see the current plan." with [Refresh Preview]. Activity and summary keep any earlier applied operations and do not list the stopped operation as applied; the UI never promises rollback. This is invariant 5 made visible without hiding partial progress.
 - **Partial failure**: `.failed(message:)` or nonempty `failedOperations` → toast reports "N applied, M failed — see Activity"; never silently discarded.
 
 ## 3. Advice on conflicts
@@ -55,7 +58,7 @@ finished                       → RunResultToast + sheet dismiss
 ## 5. Acceptance criteria
 
 - Documents preview shows all six section types populated from the demo divergences, with engine-authored summaries and causality lines verbatim.
-- Sync Now stays disabled until every acknowledge row is checked; acknowledged counts in the emitted `PlanApproval` equal the plan's `approvalTrashCount`/`approvalConflictCount` (bridge test pins this).
-- Tampering demo: mutate a fake between prepare and execute (Demo menu conflict control) → execution reports `stoppedForReplan` and the drift banner appears. ✅
-- Projects: mass-deletion hold renders evidence and requires acknowledgment; after approval, deletions land in fake providers' **trash**, visible in Activity ("moved to trash", recoverable phrasing).
+- Sync Now stays disabled until every nonzero acknowledgement row is checked on every executable clear or approvable-held plan; counts in the emitted `WorkspaceExecutionConfirmation` equal the plan's `approvalTrashCount`/`approvalConflictCount` (bridge tests pin this).
+- Drift regressions cover both pre-first-mutation and late drift. For late drift, an earlier operation applies, a later operation stops for replan, summary/activity retains the applied operation, the stopped operation is absent from applied results, and the displayed copy names that exact outcome without promising rollback.
+- Projects: the `massDeletion` hold renders evidence but no confirmation or execution action. The user changes the fake world or sync settings, explicitly prepares again, and only a fresh executable preparation may later sync.
 - Keyboard-only pass: open → navigate sections → toggle acknowledgments (Space) → `⌘⏎` approve → toast.

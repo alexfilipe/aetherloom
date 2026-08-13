@@ -51,7 +51,7 @@ public protocol EngineSession: Sendable {
 
 Contract points:
 
-- `prepare` passes the orchestrator's `SyncPreparation` through unchanged. `execute` requires the exact non-optional `WorkspaceExecutionConfirmation` from [the production contract](../providers/01-workspace-engine-session.md#1-current-state-and-target-boundary); the bridge validates it and deterministically derives the internal core `PlanApproval?`. The bridge never edits an outcome, filters a hold, or exposes that nullable core approval to `AppModel`.
+- `prepare` passes the orchestrator's `SyncPreparation` through unchanged. An executable preparation is exactly a clear plan or a held plan whose gate permits approval. `execute` requires the exact non-optional `WorkspaceExecutionConfirmation` from [the production contract](../providers/01-workspace-engine-session.md#1-current-state-and-target-boundary); the bridge validates fingerprint/time/expiry and exact required counts, then deterministically derives the internal core `PlanApproval?`. A non-approvable hold is rejected before derivation and never reaches the executor. The bridge never edits an outcome, filters a hold, or exposes that nullable core approval to `AppModel`.
 - Pause lives here, not in core: `prepare` on a paused set throws `EngineSessionError.syncSetPaused`; "Scan Now" skips paused sets. Pause state is part of `SyncSetState`.
 - Conflict resolution calls `ConflictStore.resolve(id, as:, at:)`. The bridge then emits `.conflictsChanged`; the *effect* of a resolution (e.g. `makeCanonical` propagating a version) materializes on the **next run**, exactly as the engine defines it — the UI copy must say so ("Applied on the next sync").
 - Every mutation emits an `EngineEvent`; reads never mutate.
@@ -135,7 +135,7 @@ One manifest type (`DemoWorld.swift`) declares everything; no scattered literals
 | Sync set | Locations | Seeded state after bootstrap | Exercises |
 | --- | --- | --- | --- |
 | **Documents** | iCloud, Google, Local | ~40 converged items; then: 2 edits (one side each), 2 creates, 1 rename, 1 delete (Google side), and `Budget.xlsx` edited **independently** on iCloud and Google | clean sections, delete-to-trash causality, conflict + advice, `deletionsNeedReview`/`conflicts` holds, acknowledged approval |
-| **Projects** | iCloud, Google | ~60 converged items; then 30 files under `/Projects/Archive` removed on the Google side | `massDeletion` hold, evidence display, review-and-approve flow |
+| **Projects** | iCloud, Google | ~60 converged items; then 30 files under `/Projects/Archive` removed on the Google side | non-approvable `massDeletion` safety stop: evidence visible, execution unavailable; change the fake world/settings and explicitly prepare again |
 | **Photos Archive** | Local, NAS, Google | ~25 converged items; NAS then unmounted | refusal (`volumeNotMounted`), "no files deleted while unreachable" messaging |
 | **Whole Drive Mirror** | iCloud, Google, OneDrive | created **paused**, never run | paused-by-user presentation; OneDrive unavailability visible on Overview |
 
@@ -166,5 +166,6 @@ Each control mutates **fakes or stores only** and emits events; the engine react
 
 - Re-derive or second-guess verdicts, gates, counts, or fingerprints (no arithmetic on plan contents beyond *display* counting).
 - Offer any AppModel-facing API that executes without a non-optional `WorkspaceExecutionConfirmation`, or expose the bridge's internal `PlanApproval?` mapping.
+- Construct a confirmation, enable execution, derive approval, or call the executor for a non-approvable hold; changing reality/settings still requires an explicit fresh prepare.
 - Let `AppModel` or SwiftUI construct providers, retain bookmark capability bytes, or decide sync behavior. `WorkspaceEngineSession` owns real-folder capability and composition under the provider contract; `DemoEngineSession` MUST remain isolated from real user folders.
 - Leak fake-provider details (e.g. `FakeProviderCall` logs) into non-demo API surfaces.

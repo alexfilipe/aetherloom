@@ -29,6 +29,11 @@ Full entries for decisions whose feature or pull request is still in flight. App
 - CUT-025 handoff ordering: Repository publication rules govern the remaining correction loop: repeat applicable static/focused/full/audit checks, freeze the corrected candidate, push/publish it, and prove local/upstream/origin/GitHub PR base/head equality before the original evaluator's targeted recheck (or any required fresh evaluation). The correction invalidates evaluation and later exact-head evidence for `19550973c75ab68aa61839f101085df20028f5fc`. Exact-head CI/macOS/user gates follow the evaluator disposition.
 - CUT-025 corrected-head provenance: The correction commit cannot contain its own SHA. Its exact SHA and local/upstream/origin/GitHub equality MUST therefore be recorded in the post-publication handoff evidence before evaluator recheck. The resolving user-merge SHA remains pending; CUT-025 stays active.
 
+## Progress metadata appended 2026-08-13
+
+- CUT-025: Fresh complete evaluation of published head `dcaffce4c2491a4b6aeca5b8d89d49b4192e8469` found one P1 and two P2 findings. On 2026-08-13 the user explicitly authorized one narrow second correction batch, targeted recheck by that fresh evaluator, one third/final complete independent evaluation, and replacement exact-head CI/freeze.
+- CUT-025 budget boundary: No further correction or review extension is authorized. Any P0/P1 remaining after this batch blocks L1 and MUST return to the user. This correction changes the head, so publication and local/upstream/origin/GitHub PR base/head equality MUST be repeated before either authorized review. CUT-025 remains active pending the replacement evidence and user merge.
+
 ## Carried backlog
 
 Open deferrals and accepted residual risks from closed decisions. Each is still live: treat the trigger as the condition that turns it into work. The named entry holds the full reasoning and evidence; retrieve it with its batch's command in the closed index below.

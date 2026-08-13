@@ -21,9 +21,10 @@ Deterministic: inject `EngineEnvironment(now:makeID:)` with a stepped clock and 
 
 **Demo world & session**
 
-- Bootstrap produces exactly the scripted state: 4 sync sets with expected phases/tones; Documents preparation has all six section kinds; Projects has a `massDeletion` hold; Photos Archive a `volumeNotMounted` refusal.
+- Bootstrap produces exactly the scripted state: 4 sync sets with expected phases/tones; Documents preparation has all six section kinds; Projects has a non-approvable `massDeletion` hold with evidence but no execution authority; Photos Archive a `volumeNotMounted` refusal.
 - Converging pass leaves real `BaseRecord`s (spot-check counts); second Documents run after approval is empty (idempotence through the seam).
-- Confirmation round-trip: `makeConfirmation` fingerprint/counts == plan, time/expiry enforced, bridge mapping correct for clear/held plans; expired confirmation rejected; drift → `stoppedForReplan` surfaced.
+- Confirmation/gate matrix: clear/no-count enables immediately; clear/nonzero-trash requires acknowledgement; approvable hold requires exact acknowledgements; non-approvable `massDeletion` and a mixed hold containing it construct no confirmation and make zero executor calls; changing reality/settings still requires an explicit fresh prepare. Executable cases prove `makeConfirmation` fingerprint/counts == plan, time/expiry enforcement, held `PlanApproval` derivation, and clear internal `nil` only after confirmation validation.
+- Late-drift presentation: one earlier operation applies, a later operation returns `stoppedForReplan`; summary/activity retains the applied operation, excludes the stopped operation from applied results, and renders the exact operation/location copy without promising rollback.
 - Pause: paused set skipped by scan-all; `prepare` on it throws `syncSetPaused`.
 - Conflict loop: resolve `.makeCanonical` → next run converges → fake contents match the chosen version → conflict closed.
 - Events: every mutation emits its event; activity fan-out matches store contents; two subscribers both receive.
@@ -52,7 +53,7 @@ A ten-minute pass exercising what automation can't judge — feel, wording, appe
 
 1. Launch → branded loading → Overview matches [05 acceptance] in light *and* dark mode.
 2. Documents: Preview → acknowledge → Sync Now → toast → Activity run group complete.
-3. Projects: review mass-deletion evidence → approve → trash entries in Activity.
+3. Projects: review mass-deletion evidence; verify execution is unavailable; change the demo reality/settings; explicitly prepare a fresh executable plan before any later sync.
 4. Photos Archive: refusal is calm; Demo ▸ Mount NAS → next scan clears it.
 5. Conflict: advice expand → dismiss → choose version → next sync converges.
 6. Interrupted-run scenario → recovery entry.

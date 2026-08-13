@@ -92,8 +92,8 @@ public enum Precondition: Codable, Hashable, Sendable {
 
 ```swift
 public enum ExecutionGate: Codable, Hashable, Sendable {
-    case clear                          // may run unattended
-    case hold([HoldReason])             // plan withheld; PlanApproval unlocks [06 §3]
+    case clear                          // executable; production still requires bridge confirmation
+    case hold([HoldReason])             // executable only when permitsApproval is true
 }
 
 public enum HoldReason: Codable, Hashable, Sendable {
@@ -119,7 +119,9 @@ or (trackedCount ≥ absoluteThreshold and intents/trackedCount ≥ ratioThresho
 
 Defaults: deletions 25 / 25 %, edits 50 / 50 %. Counting **decisions** means "user deleted 30 files" gates identically whether the set has 2 or 5 locations (today, fan-out operations are counted, so the same act trips differently by topology). `SyncMode.noDeletePropagation` converts `propagateDeletion` verdicts into informational decisions with zero operations — visible in the preview, nothing trashed.
 
-The gate is **monotone**: computed once from plan contents by a pure function, never downgraded by anything (not the orchestrator, not the advisor, not re-rendering). There is no third "paused" risk level — refusals took that role, typed.
+An executable preparation is exactly `gate == .clear`, or `gate == .hold && gate.permitsApproval`. `permitsApproval` is true only when every hold reason permits approval. `conflicts`, `massEdit`, and `deletionsNeedReview` permit approval; `massDeletion` does not, so any mixed hold containing `massDeletion` is non-approvable. A non-approvable hold still carries its preview and evidence, but it exposes no confirmation or executor path. The user must change the underlying files or sync configuration and explicitly prepare a fresh plan whose gate is executable.
+
+The gate is **monotone**: computed once from plan contents by a pure function, never downgraded by anything (not the orchestrator, not the advisor, not re-rendering). Confirmation cannot convert a non-approvable hold into an executable plan. There is no third "paused" risk level — refusals and holds retain their distinct typed meanings.
 
 ## 5. Fingerprints
 

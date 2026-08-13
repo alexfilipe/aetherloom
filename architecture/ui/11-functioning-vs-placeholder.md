@@ -12,7 +12,8 @@ For app rows, “functioning” currently means real `AetherloomCore` paths behi
 | Scanning, incomplete-scan refusal | ✅ | real scan path (timeouts included) |
 | Reconciliation, planning, gating (mass delete/edit, deletions review, conflicts) | ✅ | real planner + `ExecutionGate` |
 | Change preview (sections, causality, waiting, byte sizes) | ✅ | `ChangePreviewRenderer` output rendered verbatim |
-| Approval with acknowledged trash/conflict counts, fingerprint, 15-min expiry | ✅ | `PlanApproval` + engine validation |
+| Current demo-only approval with acknowledged counts, fingerprint, 15-min expiry | ✅ | current bridge/AppModel still expose core `PlanApproval`; L4 replaces that AppModel-facing seam with `WorkspaceExecutionConfirmation` |
+| Bridge-enforced non-approvable mass-deletion safety-stop UI | 🎭 | core already keeps `massDeletion` held and never constructs `ScheduleExecutor`; L4 removes confirmation construction, enabled execution, and approval derivation from the UI/bridge path |
 | Execution: staging, journal, precondition verification, drift abort (`stoppedForReplan`) | ✅ | `ScheduleExecutor` |
 | Journal recovery after interrupted run | ✅ | `RunRecovery` (scripted trigger via Demo menu) |
 | Delete-to-trash (provider trash, recoverable) | ✅ | fake providers' trash |
