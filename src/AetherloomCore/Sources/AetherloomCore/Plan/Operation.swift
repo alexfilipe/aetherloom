@@ -332,7 +332,7 @@ extension ProviderClassificationRequest {
         for operation in operations {
             switch operation.kind {
             case let .makeFolder(path):
-                add(path, scope: .item)
+                add(path, scope: .subtree)
             case let .transfer(content, target, _):
                 let coverage = scope(for: content.kind)
                 add(content.path, scope: coverage)

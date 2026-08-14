@@ -71,9 +71,10 @@ public struct LocalPackageAncestryValidator: Sendable {
         }
 
         var candidate = selected
-        var visited: Set<String> = []
+        var visited: Set<[String]> = []
         while true {
-            guard visited.insert(candidate.path).inserted else {
+            let candidateKey = Self.comparableComponents(candidate)
+            guard visited.insert(candidateKey).inserted else {
                 throw LocalPackageAncestryValidationError.metadataUnavailable
             }
             let metadata: LocalItemSafetyMetadata
@@ -83,13 +84,13 @@ public struct LocalPackageAncestryValidator: Sendable {
                 throw LocalPackageAncestryValidationError.metadataUnavailable
             }
             if metadata.isPackage {
-                throw candidate == selected
+                throw Self.pathsEqual(candidate, selected)
                     ? LocalPackageAncestryValidationError.selectedRootIsPackage
                     : LocalPackageAncestryValidationError.selectedRootIsInsidePackage
             }
-            if candidate == volumeRoot { return }
+            if Self.pathsEqual(candidate, volumeRoot) { return }
             let parent = candidate.deletingLastPathComponent().standardizedFileURL
-            guard parent != candidate else {
+            guard !Self.pathsEqual(parent, candidate) else {
                 throw LocalPackageAncestryValidationError.selectedRootOutsideVolume
             }
             candidate = parent
@@ -97,10 +98,23 @@ public struct LocalPackageAncestryValidator: Sendable {
     }
 
     private static func contains(_ selected: URL, in volumeRoot: URL) -> Bool {
-        let volumePath = volumeRoot.path
-        return volumePath == "/"
-            || selected.path == volumePath
-            || selected.path.hasPrefix(volumePath + "/")
+        let candidate = comparableComponents(selected)
+        let prefix = comparableComponents(volumeRoot)
+        guard prefix.count <= candidate.count else { return false }
+        return zip(candidate, prefix).allSatisfy { $0.0 == $0.1 }
+    }
+
+    private static func pathsEqual(_ lhs: URL, _ rhs: URL) -> Bool {
+        comparableComponents(lhs) == comparableComponents(rhs)
+    }
+
+    private static func comparableComponents(_ url: URL) -> [String] {
+        url.standardizedFileURL.pathComponents.map {
+            $0.precomposedStringWithCanonicalMapping.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+        }
     }
 }
 
@@ -248,6 +262,11 @@ enum LocalItemSafetyClassifier {
         effectiveUserID: UInt32 = currentEffectiveUserID,
         effectiveGroupID: UInt32 = currentEffectiveGroupID
     ) -> ScanExclusion? {
+        // Symlinks are excluded by SyncSettings after observation. Their
+        // lstat identity describes the link, while Foundation's file-kind
+        // resource values may describe the target, so applying file or
+        // directory baselines here would manufacture a misleading reason.
+        if metadata.isSymbolicLink { return nil }
         let scope: ScanExclusion.Scope = metadata.isDirectory ? .subtree : .item
         if metadata.isDirectory, metadata.isPackage {
             return ScanExclusion(path: path, scope: .subtree, reason: .packageDirectory)

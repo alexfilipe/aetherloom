@@ -59,7 +59,7 @@ public actor SyncOrchestrator {
     private let adviceValidator = AdviceValidator()
     private let renderer = ChangePreviewRenderer()
     private var activeSyncSets: Set<UUID> = []
-    private var invalidatedPreparationRunIDs: Set<UUID> = []
+    private var currentPreparationRunIDs: [UUID: UUID] = [:]
 
     public init(
         locations: LocationDirectory,
@@ -83,6 +83,9 @@ public actor SyncOrchestrator {
         try beginRun(syncSet.id)
         defer { finishRun(syncSet.id) }
 
+        // Starting a new preparation invalidates every older preparation for
+        // this sync set without retaining an unbounded history of run IDs.
+        currentPreparationRunIDs.removeValue(forKey: syncSet.id)
         let runID = environment.makeID()
         await appendActivity(
             syncSetID: syncSet.id,
@@ -155,7 +158,7 @@ public actor SyncOrchestrator {
 
     public func execute(_ preparation: SyncPreparation, approval: PlanApproval? = nil) async throws -> SyncRunSummary {
         let syncSetID = preparation.outcome.syncSetID
-        guard !invalidatedPreparationRunIDs.contains(preparation.runID) else {
+        guard currentPreparationRunIDs[syncSetID] == preparation.runID else {
             throw SyncOrchestratorError.freshPreparationRequired(
                 preparation.runID
             )
@@ -205,7 +208,9 @@ public actor SyncOrchestrator {
                 )
             } catch let error as ScheduleExecutionError
                 where error.requiresFreshPreparation {
-                invalidatedPreparationRunIDs.insert(preparation.runID)
+                if currentPreparationRunIDs[syncSetID] == preparation.runID {
+                    currentPreparationRunIDs.removeValue(forKey: syncSetID)
+                }
                 throw error
             }
             await appendStage("Execute", syncSetID: syncSetID, runID: preparation.runID, started: false)
@@ -259,13 +264,15 @@ public actor SyncOrchestrator {
         await logPreparationSummary(preview, syncSetID: syncSet.id, runID: runID)
         await appendStage("Preview", syncSetID: syncSet.id, runID: runID, started: false)
 
-        return SyncPreparation(
+        let preparation = SyncPreparation(
             outcome: outcome,
             preview: preview,
             advice: annotations.advice,
             runID: runID,
             syncSetName: syncSet.name
         )
+        currentPreparationRunIDs[syncSet.id] = runID
+        return preparation
     }
 
     private func recoverIfNeeded(syncSetID: UUID, runID: UUID) async throws {

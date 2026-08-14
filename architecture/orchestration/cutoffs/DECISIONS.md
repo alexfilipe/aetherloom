@@ -60,6 +60,14 @@ Full entries for decisions whose feature or pull request is still in flight. App
 - Status: proposed
 - Resolving PR/SHA: pending.
 
+## Resolution metadata appended 2026-08-14
+
+- CUT-026 independent evaluation: Published head `2883e48403b95082b8d5f25cda57d39f0c4f1251` received **CHANGES REQUIRED** with P0 0, P1 0, P2 4, and P3 2. One coherent correction batch is accepted for the six findings; final corrected head remains pending publication.
+- CUT-026 correction scope: Correct false permission evidence for symlinks, require subtree classification for `makeFolder`, prevent an opaque excluded subtree from authorizing deletion of a missing tracked record, bound stale-preparation invalidation without re-admitting an old preparation, and normalize the package-ancestry volume boundary with focused system-volume coverage.
+- CUT-026 changed-boundary evaluation: The opaque-subtree correction adds a conservative no-deletion safety boundary beyond the evaluated implementation. Under E09, the corrected published head requires a second fresh complete independent evaluation rather than only targeted verification. The evaluation ceiling is then reached; any third complete evaluation requires explicit user approval plus new P0/P1 evidence.
+- CUT-026 accepted measurement residual: The automated disposable Documents/Projects qualification proves accounting, exact evidence, grouping, and bounded model/enumeration behavior with a scripted metadata inspector; it does not measure real per-item metadata-probe syscall cost. Exact-SHA user-Mac validation is the sole merge-gate proof of representative real-world scan cost. This P2 reopens if that user-Mac scan exceeds the performance/UI budget or cannot retain bounded exact evidence.
+- CUT-026 correction state: Reopened for the accepted correction batch. After publication, require focused/static/full validation, exact local/upstream/origin/GitHub base/head equality, one green exact-head macOS CI run, the second complete evaluation with no P0/P1, and exact-SHA user-Mac evidence. The user remains the sole merger; threads remain unresolved unless the user explicitly authorizes resolution.
+
 ## Carried backlog
 
 Open deferrals and accepted residual risks from closed decisions. Each is still live: treat the trigger as the condition that turns it into work. The named entry holds the full reasoning and evidence; retrieve it with its batch's command in the closed index below.

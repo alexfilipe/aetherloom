@@ -120,6 +120,51 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     #expect(inspector.requestedPaths.isEmpty)
 }
 
+@Test func packageAncestryUsesNormalizedComponentBoundaries() throws {
+    let volume = URL(fileURLWithPath: "/Volumes/DÁTA/", isDirectory: true)
+    let selected = URL(
+        fileURLWithPath: "/volumes/da\u{301}ta/Documents",
+        isDirectory: true
+    )
+    let inspector = ScriptedSafetyInspector(volumeRoot: volume)
+    inspector.overrides[selected.path] = inspector.directory()
+    inspector.overrides[selected.deletingLastPathComponent().path] = inspector.directory()
+
+    try LocalPackageAncestryValidator(inspector: inspector)
+        .validate(canonicalSelectedRoot: selected)
+
+    let last = try #require(inspector.requestedPaths.last)
+    #expect(
+        SyncPath(last).caseInsensitiveKey
+            == SyncPath(volume.path).caseInsensitiveKey
+    )
+    #expect(!inspector.requestedPaths.contains("/"))
+}
+
+#if canImport(Darwin)
+@Test func packageAncestryAcceptsRealTemporaryVolumeRoot() throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "system-volume-root"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let selected = root.appendingPathComponent("Documents", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: selected,
+        withIntermediateDirectories: true
+    )
+
+    let inspector = SystemLocalItemSafetyInspector()
+    let volumeRoot = try inspector.volumeRoot(for: selected)
+    #expect(
+        SyncPath(selected.path).isEqualOrDescendant(of: SyncPath(volumeRoot.path))
+    )
+    try LocalPackageAncestryValidator(inspector: inspector)
+        .validate(canonicalSelectedRoot: selected)
+}
+#endif
+
 @Test func metadataClassifierCoversEveryAcceptedReasonAndBaseline() {
     let inspector = ScriptedSafetyInspector(volumeRoot: URL(fileURLWithPath: "/"))
     let uid = LocalItemSafetyClassifier.currentEffectiveUserID
@@ -194,6 +239,69 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
         metadata: inspector.file(group: gid &+ 1)
     )?.reason == .unsupportedOwnership)
 }
+
+@Test func symlinkMetadataDoesNotManufacturePermissionExclusion() {
+    let uid = LocalItemSafetyClassifier.currentEffectiveUserID
+    let gid = LocalItemSafetyClassifier.currentEffectiveGroupID
+    let metadata = LocalItemSafetyMetadata(
+        isDirectory: false,
+        isRegularFile: true,
+        isSymbolicLink: true,
+        posixMode: 0o755,
+        ownerID: uid,
+        groupID: gid,
+        hasAccessControlList: true,
+        extendedAttributeSizes: ["user.link": 1]
+    )
+
+    #expect(
+        LocalItemSafetyClassifier.exclusion(
+            for: "/current",
+            metadata: metadata
+        ) == nil
+    )
+    #expect(
+        LocalItemSafetyClassifier.exclusion(
+            for: "/Current.app",
+            metadata: LocalItemSafetyMetadata(
+                isDirectory: true,
+                isRegularFile: false,
+                isSymbolicLink: true,
+                isPackage: true,
+                posixMode: 0o755,
+                ownerID: uid,
+                groupID: gid
+            )
+        ) == nil
+    )
+}
+
+#if canImport(Darwin)
+@Test func systemInspectorSymlinkToExistingFileDoesNotBecomeExclusion() throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "system-symlink"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let target = root.appendingPathComponent("target.txt")
+    let link = root.appendingPathComponent("current")
+    try Data("target".utf8).write(to: target)
+    try FileManager.default.createSymbolicLink(
+        at: link,
+        withDestinationURL: target
+    )
+
+    let metadata = try SystemLocalItemSafetyInspector().metadata(at: link)
+    #expect(metadata.isSymbolicLink)
+    #expect(
+        LocalItemSafetyClassifier.exclusion(
+            for: "/current",
+            metadata: metadata
+        ) == nil
+    )
+}
+#endif
 
 @Test(.timeLimit(.minutes(1)))
 func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws {
@@ -404,6 +512,70 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     #expect(!activity.contains { $0.message == ActivityMessageCatalog.runFinished })
 }
 
+@Test func opaqueRelocatedSubtreeCannotAuthorizeDeletion() {
+    let left = LocationID(rawValue: UUID())
+    let right = LocationID(rawValue: UUID())
+    let syncSet = SyncSet(
+        id: UUID(),
+        name: "Opaque relocation",
+        locations: [left, right],
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    let record = BaseRecord(
+        syncSetID: syncSet.id,
+        path: "/Projects/notes.txt",
+        kind: .file,
+        version: ItemVersion(contentHash: "base"),
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    let exclusion = ScanExclusion(
+        path: "/Projects.app",
+        scope: .subtree,
+        reason: .packageDirectory
+    )
+    let leftSnapshot = LocationSnapshot(
+        location: left,
+        scope: .entireDrive,
+        observations: [],
+        exclusions: [exclusion],
+        scannedAt: l2Date
+    )
+    let rightSnapshot = LocationSnapshot(
+        location: right,
+        scope: .entireDrive,
+        observations: [
+            ItemObservation(
+                location: right,
+                path: record.path,
+                kind: record.kind,
+                version: record.version
+            )
+        ],
+        scannedAt: l2Date
+    )
+
+    let outcome = SyncPlanner().plan(
+        SyncPlanningInput(
+            syncSet: syncSet,
+            records: [record],
+            snapshots: [leftSnapshot, rightSnapshot]
+        ),
+        environment: PlanningEnvironment(now: l2Date)
+    )
+    guard case let .plan(plan) = outcome else {
+        Issue.record("Expected an exclusion-only plan for opaque relocation")
+        return
+    }
+    #expect(plan.schedule.operations.isEmpty)
+    #expect(plan.decisions.isEmpty)
+    #expect(plan.exclusions == [
+        LocatedScanExclusion(location: left, exclusion: exclusion)
+    ])
+    #expect(plan.waiting.count == 1)
+}
+
 @Test func subtreeExclusionAlsoBlocksUntrackedCounterpartCreation() {
     let left = LocationID(rawValue: UUID())
     let right = LocationID(rawValue: UUID())
@@ -553,7 +725,7 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     #expect(await firstProvider.callLog().map(\.operation) == [.classify])
     #expect(await lastProvider.callLog().map(\.operation) == [.classify])
     #expect(await firstProvider.classificationRequestLog().first?.contains(
-        ProviderClassificationRequest(path: "/Folder", scope: .item)
+        ProviderClassificationRequest(path: "/Folder", scope: .subtree)
     ) == true)
     #expect(await firstProvider.item(at: "/Folder") == nil)
     #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
@@ -565,6 +737,81 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
             && $0.path == "/Folder"
             && $0.detail == "subtree|packageDirectory"
     })
+
+    await lastProvider.setClassification(nil)
+    let replacement = try await orchestrator.prepare(syncSet)
+    #expect(replacement.runID != preparation.runID)
+    await #expect(
+        throws: SyncOrchestratorError.freshPreparationRequired(preparation.runID)
+    ) {
+        try await orchestrator.execute(preparation)
+    }
+}
+
+@Test func makeFolderDescendantDriftAbortsEveryLocationBeforeMutation() async throws {
+    let first = LocationID(
+        rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+    )
+    let last = LocationID(
+        rawValue: UUID(uuidString: "f0000000-0000-0000-0000-000000000002")!
+    )
+    let firstProvider = FakeStorageProvider(locationID: first)
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "make-folder-descendant-preflight"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let folder = root.appendingPathComponent("Shared", isDirectory: true)
+    let descendant = folder.appendingPathComponent("private.txt")
+    try FileManager.default.createDirectory(
+        at: folder,
+        withIntermediateDirectories: true
+    )
+    try Data("private".utf8).write(to: descendant)
+    let inspector = ScriptedSafetyInspector(volumeRoot: root)
+    inspector.overrides[descendant.path] = inspector.file(mode: 0o600)
+    let lastProvider = await makeLocalProvider(
+        root: root,
+        safetyInspector: inspector,
+        registry: LocalRootIORegistry(),
+        locationID: last
+    )
+    let operation = Operation(
+        id: OperationID(UUID()),
+        location: first,
+        kind: .makeFolder(at: "/Shared"),
+        precondition: .pathAbsent
+    )
+    let syncSetID = UUID()
+    let plan = SyncPlan(
+        syncSetID: syncSetID,
+        participatingLocations: [first, last],
+        generatedAt: l2Date,
+        decisions: [],
+        schedule: OperationSchedule(operations: [operation]),
+        gate: .clear,
+        fingerprint: PlanFingerprint(rawValue: "make-folder-descendant-preflight")
+    )
+    let stores = EngineStores.inMemory()
+    let stageRoot = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "make-folder-descendant-stage"
+    )
+    let executor = ScheduleExecutor(
+        providers: [first: firstProvider, last: lastProvider],
+        stores: stores,
+        stage: ContentStage(rootDirectory: stageRoot, byteLimit: 1_000_000)
+    )
+
+    await #expect(throws: ScheduleExecutionError.self) {
+        try await executor.execute(plan)
+    }
+    #expect(await firstProvider.callLog().map(\.operation) == [.classify])
+    #expect(await firstProvider.item(at: "/Shared") == nil)
+    #expect(inspector.requestedPaths.contains(descendant.path))
+    #expect(FileManager.default.fileExists(atPath: descendant.path))
+    #expect(try await stores.journal.unfinishedRun(for: syncSetID) == nil)
 }
 
 @Test func folderOperationPreflightRecursivelyFindsPostConfirmationDrift() async throws {
@@ -641,6 +888,12 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
             location: destination,
             kind: .transfer(content: folder, to: "/Archive/App", overwrite: .neverOverwrite),
             precondition: .pathAbsent
+        ),
+        Operation(
+            id: OperationID(UUID()),
+            location: destination,
+            kind: .makeFolder(at: "/Created"),
+            precondition: .pathAbsent
         )
     ]))
     let requests = await provider.classificationRequestLog().first ?? []
@@ -648,6 +901,7 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     #expect(requests.contains(.init(path: "/Archive/App", scope: .subtree)))
     #expect(requests.contains(.init(path: "/Projects", scope: .item)))
     #expect(requests.contains(.init(path: "/Archive", scope: .item)))
+    #expect(requests.contains(.init(path: "/Created", scope: .subtree)))
 }
 
 @Test(arguments: [
@@ -828,10 +1082,11 @@ func classificationAmbiguityOrUnavailabilityHasZeroMutations(
 private func makeLocalProvider(
     root: URL,
     safetyInspector: any LocalItemSafetyInspecting,
-    registry: LocalRootIORegistry
+    registry: LocalRootIORegistry,
+    locationID: LocationID = .localFolder
 ) async -> LocalFolderStorageProvider {
     var location = SyncLocation(
-        id: .localFolder,
+        id: locationID,
         kind: .localFolder,
         displayName: "Local",
         scope: .entireDrive

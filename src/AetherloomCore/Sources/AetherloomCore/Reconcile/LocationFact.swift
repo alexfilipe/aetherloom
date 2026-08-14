@@ -157,6 +157,35 @@ public func deriveFacts(_ input: ReconciliationInput) -> [ReconciliationItem] {
             }
         }
 
+        // A missing tracked item cannot become deletion evidence while that
+        // location also contains an unenumerated excluded subtree. The item
+        // may have moved into that subtree, and no descendant observation is
+        // available for identity/hash move matching. Preserve the exact root
+        // evidence and hold the record everywhere until absence is provable.
+        let opaqueSubtreeExclusions = locations.flatMap { location -> [LocatedScanExclusion] in
+            guard facts[location]?.isMissing == true else { return [] }
+            return (input.snapshots[location]?.exclusions ?? []).compactMap { exclusion in
+                guard exclusion.scope == .subtree else { return nil }
+                return LocatedScanExclusion(location: location, exclusion: exclusion)
+            }
+        }.sorted()
+        if !opaqueSubtreeExclusions.isEmpty {
+            facts = Dictionary(uniqueKeysWithValues: locations.map {
+                ($0, LocationFact.excluded(opaqueSubtreeExclusions))
+            })
+            items.append(
+                ReconciliationItem(
+                    base: record,
+                    facts: facts,
+                    observations: observations,
+                    locations: locations,
+                    primaryPath: record.path,
+                    blockingExclusions: opaqueSubtreeExclusions
+                )
+            )
+            continue
+        }
+
         items.append(
             ReconciliationItem(
                 base: record,
