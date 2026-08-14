@@ -11,10 +11,11 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     #expect(!SyncPath("/Work/Appetite").isEqualOrDescendant(of: "/work/app"))
 }
 
-@Test func decodedSyncPathCannotBypassNormalization() throws {
+@Test func decodedSyncPathPreservesUnicodeWhileAncestryNormalizes() throws {
     let data = Data(#"{"rawValue":"/Projects/A\u0301pp//Sources"}"#.utf8)
     let decoded = try JSONDecoder().decode(SyncPath.self, from: data)
-    #expect(decoded == SyncPath("/Projects/Ápp/Sources"))
+    #expect(decoded.rawValue == "/Projects/A\u{301}pp/Sources")
+    #expect(decoded.isEqualOrDescendant(of: "/projects/ápp"))
 }
 
 @Test func exclusionEvidenceParticipatesInPlanFingerprint() {

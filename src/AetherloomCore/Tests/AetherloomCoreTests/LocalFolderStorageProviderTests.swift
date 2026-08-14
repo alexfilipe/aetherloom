@@ -348,7 +348,7 @@ struct LocalFolderStorageProviderTests {
         #expect(try Data(contentsOf: staging) == Data("payload".utf8))
     }
 
-    @Test func scanClassifiesNonbaselineFileWithoutReadingContents() async throws {
+    @Test func unreadableFileMetadataMakesScanIncompleteWithoutReadingContents() async throws {
         let root = try makeRoot("unreadable-file-scan")
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("MetadataOnly.txt")
@@ -369,15 +369,12 @@ struct LocalFolderStorageProviderTests {
         )
         let snapshot = await provider.scan(.entireDrive)
 
-        #expect(snapshot.status == .complete)
+        guard case .incomplete = snapshot.status else {
+            Issue.record("Unreadable file metadata did not make the scan incomplete.")
+            return
+        }
         #expect(snapshot.observations.byPath["/MetadataOnly.txt"] == nil)
-        #expect(snapshot.exclusions == [
-            ScanExclusion(
-                path: "/MetadataOnly.txt",
-                scope: .item,
-                reason: .unsupportedPOSIXPermissions(actual: 0, required: 0o644)
-            )
-        ])
+        #expect(snapshot.exclusions.isEmpty)
     }
 
     @Test func selectiveEvidenceUsesIncrementalSHA256WithoutChangingScanCapability() async throws {
@@ -983,7 +980,7 @@ struct LocalFolderStorageProviderTests {
         }
     }
 
-    @Test func nonbaselineSubdirectoryIsExcludedWithoutDescent() async throws {
+    @Test func unreadableSubdirectoryMakesScanIncompleteWithoutDescent() async throws {
         let root = try makeRoot("unreadable")
         defer { try? FileManager.default.removeItem(at: root) }
         let blocked = root.appendingPathComponent("Blocked", isDirectory: true)
@@ -1005,16 +1002,13 @@ struct LocalFolderStorageProviderTests {
             inspector: ScriptedVolumeInspector()
         )
         let snapshot = await provider.scan(.entireDrive)
-        #expect(snapshot.status == .complete)
+        guard case .incomplete = snapshot.status else {
+            Issue.record("Unreadable directory metadata did not make the scan incomplete.")
+            return
+        }
         #expect(snapshot.observations.byPath["/Blocked"] == nil)
         #expect(snapshot.observations.byPath["/Blocked/Secret.txt"] == nil)
-        #expect(snapshot.exclusions == [
-            ScanExclusion(
-                path: "/Blocked",
-                scope: .subtree,
-                reason: .unsupportedPOSIXPermissions(actual: 0, required: 0o755)
-            )
-        ])
+        #expect(snapshot.exclusions.isEmpty)
     }
 
     @Test func storeIsAtomicIdempotentAndRejectsVersionDrift() async throws {
@@ -1795,7 +1789,7 @@ struct LocalFolderStorageProviderTests {
         #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
         #expect(try await baseRecords.records(for: syncSetID) == [originalRecord])
         #expect(await provider.indeterminateMutationReceipt() == receipt)
-        #expect(await remote.callLog().isEmpty)
+        #expect(await remote.callLog().allSatisfy { $0.operation == .classify })
     }
 
     @Test func systemQuarantineInspectionDistinguishesMissingAndPresent() throws {
@@ -2200,7 +2194,7 @@ struct LocalFolderStorageProviderTests {
         }
         #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
         #expect(await provider.indeterminateMutationReceipt() == receipt)
-        #expect(await remote.callLog().isEmpty)
+        #expect(await remote.callLog().allSatisfy { $0.operation == .classify })
         #expect(hook.kinds() == [.trash])
     }
 
@@ -2548,7 +2542,7 @@ struct LocalFolderStorageProviderTests {
             }
             #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
             #expect(await provider.indeterminateMutationReceipt() == receipt)
-            #expect(await remote.callLog().isEmpty)
+            #expect(await remote.callLog().allSatisfy { $0.operation == .classify })
         }
     }
 

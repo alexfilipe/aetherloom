@@ -217,7 +217,7 @@ public struct SyncPath: Codable, Hashable, Sendable, Comparable, ExpressibleBySt
         let withLeadingSlash = trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
         let parts = withLeadingSlash
             .split(separator: "/", omittingEmptySubsequences: true)
-            .map { String($0).precomposedStringWithCanonicalMapping }
+            .map(String.init)
         guard !parts.isEmpty else { return "/" }
         return "/" + parts.joined(separator: "/")
     }
