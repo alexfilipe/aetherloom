@@ -6,12 +6,26 @@ public enum ScheduleExecutionError: Error, Equatable, Sendable {
     case invalidApproval(ApprovalRejectionReason)
     case invalidSchedule(String)
     case journalWriteFailed(operationID: OperationID, detail: String)
+    case classificationPreflightFailed(
+        location: LocationID,
+        path: SyncPath?,
+        detail: String,
+        exclusions: [ScanExclusion]
+    )
+}
+
+public extension ScheduleExecutionError {
+    var requiresFreshPreparation: Bool {
+        if case .classificationPreflightFailed = self { return true }
+        return false
+    }
 }
 
 public enum SyncRunOutcome: Codable, Hashable, Sendable {
     case refused
     case held
     case completed
+    case completedWithExclusions
     case stoppedForReplan(location: LocationID, path: SyncPath)
     case mutationIndeterminate(
         location: LocationID,
@@ -205,6 +219,8 @@ public struct ScheduleExecutor: Sendable {
         }
 
         let runID = requestedRunID ?? environment.makeID()
+        try await classificationPreflight(for: plan, runID: runID)
+
         try await stores.journal.begin(runID: runID, syncSetID: plan.syncSetID, fingerprint: plan.fingerprint)
         if logRunBoundaryActivity {
             await appendActivity(
@@ -291,6 +307,9 @@ public struct ScheduleExecutor: Sendable {
         if case .completed = summaryOutcome, let firstFailure = state.failedOperations.first {
             summaryOutcome = .failed(message: firstFailure.detail ?? "One or more operations failed.")
         }
+        if case .completed = summaryOutcome, !plan.exclusions.isEmpty {
+            summaryOutcome = .completedWithExclusions
+        }
 
         let journalOutcome: JournalRunOutcome?
         switch summaryOutcome {
@@ -298,7 +317,7 @@ public struct ScheduleExecutor: Sendable {
             journalOutcome = .failed
         case .held:
             journalOutcome = .cancelled
-        case .completed:
+        case .completed, .completedWithExclusions:
             journalOutcome = .succeeded
         case .stoppedForReplan:
             journalOutcome = .stoppedForReplan
@@ -323,7 +342,9 @@ public struct ScheduleExecutor: Sendable {
                 syncSetID: plan.syncSetID,
                 runID: runID,
                 category: .sync,
-                message: ActivityMessageCatalog.runFinished,
+                message: summaryOutcome.hasWaitingExclusions
+                    ? ActivityMessageCatalog.runFinishedWithExclusions
+                    : ActivityMessageCatalog.runFinished,
                 detail: summaryOutcome.detail
             )
         }
@@ -355,6 +376,56 @@ public struct ScheduleExecutor: Sendable {
             return true
         case let .rejected(reason):
             throw ScheduleExecutionError.invalidApproval(reason)
+        }
+    }
+
+    private func classificationPreflight(
+        for plan: SyncPlan,
+        runID: UUID
+    ) async throws {
+        guard !plan.schedule.operations.isEmpty else { return }
+        let requests = ProviderClassificationRequest.forOperations(
+            plan.schedule.operations
+        )
+        let locations = plan.participatingLocations.isEmpty
+            ? Array(providers.keys).sorted()
+            : plan.participatingLocations.sorted()
+        for location in locations {
+            guard let provider = providers[location] else {
+                throw ScheduleExecutionError.missingProvider(location)
+            }
+            switch await provider.classify(requests) {
+            case .supported:
+                continue
+            case let .excluded(exclusions):
+                for exclusion in ScanExclusion.normalized(exclusions) {
+                    await stores.activity.append(
+                        ActivityEntry(
+                            occurredAt: environment.now(),
+                            syncSetID: plan.syncSetID,
+                            runID: runID,
+                            category: .safety,
+                            locationID: location,
+                            path: exclusion.path,
+                            message: exclusion.reason.message,
+                            detail: "\(exclusion.scope.rawValue)|\(exclusion.reason.stableKey)"
+                        )
+                    )
+                }
+                throw ScheduleExecutionError.classificationPreflightFailed(
+                    location: location,
+                    path: exclusions.sorted { $0.stableKey < $1.stableKey }.first?.path,
+                    detail: exclusions.map { $0.reason.message }.sorted().joined(separator: " | "),
+                    exclusions: ScanExclusion.normalized(exclusions)
+                )
+            case let .unavailable(detail), let .ambiguous(detail):
+                throw ScheduleExecutionError.classificationPreflightFailed(
+                    location: location,
+                    path: nil,
+                    detail: detail,
+                    exclusions: []
+                )
+            }
         }
     }
 
@@ -1073,7 +1144,7 @@ private extension ItemVerdict {
         case let .compound(verdicts):
             return verdicts.contains { $0.containsConflictPreservation }
         case .inSync, .propagateContent, .propagateCreation, .propagatePath,
-             .propagateDeletion, .waiting:
+             .propagateDeletion, .waiting, .excluded:
             return false
         }
     }
@@ -1219,6 +1290,8 @@ extension SyncRunOutcome {
             return "Held for review."
         case .completed:
             return nil
+        case .completedWithExclusions:
+            return "Excluded items remain waiting and were not changed."
         case let .stoppedForReplan(location, path):
             return "\(location.rawValue.uuidString) \(path.rawValue)"
         case let .mutationIndeterminate(location, path, receiptID):
@@ -1234,7 +1307,7 @@ extension SyncRunOutcome {
         switch self {
         case .stoppedForReplan, .mutationIndeterminate:
             return true
-        case .refused, .held, .completed, .cancelled, .failed:
+        case .refused, .held, .completed, .completedWithExclusions, .cancelled, .failed:
             return false
         }
     }
@@ -1247,6 +1320,11 @@ extension SyncRunOutcome {
             return candidate
         }
         return candidate
+    }
+
+    var hasWaitingExclusions: Bool {
+        if case .completedWithExclusions = self { return true }
+        return false
     }
 }
 
@@ -1267,7 +1345,7 @@ private extension ItemVerdict {
             return initiatedBy
         case let .compound(verdicts):
             return verdicts.compactMap(\.deletionInitiator).first
-        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .conflict, .waiting:
+        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .conflict, .waiting, .excluded:
             return nil
         }
     }

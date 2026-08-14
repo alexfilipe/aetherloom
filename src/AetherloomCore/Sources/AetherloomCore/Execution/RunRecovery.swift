@@ -41,18 +41,18 @@ public struct RunRecovery: Sendable {
     }
 
     public func recover(_ replay: JournalReplay) async throws -> RunRecoveryReport {
-        var restoredRecords = 0
-        for event in replay.events {
-            guard case let .itemConverged(_, record) = event else { continue }
-            try await stores.baseRecords.apply(.upsert(record))
-            restoredRecords += 1
+        let convergedRecords = replay.events.compactMap { event -> BaseRecord? in
+            guard case let .itemConverged(_, record) = event else { return nil }
+            return record
         }
+        var restoredRecords = 0
 
-        let pendingOperations = replay.events.compactMap { event -> Operation? in
-            guard case let .intent(operation) = event, replay.pendingOperationIDs.contains(operation.id) else {
-                return nil
-            }
+        let journalOperations = replay.events.compactMap { event -> Operation? in
+            guard case let .intent(operation) = event else { return nil }
             return operation
+        }
+        let pendingOperations = journalOperations.filter {
+            replay.pendingOperationIDs.contains($0.id)
         }
 
         let sortedPendingOperations = pendingOperations.sorted { $0.id < $1.id }
@@ -133,6 +133,14 @@ public struct RunRecovery: Sendable {
                 claimsToFinish.append((provider, claim))
             }
 
+
+            try await classificationPreflight(
+                operations: journalOperations,
+                claims: claimsToFinish,
+                syncSetID: replay.syncSetID,
+                runID: replay.runID
+            )
+
             for operation in sortedPendingOperations {
                 var recoveryProvider: (any IndeterminateMutationRecovering)?
                 var recoveryClaim: ProviderMutationRecoveryClaim?
@@ -186,6 +194,11 @@ public struct RunRecovery: Sendable {
                 reconciled.append(operation.id)
             }
 
+            for record in convergedRecords {
+                try await stores.baseRecords.apply(.upsert(record))
+                restoredRecords += 1
+            }
+
             await stores.activity.append(
                 ActivityEntry(
                     occurredAt: environment.now(),
@@ -227,6 +240,66 @@ public struct RunRecovery: Sendable {
             )
         }
         return RunRecoveryReport(runID: replay.runID, reconciledOperations: reconciled, restoredRecords: restoredRecords)
+    }
+
+    private func classificationPreflight(
+        operations: [Operation],
+        claims: [(provider: any IndeterminateMutationRecovering, claim: ProviderMutationRecoveryClaim)],
+        syncSetID: UUID,
+        runID: UUID
+    ) async throws {
+        guard let firstOperation = operations.first else { return }
+        let requests = ProviderClassificationRequest.forOperations(operations)
+        for location in providers.keys.sorted() {
+            guard let provider = providers[location] else { continue }
+            var classification: ProviderPathClassification?
+            if let recovering = provider as? any IndeterminateMutationRecovering {
+                for claimed in claims {
+                    if await recovering.canPerformRecoveryRead(with: claimed.claim) {
+                        classification = await recovering.classifyForRecovery(
+                            requests,
+                            claim: claimed.claim
+                        )
+                        break
+                    }
+                }
+            }
+            let result: ProviderPathClassification
+            if let classification {
+                result = classification
+            } else {
+                result = await provider.classify(requests)
+            }
+            switch result {
+            case .supported:
+                continue
+            case let .excluded(exclusions):
+                for exclusion in ScanExclusion.normalized(exclusions) {
+                    await stores.activity.append(
+                        ActivityEntry(
+                            occurredAt: environment.now(),
+                            syncSetID: syncSetID,
+                            runID: runID,
+                            category: .safety,
+                            locationID: location,
+                            path: exclusion.path,
+                            message: exclusion.reason.message,
+                            detail: "\(exclusion.scope.rawValue)|\(exclusion.reason.stableKey)"
+                        )
+                    )
+                }
+                throw RunRecoveryError.providerTruthUnavailable(
+                    operationID: firstOperation.id,
+                    detail: "Recovery classification found excluded content at \(location.rawValue.uuidString): "
+                        + exclusions.map { $0.reason.message }.sorted().joined(separator: " | ")
+                )
+            case let .unavailable(detail), let .ambiguous(detail):
+                throw RunRecoveryError.providerTruthUnavailable(
+                    operationID: firstOperation.id,
+                    detail: "Recovery classification failed at \(location.rawValue.uuidString): \(detail)"
+                )
+            }
+        }
     }
 
     private func discoverIndeterminateReceipt(

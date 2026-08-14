@@ -139,6 +139,7 @@ public struct ActivityMessageCatalog: Sendable {
     public static let mutationIndeterminate = "Sync paused while a filesystem operation finishes. Aetherloom will reconcile its result before scanning or applying more changes."
     public static let verificationFailed = "Sync could not verify a completed write."
     public static let runFinished = "Sync finished."
+    public static let runFinishedWithExclusions = "Sync finished with excluded items still waiting."
 
     public static func runStarted(locationCount: Int) -> String {
         "Sync started for \(locationCount) locations."

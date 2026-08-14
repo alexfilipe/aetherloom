@@ -53,6 +53,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
     private let hashing: any LocalFileHashing
     private let mutationHook: any LocalMutationStarting
     private let trashReceiptPersistence: any LocalTrashReceiptPersisting
+    private let safetyInspector: any LocalItemSafetyInspecting
     private let mutations: LocalMutationCoordinator
     private let mutationArtifacts: LocalMutationArtifacts
     private let ownedCanonicalRootURL: URL?
@@ -102,6 +103,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             hashing: SystemLocalFileHasher(),
             mutationHook: NoOpLocalMutationHook(),
             trashReceiptPersistence: AtomicLocalTrashReceiptPersister(),
+            safetyInspector: SystemLocalItemSafetyInspector(),
             ownership: ownership
         )
     }
@@ -118,6 +120,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         hashing: any LocalFileHashing = SystemLocalFileHasher(),
         mutationHook: any LocalMutationStarting = NoOpLocalMutationHook(),
         trashReceiptPersistence: any LocalTrashReceiptPersisting = AtomicLocalTrashReceiptPersister(),
+        safetyInspector: any LocalItemSafetyInspecting = SystemLocalItemSafetyInspector(),
         registry: LocalRootIORegistry = .shared
     ) async -> LocalFolderStorageProvider {
         let expectedVolumeIdentity = location.configuration[
@@ -156,6 +159,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             hashing: hashing,
             mutationHook: mutationHook,
             trashReceiptPersistence: trashReceiptPersistence,
+            safetyInspector: safetyInspector,
             ownership: ownership
         )
     }
@@ -217,6 +221,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         hashing: any LocalFileHashing,
         mutationHook: any LocalMutationStarting,
         trashReceiptPersistence: any LocalTrashReceiptPersisting,
+        safetyInspector: any LocalItemSafetyInspecting,
         ownership: LocalRootOwnership
     ) {
         self.locationID = location.id
@@ -232,6 +237,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         self.hashing = hashing
         self.mutationHook = mutationHook
         self.trashReceiptPersistence = trashReceiptPersistence
+        self.safetyInspector = safetyInspector
         self.mutations = ownership.mutations
         self.mutationArtifacts = ownership.artifacts
         self.ownedCanonicalRootURL = ownership.canonicalRootPath.map {
@@ -322,6 +328,33 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         since _: ChangeCursor?
     ) async throws -> ChangeHint {
         ChangeHint(changedRoots: [], nextCursor: nil, isComplete: false)
+    }
+
+    public func classify(
+        _ requests: [ProviderClassificationRequest]
+    ) async -> ProviderPathClassification {
+        guard rootOwnershipIssue == nil else {
+            return .unavailable(detail: rootOwnershipIssue ?? "The local root is unavailable.")
+        }
+        let context = readContext()
+        let result = await mutations.performRead(
+            nanoseconds: deadlines.probeNanoseconds,
+            clock: deadlines.clock
+        ) {
+            await context.classify(requests)
+        }
+        switch result {
+        case let .completed(classification):
+            return classification
+        case let .blocked(receipt):
+            return .unavailable(detail: receipt.map {
+                "Filesystem mutation \($0.id.uuidString) is awaiting recovery."
+            } ?? "Filesystem recovery is in progress.")
+        case .timedOut:
+            return .ambiguous(detail: "Filesystem classification timed out.")
+        case .cancelled:
+            return .ambiguous(detail: "Filesystem classification was cancelled.")
+        }
     }
 
     public func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
@@ -606,6 +639,37 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         }
     }
 
+    public func classifyForRecovery(
+        _ requests: [ProviderClassificationRequest],
+        claim: ProviderMutationRecoveryClaim
+    ) async -> ProviderPathClassification {
+        guard rootOwnershipIssue == nil,
+              receiptBelongsToOwnedRoot(claim.receipt),
+              await currentRootMatchesOwnedIdentity() else {
+            return .unavailable(detail: "The recovery receipt does not belong to the current physical root.")
+        }
+        let context = readContext()
+        let result = await mutations.performRecoveryRead(
+            claim: claim,
+            nanoseconds: deadlines.probeNanoseconds,
+            clock: deadlines.clock
+        ) {
+            await context.classify(requests)
+        }
+        switch result {
+        case let .completed(classification):
+            return classification
+        case let .blocked(receipt):
+            return .unavailable(detail: receipt.map {
+                "Filesystem mutation \($0.id.uuidString) prevents recovery classification."
+            } ?? "A filesystem owner prevents recovery classification.")
+        case .timedOut:
+            return .ambiguous(detail: "Filesystem recovery classification timed out.")
+        case .cancelled:
+            return .ambiguous(detail: "Filesystem recovery classification was cancelled.")
+        }
+    }
+
     public func canPerformRecoveryRead(
         with claim: ProviderMutationRecoveryClaim
     ) async -> Bool {
@@ -722,6 +786,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             hashing: hashing,
             hook: mutationHook,
             trashReceiptPersistence: trashReceiptPersistence,
+            safetyInspector: safetyInspector,
             artifacts: mutationArtifacts,
             quarantineTimestamp: quarantineTimestamp
         )
@@ -737,7 +802,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             expectedVolumeIdentity: expectedVolumeIdentity,
             nativeTrash: nativeTrash,
             quarantine: quarantine,
-            hashing: hashing
+            hashing: hashing,
+            safetyInspector: safetyInspector
         )
     }
 
@@ -800,7 +866,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         canonicalRoot: URL,
         nativeTrash: any LocalNativeTrashPerforming,
         quarantine: any LocalQuarantinePerforming,
-        hashing: any LocalFileHashing
+        hashing: any LocalFileHashing,
+        safetyInspector: any LocalItemSafetyInspecting
     ) throws -> ItemObservation? {
         func unavailable(_ detail: String) -> ProviderError {
             .unavailable(provider: locationID, reason: detail)
@@ -869,6 +936,23 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         } catch {
             throw unavailable(
                 "Recoverable trash artifact metadata could not be inspected."
+            )
+        }
+        do {
+            let metadata = try safetyInspector.metadata(at: recoveryURL)
+            if LocalItemSafetyClassifier.exclusion(
+                for: expected.path,
+                metadata: metadata
+            ) != nil {
+                throw unavailable(
+                    "Recoverable trash artifact has unsupported package or metadata state."
+                )
+            }
+        } catch let error as ProviderError {
+            throw error
+        } catch {
+            throw unavailable(
+                "Recoverable trash artifact package or metadata state could not be classified."
             )
         }
         if recovered.kind == .file,
@@ -985,7 +1069,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         locationID: LocationID,
         rootURL: URL,
         rootPath: SyncPath,
-        isCaseSensitive: Bool?
+        isCaseSensitive: Bool?,
+        safetyInspector: any LocalItemSafetyInspecting
     ) -> LocalScanResult {
         let canonicalPath = try? rootURL.resourceValues(
             forKeys: [.canonicalPathKey]
@@ -1013,11 +1098,13 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         ) else {
             return LocalScanResult(
                 observations: [],
+                exclusions: [],
                 errors: ["Could not enumerate \(enumerationRoot.path)."]
             )
         }
 
         var observations: [ItemObservation] = []
+        var exclusions: [ScanExclusion] = []
         for case let url as URL in enumerator {
             guard let path = observedPath(
                 for: url,
@@ -1032,15 +1119,30 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 continue
             }
             do {
+                let metadata = try safetyInspector.metadata(at: url)
+                if let exclusion = LocalItemSafetyClassifier.exclusion(
+                    for: path,
+                    metadata: metadata
+                ) {
+                    exclusions.append(exclusion)
+                    if exclusion.scope == .subtree {
+                        enumerator.skipDescendants()
+                    }
+                    continue
+                }
                 observations.append(
                     try observation(locationID: locationID, url: url, path: path)
                 )
             } catch {
                 errors.append("\(url.path): \(error)")
+                // Unreadable directory metadata cannot authorize descent:
+                // the node might be a package or unsupported subtree.
+                enumerator.skipDescendants()
             }
         }
         return LocalScanResult(
             observations: observations.sorted { $0.path < $1.path },
+            exclusions: ScanExclusion.normalized(exclusions),
             errors: errors
         )
     }
@@ -1201,6 +1303,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let nativeTrash: any LocalNativeTrashPerforming
         let quarantine: any LocalQuarantinePerforming
         let hashing: any LocalFileHashing
+        let safetyInspector: any LocalItemSafetyInspecting
 
         func checkAvailability() async -> LocationAvailability {
             guard currentOwnedCanonicalRoot() != nil else {
@@ -1259,7 +1362,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 locationID: locationID,
                 rootURL: scopeURL,
                 rootPath: scope.rootPath,
-                isCaseSensitive: capabilities.isCaseSensitive
+                isCaseSensitive: capabilities.isCaseSensitive,
+                safetyInspector: safetyInspector
             )
             if case let .unavailable(reason) = await checkAvailability() {
                 return snapshot(scope: scope, status: .unavailable(reason: reason))
@@ -1272,10 +1376,79 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 location: locationID,
                 scope: scope,
                 observations: result.observations,
+                exclusions: result.exclusions,
                 status: result.errors.isEmpty
                     ? .complete
                     : .incomplete(reason: result.errors.joined(separator: " | "))
             )
+        }
+
+        func classify(
+            _ requests: [ProviderClassificationRequest]
+        ) async -> ProviderPathClassification {
+            if case let .unavailable(reason) = await checkAvailability() {
+                return .unavailable(detail: reason.detail)
+            }
+            if requests.contains(where: { isInternalPath($0.path) }) {
+                return .ambiguous(
+                    detail: "Internal provider state cannot be classified as synchronized content."
+                )
+            }
+            var exclusions: [ScanExclusion] = []
+            var provenAbsentRoots: [SyncPath] = []
+            for request in requests.sorted(by: {
+                if $0.path.components.count != $1.path.components.count {
+                    return $0.path.components.count < $1.path.components.count
+                }
+                return $0 < $1
+            }) where !request.path.isRoot {
+                let path = request.path
+                guard let url = resolvedURL(
+                    for: path,
+                    followingFinalSymlink: false
+                ) else {
+                    return .ambiguous(detail: "The classified path escapes the selected root.")
+                }
+                do {
+                    let metadata = try safetyInspector.metadata(at: url)
+                    if let exclusion = LocalItemSafetyClassifier.exclusion(
+                        for: path,
+                        metadata: metadata
+                    ) {
+                        exclusions.append(exclusion)
+                    } else if request.scope == .subtree,
+                              metadata.isDirectory {
+                        let result = LocalFolderStorageProvider.enumerate(
+                            locationID: locationID,
+                            rootURL: url,
+                            rootPath: path,
+                            isCaseSensitive: capabilities.isCaseSensitive,
+                            safetyInspector: safetyInspector
+                        )
+                        guard result.errors.isEmpty else {
+                            return .ambiguous(
+                                detail: "Filesystem subtree metadata could not be classified at \(path.rawValue)."
+                            )
+                        }
+                        exclusions.append(contentsOf: result.exclusions)
+                    }
+                } catch {
+                    if provenAbsentRoots.contains(where: {
+                        path.isEqualOrDescendant(of: $0)
+                    }) || confirmsAbsence(of: url) {
+                        provenAbsentRoots.append(path)
+                        continue
+                    }
+                    return .ambiguous(
+                        detail: "Filesystem metadata could not be classified at \(path.rawValue)."
+                    )
+                }
+            }
+            if case let .unavailable(reason) = await checkAvailability() {
+                return .unavailable(detail: reason.detail)
+            }
+            let normalized = ScanExclusion.normalized(exclusions)
+            return normalized.isEmpty ? .supported : .excluded(normalized)
         }
 
         func currentState(
@@ -1575,7 +1748,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 canonicalRoot: canonicalRoot,
                 nativeTrash: nativeTrash,
                 quarantine: quarantine,
-                hashing: hashing
+                hashing: hashing,
+                safetyInspector: safetyInspector
             )
         }
 
@@ -1659,6 +1833,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let hashing: any LocalFileHashing
         let hook: any LocalMutationStarting
         let trashReceiptPersistence: any LocalTrashReceiptPersisting
+        let safetyInspector: any LocalItemSafetyInspecting
         let artifacts: LocalMutationArtifacts
         let quarantineTimestamp: String
 
@@ -1691,6 +1866,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         path: expected.path
                     )
                 }
+                try requireSafeForMutation(paths: [current.path])
                 try await requireCurrentRootIdentity()
                 try fetching.copyItem(at: sourceURL, to: stagingURL)
                 try await requireAvailable()
@@ -1756,6 +1932,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                                 path: path
                             )
                         }
+                        try requireSafeForMutation(paths: [path])
                         if try LocalFolderStorageProvider.filesHaveEqualBytes(
                             stagingURL,
                             existing.url
@@ -1782,6 +1959,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
 
                 let replacementTarget = existing?.url ?? destination
+                try requireSafeForMutation(
+                    paths: [path],
+                    allowAbsent: existing == nil ? [path] : []
+                )
                 try await requireCurrentRootIdentity()
                 let replacementDirectory = try FileManager.default.url(
                     for: .itemReplacementDirectory,
@@ -1800,6 +1981,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
                 try await requireCurrentRootIdentity()
                 try FileManager.default.copyItem(at: stagingURL, to: temporary)
+                try establishBaseline(at: temporary, isDirectory: false)
                 try await requireAvailable()
                 let committedURL: URL
                 let committedPath: SyncPath
@@ -1817,6 +1999,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                             path: path
                         )
                     }
+                    try requireSafeForMutation(paths: [path])
                     try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     _ = try FileManager.default.replaceItemAt(
@@ -1828,6 +2011,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     committedURL = existing.url
                     committedPath = existing.observation.path
                 } else {
+                    try requireSafeForMutation(paths: [path], allowAbsent: [path])
                     try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     try FileManager.default.moveItem(at: temporary, to: destination)
@@ -1836,13 +2020,14 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
                 try hook.afterPhysicalCommit(receipt)
                 try await requireAvailable()
-                return .success(
-                    try LocalFolderStorageProvider.observation(
+                try establishBaseline(at: committedURL, isDirectory: false)
+                let observation = try LocalFolderStorageProvider.observation(
                         locationID: locationID,
                         url: committedURL,
                         path: committedPath
                     )
-                )
+                try requireSafeForMutation(paths: [committedPath])
+                return .success(observation)
             } catch let error as ProviderError {
                 return .failure(
                     physicalCommitMayHaveApplied
@@ -1877,25 +2062,32 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
                 if let existing = try existingEntry(at: path) {
                     if existing.observation.kind == .folder {
+                        try requireSafeForMutation(
+                            paths: [path],
+                            subtreePaths: [path]
+                        )
                         return .success(existing.observation)
                     }
                     throw ProviderError.itemAlreadyExists(provider: locationID, path: path)
                 }
+                try requireSafeForMutation(paths: [path], allowAbsent: [path])
                 try await requireCurrentRootIdentity()
                 physicalCommitMayHaveApplied = true
                 try FileManager.default.createDirectory(
                     at: destination,
-                    withIntermediateDirectories: false
+                    withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: NSNumber(value: 0o755)]
                 )
                 try hook.afterPhysicalCommit(receipt)
                 try await requireAvailable()
-                return .success(
-                    try LocalFolderStorageProvider.observation(
+                try establishBaseline(at: destination, isDirectory: true)
+                let observation = try LocalFolderStorageProvider.observation(
                         locationID: locationID,
                         url: destination,
                         path: path
                     )
-                )
+                try requireSafeForMutation(paths: [path])
+                return .success(observation)
             } catch let error as ProviderError {
                 return .failure(
                     physicalCommitMayHaveApplied
@@ -1922,7 +2114,12 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 try hook.beforeMutation(receipt)
                 try await requireAvailable()
                 if expected.path == newPath {
-                    return .success(try await matchingCurrentState(of: expected))
+                    let current = try await matchingCurrentState(of: expected)
+                    try requireSafeForMutation(
+                        paths: [current.path],
+                        subtreePaths: current.kind == .folder ? [current.path] : []
+                    )
+                    return .success(current)
                 }
                 guard !newPath.isRoot,
                       !isInternalPath(newPath),
@@ -1957,6 +2154,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         path: newPath
                     )
                 }
+                try requireSafeForMutation(
+                    paths: [current.path, newPath],
+                    allowAbsent: [newPath],
+                    subtreePaths: current.kind == .folder ? [current.path] : []
+                )
 
                 if isSameVolume {
                     current = try await matchingCurrentState(of: expected)
@@ -1969,6 +2171,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                             path: current.path
                         )
                     }
+                    try requireSafeForMutation(
+                        paths: [current.path, newPath],
+                        allowAbsent: [newPath],
+                        subtreePaths: current.kind == .folder ? [current.path] : []
+                    )
                     try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     try FileManager.default.moveItem(
@@ -1977,6 +2184,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     )
                     try hook.afterPhysicalCommit(receipt)
                 } else {
+                    try requireSafeForMutation(
+                        paths: [current.path, newPath],
+                        allowAbsent: [newPath],
+                        subtreePaths: current.kind == .folder ? [current.path] : []
+                    )
                     try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     do {
@@ -2025,6 +2237,10 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     }
                 }
                 try await requireAvailable()
+                try requireSafeForMutation(
+                    paths: [newPath],
+                    subtreePaths: current.kind == .folder ? [newPath] : []
+                )
                 return .success(
                     try LocalFolderStorageProvider.observation(
                         locationID: locationID,
@@ -2077,6 +2293,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                             allowWeak: expected.kind != .file
                         )
                     }
+                    try requireSafeForMutation(paths: [verified.observation.path])
                     try await requireCurrentRootIdentity()
                     try await trashCurrent(
                         verified.observation,
@@ -2250,6 +2467,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         immediatelyCurrent,
                         source: source
                     )
+                    try requireSafeForMutation(paths: [immediatelyCurrent.path])
                     resultingURL = try nativeTrash.trashItem(at: source)
                     nativeTrashFailed = false
                 } catch {
@@ -2340,6 +2558,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     immediatelyCurrent,
                     source: source
                 )
+                try requireSafeForMutation(paths: [immediatelyCurrent.path])
                 try quarantine.moveItem(at: source, to: recoveryURL)
             } catch let moveError {
                 do {
@@ -2509,12 +2728,138 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 expectedVolumeIdentity: expectedVolumeIdentity,
                 nativeTrash: nativeTrash,
                 quarantine: quarantine,
-                hashing: hashing
+                hashing: hashing,
+                safetyInspector: safetyInspector
             )
             if let reason = await context.exactRootIdentityUnavailability() {
                 throw ProviderError.unavailable(
                     provider: locationID,
                     reason: reason.detail
+                )
+            }
+        }
+
+        private func requireSafeForMutation(
+            paths: [SyncPath],
+            allowAbsent: Set<SyncPath> = [],
+            subtreePaths: Set<SyncPath> = []
+        ) throws {
+            var expanded: Set<SyncPath> = []
+            for path in paths {
+                var candidate = path
+                while !candidate.isRoot {
+                    expanded.insert(candidate)
+                    candidate = candidate.parent
+                }
+            }
+            for path in expanded.sorted() {
+                guard let url = resolvedURL(
+                    for: path,
+                    followingFinalSymlink: false
+                ) else {
+                    throw ProviderError.itemUnavailable(
+                        provider: locationID,
+                        path: path
+                    )
+                }
+                do {
+                    let metadata = try safetyInspector.metadata(at: url)
+                    if let exclusion = LocalItemSafetyClassifier.exclusion(
+                        for: path,
+                        metadata: metadata
+                    ) {
+                        throw ProviderError.unsupported(
+                            provider: locationID,
+                            reason: exclusion.reason.message
+                        )
+                    }
+                    if subtreePaths.contains(path), metadata.isDirectory {
+                        let result = LocalFolderStorageProvider.enumerate(
+                            locationID: locationID,
+                            rootURL: url,
+                            rootPath: path,
+                            isCaseSensitive: capabilities.isCaseSensitive,
+                            safetyInspector: safetyInspector
+                        )
+                        guard result.errors.isEmpty else {
+                            throw ProviderError.itemUnavailable(
+                                provider: locationID,
+                                path: path
+                            )
+                        }
+                        if let exclusion = result.exclusions.first {
+                            throw ProviderError.unsupported(
+                                provider: locationID,
+                                reason: exclusion.reason.message
+                            )
+                        }
+                    }
+                } catch let error as ProviderError {
+                    throw error
+                } catch {
+                    if allowAbsent.contains(path), confirmsAbsence(of: url) {
+                        continue
+                    }
+                    throw ProviderError.itemUnavailable(
+                        provider: locationID,
+                        path: path
+                    )
+                }
+            }
+        }
+
+        private func establishBaseline(at url: URL, isDirectory: Bool) throws {
+            let required: UInt16 = isDirectory ? 0o755 : 0o644
+#if canImport(Darwin)
+            let modeResult = url.withUnsafeFileSystemRepresentation { path in
+                path.map { chmod($0, mode_t(required)) } ?? -1
+            }
+            guard modeResult == 0 else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
+            let ownerResult = url.withUnsafeFileSystemRepresentation { path in
+                path.map {
+                    chown(
+                        $0,
+                        uid_t(LocalItemSafetyClassifier.currentEffectiveUserID),
+                        gid_t(LocalItemSafetyClassifier.currentEffectiveGroupID)
+                    )
+                } ?? -1
+            }
+            guard ownerResult == 0 else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
+#else
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: required)],
+                ofItemAtPath: url.path
+            )
+#endif
+            let metadata = try safetyInspector.metadata(at: url)
+            guard LocalItemSafetyClassifier.exclusion(
+                for: .root,
+                metadata: metadata
+            ) == nil else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
+        }
+
+        private func confirmsAbsence(of url: URL) -> Bool {
+            guard let names = try? FileManager.default.contentsOfDirectory(
+                atPath: url.deletingLastPathComponent().path
+            ) else {
+                return false
+            }
+            if capabilities.isCaseSensitive == true {
+                return !names.contains(url.lastPathComponent)
+            }
+            return !names.contains {
+                $0.precomposedStringWithCanonicalMapping.folding(
+                    options: [.caseInsensitive, .diacriticInsensitive],
+                    locale: Locale(identifier: "en_US_POSIX")
+                ) == url.lastPathComponent.precomposedStringWithCanonicalMapping.folding(
+                    options: [.caseInsensitive, .diacriticInsensitive],
+                    locale: Locale(identifier: "en_US_POSIX")
                 )
             }
         }
@@ -2529,7 +2874,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 expectedVolumeIdentity: expectedVolumeIdentity,
                 nativeTrash: nativeTrash,
                 quarantine: quarantine,
-                hashing: hashing
+                hashing: hashing,
+                safetyInspector: safetyInspector
             ).checkAvailability()
         }
 
@@ -2645,7 +2991,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 canonicalRoot: canonicalRoot,
                 nativeTrash: nativeTrash,
                 quarantine: quarantine,
-                hashing: hashing
+                hashing: hashing,
+                safetyInspector: safetyInspector
             )
         }
 
@@ -2827,6 +3174,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
 
 private struct LocalScanResult: Sendable {
     var observations: [ItemObservation]
+    var exclusions: [ScanExclusion]
     var errors: [String]
 }
 

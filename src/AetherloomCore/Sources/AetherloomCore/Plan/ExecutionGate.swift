@@ -185,7 +185,7 @@ extension ItemVerdict {
             return true
         case let .compound(verdicts):
             return verdicts.contains(where: \.containsDeletionIntent)
-        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .conflict, .waiting:
+        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .conflict, .waiting, .excluded:
             return false
         }
     }
@@ -196,7 +196,7 @@ extension ItemVerdict {
             return true
         case let .compound(verdicts):
             return verdicts.contains(where: \.containsEditIntent)
-        case .inSync, .propagateCreation, .propagatePath, .propagateDeletion, .conflict, .waiting:
+        case .inSync, .propagateCreation, .propagatePath, .propagateDeletion, .conflict, .waiting, .excluded:
             return false
         }
     }
@@ -207,7 +207,7 @@ extension ItemVerdict {
             return true
         case let .compound(verdicts):
             return verdicts.contains(where: \.containsConflictIntent)
-        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .waiting:
+        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .waiting, .excluded:
             return false
         }
     }

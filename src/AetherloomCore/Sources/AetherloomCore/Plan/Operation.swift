@@ -309,6 +309,49 @@ public struct OperationSchedule: Codable, Hashable, Sendable {
     }
 }
 
+extension ProviderClassificationRequest {
+    static func forOperations(_ operations: [Operation]) -> [Self] {
+        var scopes: [SyncPath: ScanExclusion.Scope] = [:]
+        func add(_ path: SyncPath, scope: ScanExclusion.Scope) {
+            guard !path.isRoot else { return }
+            if scopes[path] != .subtree {
+                scopes[path] = scope
+            }
+            var ancestor = path.parent
+            while !ancestor.isRoot {
+                if scopes[ancestor] == nil {
+                    scopes[ancestor] = .item
+                }
+                ancestor = ancestor.parent
+            }
+        }
+        func scope(for kind: ItemKind) -> ScanExclusion.Scope {
+            kind == .folder ? .subtree : .item
+        }
+
+        for operation in operations {
+            switch operation.kind {
+            case let .makeFolder(path):
+                add(path, scope: .item)
+            case let .transfer(content, target, _):
+                let coverage = scope(for: content.kind)
+                add(content.path, scope: coverage)
+                add(target, scope: coverage)
+            case let .relocate(itemRef, target):
+                let coverage = scope(for: itemRef.kind)
+                add(itemRef.path, scope: coverage)
+                add(target, scope: coverage)
+            case let .trash(itemRef):
+                add(itemRef.path, scope: scope(for: itemRef.kind))
+            }
+        }
+
+        return scopes.map { path, scope in
+            Self(path: path, scope: scope)
+        }.sorted()
+    }
+}
+
 public enum OperationScheduleValidationError: Error, Equatable, Sendable {
     case duplicateOperationID(OperationID)
     case unknownDependency(operation: OperationID, dependency: OperationID)

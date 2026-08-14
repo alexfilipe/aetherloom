@@ -45,6 +45,7 @@ public struct EngineEnvironment: Sendable {
 
 public enum SyncOrchestratorError: Error, Equatable, Sendable {
     case runAlreadyInProgress(UUID)
+    case freshPreparationRequired(UUID)
 }
 
 public actor SyncOrchestrator {
@@ -58,6 +59,7 @@ public actor SyncOrchestrator {
     private let adviceValidator = AdviceValidator()
     private let renderer = ChangePreviewRenderer()
     private var activeSyncSets: Set<UUID> = []
+    private var invalidatedPreparationRunIDs: Set<UUID> = []
 
     public init(
         locations: LocationDirectory,
@@ -153,6 +155,11 @@ public actor SyncOrchestrator {
 
     public func execute(_ preparation: SyncPreparation, approval: PlanApproval? = nil) async throws -> SyncRunSummary {
         let syncSetID = preparation.outcome.syncSetID
+        guard !invalidatedPreparationRunIDs.contains(preparation.runID) else {
+            throw SyncOrchestratorError.freshPreparationRequired(
+                preparation.runID
+            )
+        }
         try beginRun(syncSetID)
         defer { finishRun(syncSetID) }
 
@@ -187,13 +194,20 @@ public actor SyncOrchestrator {
                 stage: contentStage,
                 environment: executionEnvironment()
             )
-            let summary = try await executor.execute(
-                plan,
-                runID: preparation.runID,
-                approval: approval,
-                syncSetName: preparation.syncSetName,
-                logRunBoundaryActivity: false
-            )
+            let summary: SyncRunSummary
+            do {
+                summary = try await executor.execute(
+                    plan,
+                    runID: preparation.runID,
+                    approval: approval,
+                    syncSetName: preparation.syncSetName,
+                    logRunBoundaryActivity: false
+                )
+            } catch let error as ScheduleExecutionError
+                where error.requiresFreshPreparation {
+                invalidatedPreparationRunIDs.insert(preparation.runID)
+                throw error
+            }
             await appendStage("Execute", syncSetID: syncSetID, runID: preparation.runID, started: false)
             if case .mutationIndeterminate = summary.outcome {
                 // The caller-visible execution phase returned, but the run is
@@ -204,7 +218,9 @@ public actor SyncOrchestrator {
                     syncSetID: syncSetID,
                     runID: preparation.runID,
                     category: .sync,
-                    message: ActivityMessageCatalog.runFinished,
+                    message: summary.outcome.hasWaitingExclusions
+                        ? ActivityMessageCatalog.runFinishedWithExclusions
+                        : ActivityMessageCatalog.runFinished,
                     detail: summary.outcome.detail
                 )
             }
@@ -236,6 +252,7 @@ public actor SyncOrchestrator {
             })
             await logHolds(plan.gate.holdReasons, syncSetID: syncSet.id, runID: runID)
             await logConflicts(plan.conflicts, syncSetID: syncSet.id, runID: runID)
+            await logExclusions(plan.exclusions, syncSetID: syncSet.id, runID: runID)
         } else if case let .refusal(refusal) = outcome {
             await logRefusals(refusal.reasons, syncSetID: syncSet.id, runID: runID)
         }
@@ -677,6 +694,24 @@ public actor SyncOrchestrator {
         }
     }
 
+    private func logExclusions(
+        _ exclusions: [LocatedScanExclusion],
+        syncSetID: UUID,
+        runID: UUID
+    ) async {
+        for located in exclusions.sorted() {
+            await appendActivity(
+                syncSetID: syncSetID,
+                runID: runID,
+                category: .safety,
+                locationID: located.location,
+                path: located.exclusion.path,
+                message: located.exclusion.reason.message,
+                detail: "\(located.exclusion.scope.rawValue)|\(located.exclusion.reason.stableKey)"
+            )
+        }
+    }
+
     private func logAdviceShown(_ advice: ConflictAdvice, syncSetID: UUID, runID: UUID) async {
         await appendActivity(
             syncSetID: syncSetID,
@@ -849,6 +884,7 @@ private func replacingObservation(
             location: snapshot.location,
             scope: snapshot.scope,
             observations: observations,
+            exclusions: snapshot.exclusions,
             status: snapshot.status,
             scannedAt: snapshot.scannedAt
         )

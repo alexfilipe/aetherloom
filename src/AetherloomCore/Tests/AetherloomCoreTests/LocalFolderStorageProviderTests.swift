@@ -348,7 +348,7 @@ struct LocalFolderStorageProviderTests {
         #expect(try Data(contentsOf: staging) == Data("payload".utf8))
     }
 
-    @Test func scanDoesNotReadRegularFileContents() async throws {
+    @Test func scanClassifiesNonbaselineFileWithoutReadingContents() async throws {
         let root = try makeRoot("unreadable-file-scan")
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("MetadataOnly.txt")
@@ -370,8 +370,14 @@ struct LocalFolderStorageProviderTests {
         let snapshot = await provider.scan(.entireDrive)
 
         #expect(snapshot.status == .complete)
-        #expect(snapshot.observations.byPath["/MetadataOnly.txt"]?.kind == .file)
-        #expect(snapshot.observations.byPath["/MetadataOnly.txt"]?.version.contentHash == nil)
+        #expect(snapshot.observations.byPath["/MetadataOnly.txt"] == nil)
+        #expect(snapshot.exclusions == [
+            ScanExclusion(
+                path: "/MetadataOnly.txt",
+                scope: .item,
+                reason: .unsupportedPOSIXPermissions(actual: 0, required: 0o644)
+            )
+        ])
     }
 
     @Test func selectiveEvidenceUsesIncrementalSHA256WithoutChangingScanCapability() async throws {
@@ -977,7 +983,7 @@ struct LocalFolderStorageProviderTests {
         }
     }
 
-    @Test func unreadableSubdirectoryMakesScanIncomplete() async throws {
+    @Test func nonbaselineSubdirectoryIsExcludedWithoutDescent() async throws {
         let root = try makeRoot("unreadable")
         defer { try? FileManager.default.removeItem(at: root) }
         let blocked = root.appendingPathComponent("Blocked", isDirectory: true)
@@ -999,10 +1005,16 @@ struct LocalFolderStorageProviderTests {
             inspector: ScriptedVolumeInspector()
         )
         let snapshot = await provider.scan(.entireDrive)
-        guard case .incomplete = snapshot.status else {
-            Issue.record("Unreadable directory was reported as \(snapshot.status).")
-            return
-        }
+        #expect(snapshot.status == .complete)
+        #expect(snapshot.observations.byPath["/Blocked"] == nil)
+        #expect(snapshot.observations.byPath["/Blocked/Secret.txt"] == nil)
+        #expect(snapshot.exclusions == [
+            ScanExclusion(
+                path: "/Blocked",
+                scope: .subtree,
+                reason: .unsupportedPOSIXPermissions(actual: 0, required: 0o755)
+            )
+        ])
     }
 
     @Test func storeIsAtomicIdempotentAndRejectsVersionDrift() async throws {

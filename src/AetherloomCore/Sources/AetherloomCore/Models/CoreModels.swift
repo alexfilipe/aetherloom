@@ -112,7 +112,7 @@ public struct SyncLocation: Codable, Hashable, Sendable, Identifiable {
 }
 
 public struct SyncPath: Codable, Hashable, Sendable, Comparable, ExpressibleByStringLiteral {
-    public var rawValue: String
+    public private(set) var rawValue: String
 
     public init(_ rawValue: String) {
         self.rawValue = Self.normalized(rawValue)
@@ -124,6 +124,20 @@ public struct SyncPath: Codable, Hashable, Sendable, Comparable, ExpressibleBySt
 
     public init(stringLiteral value: String) {
         self.init(value)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case rawValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(try container.decode(String.self, forKey: .rawValue))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(rawValue, forKey: .rawValue)
     }
 
     public static let root = SyncPath("/")
@@ -176,9 +190,22 @@ public struct SyncPath: Codable, Hashable, Sendable, Comparable, ExpressibleBySt
         parent.appending(component)
     }
 
+    /// Component-aware equality/ancestry used by joins, collision handling,
+    /// and positive subtree exclusions. The default is deliberately the
+    /// conservative case/diacritic-insensitive relation used when a provider
+    /// cannot prove case sensitivity.
+    public func isEqualOrDescendant(
+        of ancestor: SyncPath,
+        caseSensitive: Bool = false
+    ) -> Bool {
+        let candidate = comparableComponents(caseSensitive: caseSensitive)
+        let prefix = ancestor.comparableComponents(caseSensitive: caseSensitive)
+        guard prefix.count <= candidate.count else { return false }
+        return zip(candidate, prefix).allSatisfy { $0.0 == $0.1 }
+    }
+
     public func isDescendant(of ancestor: SyncPath) -> Bool {
-        guard !ancestor.isRoot else { return true }
-        return rawValue == ancestor.rawValue || rawValue.hasPrefix(ancestor.rawValue + "/")
+        isEqualOrDescendant(of: ancestor)
     }
 
     public static func < (lhs: SyncPath, rhs: SyncPath) -> Bool {
@@ -188,9 +215,22 @@ public struct SyncPath: Codable, Hashable, Sendable, Comparable, ExpressibleBySt
     private static func normalized(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let withLeadingSlash = trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
-        let parts = withLeadingSlash.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        let parts = withLeadingSlash
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map { String($0).precomposedStringWithCanonicalMapping }
         guard !parts.isEmpty else { return "/" }
         return "/" + parts.joined(separator: "/")
+    }
+
+    private func comparableComponents(caseSensitive: Bool) -> [String] {
+        components.map { component in
+            let normalized = component.precomposedStringWithCanonicalMapping
+            guard !caseSensitive else { return normalized }
+            return normalized.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+        }
     }
 }
 
@@ -497,11 +537,13 @@ public struct LocationSnapshot: Codable, Hashable, Sendable {
     public var status: ScanStatus
     public var scannedAt: Date
     public var observations: ObservationIndex
+    public var exclusions: [ScanExclusion]
 
     public init(
         location: LocationID,
         scope: SyncScope,
         observations: [ItemObservation],
+        exclusions: [ScanExclusion] = [],
         status: ScanStatus = .complete,
         scannedAt: Date = Date()
     ) {
@@ -510,6 +552,7 @@ public struct LocationSnapshot: Codable, Hashable, Sendable {
         self.status = status
         self.scannedAt = scannedAt
         self.observations = ObservationIndex(observations)
+        self.exclusions = ScanExclusion.normalized(exclusions)
     }
 }
 
@@ -606,7 +649,7 @@ public struct SyncSettings: Codable, Hashable, Sendable {
     }
 
     private func isBuiltInExcludedPath(_ path: SyncPath) -> Bool {
-        path.rawValue == "/.aetherloom" || path.rawValue.hasPrefix("/.aetherloom/")
+        path.isEqualOrDescendant(of: "/.aetherloom")
     }
 }
 

@@ -11,6 +11,7 @@ public enum FakeProviderOperation: String, Codable, Hashable, Sendable {
     case trash
     case currentState
     case refineEvidence
+    case classify
 }
 
 public struct FakeProviderCall: Codable, Hashable, Sendable {
@@ -39,6 +40,9 @@ public actor FakeStorageProvider: StorageProvider {
     private var latencyNanoseconds: UInt64
     private var recordedCalls: [FakeProviderCall]
     private var nextCallOrder: Int
+    private var scanExclusions: [ScanExclusion]
+    private var scriptedClassification: ProviderPathClassification?
+    private var recordedClassificationRequests: [[ProviderClassificationRequest]]
 
     public init(
         location: SyncLocation,
@@ -57,6 +61,9 @@ public actor FakeStorageProvider: StorageProvider {
         self.latencyNanoseconds = 0
         self.recordedCalls = []
         self.nextCallOrder = 0
+        self.scanExclusions = []
+        self.scriptedClassification = nil
+        self.recordedClassificationRequests = []
 
         for item in items {
             let normalized = Self.normalizedItem(item, location: location.id, capabilities: capabilities)
@@ -93,6 +100,18 @@ public actor FakeStorageProvider: StorageProvider {
         incompleteScanReason = reason
     }
 
+    public func setScanExclusions(_ exclusions: [ScanExclusion]) {
+        scanExclusions = ScanExclusion.normalized(exclusions)
+    }
+
+    public func setClassification(_ classification: ProviderPathClassification?) {
+        scriptedClassification = classification
+    }
+
+    public func classificationRequestLog() -> [[ProviderClassificationRequest]] {
+        recordedClassificationRequests
+    }
+
     public func failNext(_ operation: FakeProviderOperation, with error: ProviderError) {
         faultsByOperation[operation, default: []].append(error)
     }
@@ -107,6 +126,7 @@ public actor FakeStorageProvider: StorageProvider {
 
     public func clearCallLog() {
         recordedCalls.removeAll()
+        recordedClassificationRequests.removeAll()
         nextCallOrder = 0
     }
 
@@ -236,17 +256,28 @@ public actor FakeStorageProvider: StorageProvider {
             )
         }
 
-        let scopedItems = scopedActiveItems(in: scope)
+        let scopedExclusions = scanExclusions.filter {
+            $0.path.isEqualOrDescendant(of: scope.rootPath)
+        }
+        let scopedItems = scopedActiveItems(in: scope).filter { item in
+            !scopedExclusions.contains { $0.covers(item.path) }
+        }
         if let incompleteScanReason {
             return LocationSnapshot(
                 location: locationID,
                 scope: scope,
                 observations: scopedItems,
+                exclusions: scopedExclusions,
                 status: .incomplete(reason: incompleteScanReason)
             )
         }
 
-        return LocationSnapshot(location: locationID, scope: scope, observations: scopedItems)
+        return LocationSnapshot(
+            location: locationID,
+            scope: scope,
+            observations: scopedItems,
+            exclusions: scopedExclusions
+        )
     }
 
     public func changedSubtrees(in scope: SyncScope, since cursor: ChangeCursor?) async throws -> ChangeHint {
@@ -367,6 +398,30 @@ public actor FakeStorageProvider: StorageProvider {
             )
         }
         return stronglyVersioned(current) ?? current
+    }
+
+    public func classify(
+        _ requests: [ProviderClassificationRequest]
+    ) async -> ProviderPathClassification {
+        recordedClassificationRequests.append(requests)
+        await prepareForCall(.classify, path: requests.map(\.path).sorted().first)
+        if let fault = popFault(for: .classify) {
+            return .ambiguous(detail: String(describing: fault))
+        }
+        if case let .unavailable(reason) = availability {
+            return .unavailable(detail: reason.detail)
+        }
+        if let scriptedClassification {
+            return scriptedClassification
+        }
+        let exclusions = scanExclusions.filter { exclusion in
+            requests.contains { request in
+                exclusion.covers(request.path)
+                    || (request.scope == .subtree
+                        && exclusion.path.isEqualOrDescendant(of: request.path))
+            }
+        }
+        return exclusions.isEmpty ? .supported : .excluded(exclusions)
     }
 
     private func prepareForThrowingCall(_ operation: FakeProviderOperation, path: SyncPath?) async throws {

@@ -39,12 +39,14 @@ private struct SnapshotFingerprintRollup: Codable, Hashable, Sendable, Comparabl
     var scannedAt: Date
     var observationCount: Int
     var versionDigest: String
+    var exclusions: [ScanExclusion]
 
     init(_ snapshot: LocationSnapshot) {
         self.locationID = snapshot.location
         self.scannedAt = snapshot.scannedAt
         self.observationCount = snapshot.observations.all.count
         self.versionDigest = Self.versionDigest(for: snapshot.observations.all)
+        self.exclusions = snapshot.exclusions.sorted { $0.stableKey < $1.stableKey }
     }
 
     static func < (lhs: SnapshotFingerprintRollup, rhs: SnapshotFingerprintRollup) -> Bool {
