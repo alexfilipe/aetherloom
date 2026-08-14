@@ -7,7 +7,7 @@ Senior Swift engineer on `AetherloomCore`. You build the store protocols and the
 `architecture/core/00-overview.md`, `09-persistence.md` and `08-observability.md` (your specs), `11-migration.md`; `Logging/SyncActivityLog.swift`, `Models/*`. Baseline green first.
 
 ## Invariants (override this prompt)
-Corrupt/unreadable base state degrades to "no memory ⇒ nothing deletable", never toward trash. A journal intent that cannot be persisted must make the corresponding side effect impossible (the API shape enforces write-ahead). Store failures are loud. Never store credentials, tokens, file contents, or advisor prompts.
+Corrupt/unreadable base state degrades to "no memory ⇒ nothing deletable", never toward trash. A journal intent that cannot be persisted must make the corresponding side effect impossible (the API shape enforces write-ahead). Store failures are loud. Never store credentials, bearer mass-deletion review authorizations or execution reservations, file contents, or advisor prompts; only non-reusable review/reservation audit digests and bindings are durable.
 
 ## Deliverables
 1. `Storage/EngineStores.swift` + protocols per `09 §1`: `BaseRecordStore` (throwing `corrupt(syncSetID:)`; `apply(BaseRecordUpdate)` — `upsert | tombstone | purge`, one item at a time), `RunJournalStore` (`begin/append/unfinishedRun/markReconciled`, `JournalEvent`: `intent | result | itemConverged | runFinished`), `ConflictStore`, `AdviceCacheStore`, `LocationRegistry` (refuses removal while referenced).

@@ -36,13 +36,14 @@ One run of one sync set. Stages 1–5 are read-only against providers; nothing m
 4 PLAN + GATE   pure: verdicts → SyncPlan { decisions, operation schedule,
                 fingerprint, gate: clear | hold(reasons) }                    [04]
 5 PREVIEW       ChangePreview (+ optional on-device advice on conflicts)      [06,07]
-                gate == hold ⇒ wait for PlanApproval bound to the fingerprint
+                executable iff gate == clear OR (gate == hold && permitsApproval)
+                bridge confirmation binds fingerprint, time, and exact counts
 6 EXECUTE       journal intent → verify precondition → apply → verify result  [05]
                 → journal result → update BaseRecord (per item)
 7 REPORT        activity entries throughout; run summary at the end           [08]
 ```
 
-A **refusal** (stage 1–2, or deletion-safety conditions in stage 4) means *no executable plan exists* — there is nothing to approve; only reality changing clears it. A **hold** (conflicts, mass changes) means a plan exists but is withheld for review. Making these two different types — instead of a `.pause` sentinel action inside the plan, as the current code does — removes the entire class of "did every caller remember to check for pause first?" bugs.
+A **refusal** means *no plan exists*. A **hold** means a plan and its evidence exist, but execution is stopped. Some holds are approvable; an ordinary hold containing `massDeletion` is not. It exposes preview evidence but no confirmation or execution path. An intentional large deletion becomes reachable only through the distinct **Review intentional deletions** flow: a single-use, expiring review authorization triggers a fresh prepare, which must reproduce the exact original plan and deletion evidence before it can emit a distinct reviewed plan and atomically install a separate in-memory, expiring, one-shot execution reservation. That reviewed plan still needs normal exact-count confirmation, and core consumes the matching live reservation before constructing an executor; the reviewed value alone is not authority. A durable evidence latch prevents threshold edits from bypassing that review. This is still a hold, not a refusal. Making refusal and hold different types — instead of a `.pause` sentinel action inside the plan, as the historical scaffold did — keeps their evidence and recovery paths explicit.
 
 ## Layering
 
@@ -94,6 +95,8 @@ Engine-emitted user-facing strings use these verbatim; the UI adds detail beneat
 
 (Refusals and holds both render as "Paused for safety" to users; the distinction is architectural, not linguistic.)
 
+For an ordinary `massDeletion` hold, “review” in the canonical sentence means the explicit **Review intentional deletions** flow in [04 §4](04-planning-and-gating.md#4-gating), not ordinary confirmation and not a persistent threshold edit. The original held plan remains non-approvable throughout that flow.
+
 ## Relationship to the current code
 
-`AetherloomCore` today (planner, safety analyzer, executor, fakes, 20 green tests) implements most of the *behavior* above with a narrower structure: closed 3-cloud `ProviderID`, per-service `SyncRecord` fields, fall-through planner, pause sentinel, flat action list, no staging/journal/orchestrator/stores. Those 20 tests are the behavioral contract for the migration — every phase in [11-migration.md](11-migration.md) keeps their assertions passing.
+`AetherloomCore` now implements the provider-independent pipeline, staging/journal/recovery, stores, fakes, and the real `LocalFolderStorageProvider` with temporary-directory end-to-end tests. The production app still starts `DemoEngineSession`; durable real-folder app composition is the [Local Workspace MVP](../providers/01-workspace-engine-session.md). [11-migration.md](11-migration.md) is historical context for how the core reached its present structure, not an unstarted roadmap.

@@ -20,7 +20,7 @@ public struct ActivityEntry: Codable, Hashable, Sendable, Identifiable {
 
 public enum ActivityCategory: String, Codable, Hashable, Sendable {
     case sync        // applied operations, run start/finish
-    case safety      // refusals, holds, approvals, replan-stops — what users must find later
+    case safety      // refusals, holds, confirmations, review/latch events, replan-stops
     case conflict    // detected / resolved; "Both versions preserved"
     case advisory    // suggestions shown (attributed), advice failures
     case provider    // location added / unavailable / recovered
@@ -28,7 +28,7 @@ public enum ActivityCategory: String, Codable, Hashable, Sendable {
 }
 ```
 
-`ActivityMessageCatalog` is the single source of every sentence (today's `SyncActivityLogFormatter` ✅ generalized): operation narrations ("Created ⟨path⟩ in ⟨location⟩ from ⟨location⟩.", "Moved ⟨path⟩ to ⟨location⟩ trash.", …), the canonical safety sentences verbatim, approval and advisory lines. One catalog means wording changes are single-point diffs — locked by golden tests ([10 §5]).
+`ActivityMessageCatalog` is the single source of every sentence (today's `SyncActivityLogFormatter` ✅ generalized): operation narrations ("Created ⟨path⟩ in ⟨location⟩ from ⟨location⟩.", "Moved ⟨path⟩ to ⟨location⟩ trash.", …), the canonical safety sentences verbatim, confirmation/review and advisory lines. One catalog means wording changes are single-point diffs — locked by golden tests ([10 §5]).
 
 ## 2. `ActivityStore`
 
@@ -56,13 +56,18 @@ Implementations ([09]): `InMemoryActivityStore` (actor, ring buffer, cap 10 000 
 2. Every refusal and hold with canonical sentence + attribution/evidence — `safety`
 3. Preparation summary (n additions / updates / moves / trash / conflicts / waiting; gate) — `sync`
 4. Advice shown or advice failure — `advisory`
-5. Approval accepted (fingerprint, acknowledged counts) — `safety`
-6. Each applied operation (catalog sentence); skipped-as-satisfied operations as one rollup — `sync`
-7. Precondition abort (`stoppedForReplan`: location + path) — `safety`
-8. Post-write verification failure — `error`
-9. Conflict detected / resolved — `conflict`
-10. Recovery performed (what the journal established) — `safety`
-11. Run finished with outcome — `sync`
+5. Mass-deletion latch created/replaced/cleared (sync set, deletion-evidence digest/counts, reason; never bearer data) — `safety`
+6. One-shot mass-deletion review authorization issued and consumed/rejected/transitioned (original fingerprint, authorization/evidence/settings/world digests, exact counts, expiry/result; never bearer data) — `safety`
+7. In-memory mass-deletion execution reservation installed and consumed/expired/rejected (reservation digest, reviewed fingerprint, run/preparation bindings, expiry/result; never bearer data) — `safety`
+8. Confirmation accepted (reviewed fingerprint where applicable, acknowledged counts) — `safety`
+9. Each applied operation (catalog sentence); skipped-as-satisfied operations as one rollup — `sync`
+10. Precondition abort (`stoppedForReplan`: location + path) — `safety`
+11. Post-write verification failure — `error`
+12. Conflict detected / resolved — `conflict`
+13. Recovery performed (what the journal established) — `safety`
+14. Run finished with outcome — `sync`
+
+The run/safety journal durably records review issuance, the single authorization-to-reservation transition or rejection, reservation consumption/expiry/rejection, and latch lifecycle as typed audit events. Those digests and results may be restored; neither opaque bearer value may be restored or treated as authority. A safety-event append failure fails closed before a reviewed plan, live reservation, executor, or mutation authority is exposed.
 
 Never logged: file contents, excerpts, credentials, tokens, absolute local paths (sync-relative only), advisor prompts.
 

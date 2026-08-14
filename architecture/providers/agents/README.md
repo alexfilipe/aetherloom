@@ -1,21 +1,19 @@
 # Provider Implementation Work Orders
 
-Each `task-*.md` is a self-contained prompt for one implementation agent (Claude, Codex, GPT-5.5, …) covering one milestone of the provider track ([../00-overview.md §1](../00-overview.md)). Paste the file as the task instruction; the agent must also read the referenced design docs in the repo — **the docs are the specification, the prompt is the work order.** Backend-specific work orders live next to their designs (e.g. [../local/agents/](../local/agents/README.md)); this README owns the dispatch graph across all of them. The core and UI tracks are complete; provider tasks never restructure engine or app sources.
+Each task file is a self-contained implementation work order, while the linked architecture remains normative. The conformance/local-provider work is implemented and its old prompts are historical. [local-workspace-mvp.md](local-workspace-mvp.md) is now the sole cross-track dispatch graph and acceptance-ownership map for L1–L6.
 
 ## Dispatch order
 
 ```text
-01 conformance suite ─▶ local/01 read side ─▶ local/02 mutations ─▶ 02 workspace session ⏭
-                                                    └─▶ local/03 NAS hardening ⏭ ──┘
-                                                                (icloud track ⏭ after workspace session)
+completed conformance/local provider ─▶ L1 docs ─▶ L2 ─▶ L3 ─▶ L4 ─▶ L5 ─▶ L6
 ```
 
-Strictly serial except local/03, which may run parallel to task-02 in a separate worktree (disjoint files); merge task-02 first. Each phase ends green before the next starts. **⏭ tasks must not be dispatched until their spec documents exist** — currently that blocks task-02 (needs `../01-workspace-session.md`), local/03, and everything iCloud.
+L1–L6 are strictly serial at user-confirmed merge gates. Do not dispatch from the older M1–M3 prompts; their implementation is already in the repository. NAS and iCloud remain future work.
 
 ## Global rules (authoritative here; abbreviated in each prompt)
 
 1. **Safety invariants** (`architecture/core/00-overview.md § Safety invariants`) **override everything**, including these prompts. The track-specific corollaries (`../00-overview.md §2`): failure never masquerades as emptiness; everything that can hang has a deadline; no permanent-delete call exists anywhere, including private helpers.
-2. File boundaries: track tasks 01–02 and all `local/*` tasks work only in `src/AetherloomCore/` (task-02 additionally in the `AetherloomBridge` sources and tests). Never touch `src/AetherloomApp/`, `www/`, `README.md`, `CLAUDE.md`, or `architecture/` except `architecture/ui/11-functioning-vs-placeholder.md` status updates when a task's spec says so.
+2. File boundaries are task-specific in the L2–L6 work orders. Implementation PRs may update only the factual UI status matrix and cutoff log under the narrow architecture exceptions; material contract changes require a standalone architecture PR.
 3. Zero third-party dependencies; no network/ML/SQLite imports anywhere in this track.
 4. Swift 6 strict concurrency: values `Codable + Hashable + Sendable`; mutable state in actors.
 5. Existing engine sources are read-only unless a task explicitly names an exception; providers implement `StorageProvider` as it stands — protocol changes require stopping and reporting, not improvising.
@@ -23,15 +21,15 @@ Strictly serial except local/03, which may run parallel to task-02 in a separate
 7. Capabilities are declared conservatively; a capability claimed without a conformance case proving it is a defect.
 8. Engine-emitted user-facing strings use the canonical sentences from `architecture/core/00-overview.md § Canonical language` verbatim; providers themselves emit no user-facing prose.
 9. Exit bar, every task: `swift test --package-path src/AetherloomCore` green, zero new warnings. Tasks touching the bridge also build the app: `xcodebuild -project src/AetherloomApp/AetherloomApp.xcodeproj -scheme AetherloomApp -destination 'platform=macOS' build`. Report test counts before/after.
-10. Style: match existing sources — small focused types, clear names, comments only for non-obvious constraints, no `print`. Commit nothing; leave changes in the working tree.
+10. Style: match existing sources — small focused types, clear names, comments only for non-obvious constraints, no `print`. The sole branch writer may stage/commit/push only at the orchestrator's named gates and only within the task's reviewed scope.
 
 ## Task index
 
 | Task | Milestone | Status |
 | --- | --- | --- |
-| [task-01-conformance-suite.md](task-01-conformance-suite.md) | M1 — the reusable provider contract | Dispatchable |
-| task-02-workspace-session.md ⏭ | M4 — first real sync behind `EngineSession` | Blocked on `../01-workspace-session.md` |
-| [../local/agents/](../local/agents/README.md) | M2, M3, M5 — the local/NAS provider | See its README |
+| [task-01-conformance-suite.md](task-01-conformance-suite.md) | M1 — reusable provider contract | Completed; historical, do not dispatch |
+| [../local/agents/](../local/agents/README.md) | M2/M3 — real local provider | Completed; historical, do not dispatch |
+| [local-workspace-mvp.md](local-workspace-mvp.md) | L1–L6 — Local Workspace MVP | Current serial work-order stack |
 
 ## Reporting format (end of every task)
 

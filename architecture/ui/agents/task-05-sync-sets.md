@@ -11,7 +11,7 @@ Threshold/exclusion edits round-trip through core `SyncSettings` — never dupli
 
 ## Deliverables
 1. `SyncSetsView` per `ui/06 §1`: cards from `SyncSetState` + `statusLine`, dimmed unavailable location chips with hover reason, actions (Sync Now / Preview / Pause–Resume ✅, Delete with confirmation ✅, Reveal in Finder 🎭 disabled + `PlaceholderChip`).
-2. Detail panel per `ui/06 §2` (`activeSheet = .syncSetDetail`): locations (Change Folder… 🎭), `SyncMode` picker ✅, thresholds editor ✅ with weakening-safety warning copy, exclusions editor ✅, danger zone ✅, run history with Activity deep links ✅.
+2. Detail panel per `ui/06 §2` (`activeSheet = .syncSetDetail`): locations (Change Folder… 🎭), `SyncMode` picker ✅, thresholds editor ✅ constrained to core's hard ranges with tighten-only safety copy, exclusions editor ✅, danger zone ✅, run history with Activity deep links ✅.
 3. Wizard per `ui/06 §3`: three steps, live validation (≥2 locations, unique name), scope text fields with 🎭 picker chip, review step with the whole-drive standing note; `createSyncSet` → "Never synced" card → first Sync Now flows genuinely.
 4. States per `ui/06 §4`; `#Preview`s: standard four cards, empty, detail, each wizard step.
 
@@ -19,4 +19,4 @@ Threshold/exclusion edits round-trip through core `SyncSettings` — never dupli
 Only `SyncSetsView.swift`, `NewSyncSetSheet.swift` (rename to `NewSyncSetWizard.swift` if cleaner), a new detail view file, and minimal `AppModel` routing; no other screens; no engine-source edits.
 
 ## Acceptance
-`ui/06 §5` in full — notably: threshold raise on Projects removes the mass-deletion hold on next prepare (manual check + existing bridge test reference), and a freshly created set syncs end-to-end through preview/approve; no `DemoStore` reads remain in these views; suite + build green. Report per `agents/README.md`.
+`ui/06 §5` in full — notably: attempted values above delete `25`/`25%` or edit `50`/`50%` normalize to the hard maxima; tightening and any later allowed in-range increase round-trip but do not remove the hold for matching latched deletion evidence; changed deletion evidence is freshly evaluated under the normalized persisted threshold; and a freshly created set syncs end-to-end through preview/confirm. No `DemoStore` reads remain in these views; suite + build green. Report per `agents/README.md`.

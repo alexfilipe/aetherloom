@@ -4,14 +4,14 @@
 
 Aetherloom's window is where a person decides to trust a sync tool with their files. Every screen answers one of the trust questions from `CLAUDE.md`: *which services are connected, which folders are selected, what will sync, what changed, what is risky, what is paused, what needs review.* The visual identity — calm cards, the drifting "aether" mesh, tone-colored status — already exists in the demo shell and is kept; this track gives it a real spine.
 
-The defining constraint: the engine ([../core/](../core/README.md)) is far ahead of the integrations. Real Google Drive, OneDrive, iCloud, local-FS, and NAS providers do not exist yet, and per the development order they must not be started early. So the UI is built **full-stack against the demo world**: a real `SyncOrchestrator`, real planner, real gates, real journal, real activity log — fed by `FakeStorageProvider`s seeded with a believable file universe. The pixels users will eventually see are driven by the exact code paths real providers will drive.
+The defining constraint: the engine ([../core/](../core/README.md)) is far ahead of production app composition. The real `LocalFolderStorageProvider` and temporary-directory core/end-to-end tests exist, but the production app still constructs `DemoEngineSession` and does not compose user-selected real folders. Real cloud providers and NAS qualification remain absent and future. The UI therefore currently runs **full-stack against the demo world**: a real `SyncOrchestrator`, real planner, real gates, real journal, real activity log — fed by `FakeStorageProvider`s seeded with a believable file universe. The pixels users see are driven by the same provider-independent engine paths the future production composition will use.
 
 ## Principles
 
 1. **The engine decides, the UI presents.** The UI never computes a sync decision, a threshold, a conflict, or a deletion inference. It renders `ChangePreview`, `HoldNotice`, `RefusalNotice`, `ConflictDecision`, `ActivityEntry` — values the engine already explains in user language.
 2. **Trust through specificity.** Vague spinners breed suspicion. Every state shows *what* and *why*: which provider is unreachable, which folder tripped the mass-delete gate, which two versions diverged and when.
 3. **Refusals are calm, not alarming.** A refusal means "nothing will happen until reality changes" — render it as patience ("Paused for safety", "Provider unavailable"), never as a red error with a retry-harder button. There is **no force-sync affordance anywhere in the app.**
-4. **Approval is informed and explicit.** Gated plans require the user to see counts of trash moves and conflicts before "Sync now" enables. The UI constructs `PlanApproval` with acknowledged counts; the engine re-validates them (fingerprint, expiry, counts) — the UI never bypasses that.
+4. **Confirmation is informed and explicit.** Every executable preparation requires a bridge-owned `WorkspaceExecutionConfirmation`. Any nonzero trash/conflict count requires its matching acknowledgement before "Sync now" enables, including on a clear plan. An ordinary `massDeletion` hold exposes evidence and **Review intentional deletions**, but no confirmation or execution action; only an exact-match fresh reviewed plan backed by core's opaque live execution reservation becomes confirmable. The bridge validates fingerprint, time, expiry, and exact counts before it derives any internal core approval; core consumes the reservation before executor construction, so the reviewed value alone is never authority.
 5. **Advice wears a badge.** AI suggestions render as clearly attributed, dismissible annotations with a rationale — never as pre-selected defaults, never auto-applied.
 6. **Placeholders are honest.** Future capabilities appear (so the app frame is complete) but are labeled and inert; see the conventions in [11-functioning-vs-placeholder.md](11-functioning-vs-placeholder.md#placeholder-conventions).
 7. **Native first.** Standard macOS structure — `NavigationSplitView`, toolbar, menu commands, Settings scene, keyboard access, VoiceOver labels — with brand character layered on top, not instead.
@@ -45,21 +45,28 @@ Rules that keep the layers honest:
 
 ## One interaction, end to end
 
-"Sync now" on the *Documents* sync set — everything below is real code (✅), no mocked responses:
+Target “Sync now” flow after the L4 protocol migration (the current production app still uses the demo session):
 
 ```text
 View button ─▶ AppModel.syncNow(setID)
   ─▶ EngineSession.prepare(syncSetID)                    SyncOrchestrator.prepare()
         availability → scan → reconcile → plan → gate → ChangePreview (+ advice)
   ◀─ SyncPreparation
-  gate clear?  ── yes ─▶ EngineSession.execute(preparation, approval: nil)
-  │                        journal → verify → apply → verify → BaseRecords update
-  │                      ◀─ SyncRunSummary → toast + Activity refresh
-  └─ no (holds) ─▶ AppModel presents PreviewChangesSheet
-                     user reviews sections, acknowledges trash/conflict counts
-                     ─▶ PlanApproval(fingerprint, counts) ─▶ execute(…, approval)
-                     engine re-validates approval; drift ⇒ stoppedForReplan ⇒
-                     UI says "Files changed while you were reviewing — preview again."
+  ─▶ AppModel presents PreviewChangesSheet for clear or held plans
+       ordinary massDeletion → evidence + Review intentional deletions; no execution
+          ─▶ one-shot authorization → fresh full prepare → exact binding match
+              → atomic exchange for opaque in-memory execution reservation
+          ◀─ distinct reviewed plan + expiry ceiling (or fresh ordinary hold on failure)
+       executable plan → every nonzero trash/conflict count requires acknowledgement
+       ─▶ WorkspaceExecutionConfirmation(fingerprint, times, counts)
+       ─▶ EngineSession.execute(…, confirmation)
+            bridge validates confirmation and derives internal core PlanApproval? (nil only for clear)
+            reviewed plan: core atomically consumes matching fingerprint/run/preparation reservation
+            all-location preflight → journal → verify → apply → verify → BaseRecords
+       ◀─ SyncRunSummary → toast + Activity refresh
+       late drift ⇒ stoppedForReplan ⇒
+       UI names the stopped operation/location, retains earlier applied activity,
+       and requires a fresh preview; no rollback is promised
 ```
 
 The `EngineEvent` stream (activity appended, run finished, availability changed) fans out to `AppModel`, which refreshes cached snapshots so Overview badges, sidebar counts, and the Activity feed stay live without polling.

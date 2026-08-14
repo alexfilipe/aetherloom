@@ -63,7 +63,7 @@ New in this track (built once in `Design/`, reused by screens):
 | `PathText` | middle-truncating monospaced path with copy-on-click and tooltip of the full path |
 | `AdviceChip` | sparkle symbol + "Suggestion" + confidence dot; expands to rationale; explicit "On-device suggestion — you decide" footer; never orange/red (advice is not a warning) |
 | `PlaceholderChip` | small capsule reading "Coming soon" (or contextual variant); the standard marker for 🎭 surfaces |
-| `CountAcknowledgeRow` | checkbox row "Move N items to trash" / "N conflicts — both versions preserved" used by the approval footer |
+| `CountAcknowledgeRow` | checkbox row "Move N items to trash" / "N conflicts — both versions preserved" used by the confirmation footer |
 | `RunResultToast` | transient bottom-trailing capsule summarizing a `SyncRunSummary` (applied/skipped/failed counts); auto-dismisses, click opens Activity filtered to the run |
 | `InlineBanner` | neutral/paused variant of `SafetyBanner` for refusals (calm slate/indigo, shield icon) — refusals must not reuse the orange review styling |
 
@@ -91,12 +91,12 @@ sidebar — overview `circle.hexagongrid.fill`, sync sets `folder.badge.gearshap
 
 ## 9. Language
 
-Canonical engine sentences ([../core/00-overview.md](../core/00-overview.md#canonical-language)) render verbatim, always the first line of their surface. UI-authored copy: calm, specific, second person, no jargon ("provider", not "backend"; "review", not "resolve blockers"), no exclamation marks, no blame ("Files changed while you were reviewing" — not "Approval invalid"). Buttons are verbs: "Preview Changes", "Sync Now", "Review", "Keep Both", "Choose This Version", "Move to Trash". Placeholder copy always names the future capability: "Connecting Google Drive arrives with the real provider integrations."
+Canonical engine sentences ([../core/00-overview.md](../core/00-overview.md#canonical-language)) render verbatim, always the first line of their surface. UI-authored copy: calm, specific, second person, no jargon ("provider", not "backend"; "review", not "resolve blockers"), no exclamation marks, no blame ("Files changed while you were reviewing" — not "You caused the sync to fail"). Buttons are verbs: "Preview Changes", "Sync Now", "Review intentional deletions", "Keep Both", "Choose This Version", "Move to Trash". Placeholder copy always names the future capability: "Connecting Google Drive arrives with the real provider integrations."
 
 ## 10. Accessibility & input
 
 - Every interactive element: `accessibilityLabel`; badges combine into one element ("Documents, up to date").
-- Full keyboard path for the approval flow: sheet focus order = holds → sections → acknowledgments → cancel/approve; `Esc` cancels; approve is `⌘Return` (never plain Return — approval must be deliberate).
+- Full keyboard path for the confirmation flow: sheet focus order = holds/review action → sections → acknowledgments → cancel/confirm; `Esc` cancels; confirm is `⌘⏎` (never plain Return — confirmation must be deliberate).
 - Sidebar navigation `⌘1–⌘5`; `⌘R` scan; `⇧⌘P` preview; `⌘N` new sync set; `⌘,` settings.
 - Hit targets ≥ 24 pt; test at 1.5× Dynamic Type equivalent (`.controlSize` respects user settings).
 - VoiceOver announcement on run completion and on new holds (`AccessibilityNotification.Announcement`).

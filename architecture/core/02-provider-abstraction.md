@@ -13,8 +13,9 @@ public protocol StorageProvider: Sendable {
     /// flavor of "cannot know right now".
     func checkAvailability() async -> LocationAvailability
 
-    /// Full enumeration of the scope. Non-throwing: every failure is encoded
-    /// in ScanStatus. `.complete` is a proof obligation ("I enumerated everything").
+    /// Full accounting of the scope. Non-throwing: every failure is encoded
+    /// in ScanStatus. `.complete` proves every path is an observation or is
+    /// covered by a typed exclusion, with no unaccounted path.
     func scan(_ scope: SyncScope) async -> LocationSnapshot
 
     /// Optional narrowing: which subtrees changed since the cursor. Advisory
@@ -65,11 +66,12 @@ public enum LocationUnavailabilityReason: Codable, Hashable, Sendable {
 
 Normative provider behavior:
 
-- **Failure never masquerades as emptiness.** A `.complete` snapshot with zero observations is legal only after positively verifying the scope exists and is empty.
+- **Failure never masquerades as emptiness.** A `.complete` snapshot with zero observations is legal only after positively verifying the scope exists and is empty, or that typed exclusions account for every present in-scope path.
 - **Local folders:** verify the scope root exists *and* its volume is mounted before enumerating. Root missing on a mounted system volume ⇒ `scopeMissing`; missing because the disk is gone ⇒ `volumeNotMounted`.
-- **NAS:** enumeration runs under timeouts; a hang ⇒ `volumeUnreachable`; an error midway ⇒ `.incomplete`, never `.complete` with fewer items.
+- **NAS:** enumeration runs under timeouts; a hang ⇒ `volumeUnreachable`; an error midway ⇒ `.incomplete`, never `.complete` with an unaccounted path. A smaller observation count is complete only when every omitted path is positively covered by a typed item/subtree exclusion.
 - **iCloud local folder:** dataless files appear as observations with `isPlaceholder = true` — included, never omitted, never treated as edited.
 - **Symlinks:** observed with `ItemKind.symlink`, reported, excluded from propagation by default ([01 §5](01-domain-model.md)).
+- **Packages and unsupported macOS metadata:** the local MVP reports typed positive scan exclusions and never silently omits or descends into an excluded subtree; see [the local fidelity contract](../providers/local/01-package-and-metadata-safety.md). An exclusion is presence and cannot support deletion inference.
 
 ## 3. Capabilities
 

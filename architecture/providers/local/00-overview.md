@@ -1,6 +1,6 @@
-# 00 — Local Provider Overview (and Read-Side Spec)
+# 00 — Local Provider Overview and Implemented Contract
 
-`LocalFolderStorageProvider` 🆕 implements `StorageProvider` ✅ over Foundation's `FileManager` and URL resource keys. This document is normative for the provider's shape, capability declaration, availability, and scanning — the read side, milestone M2. Mutations and NAS specifics are sketched here and specified in 01/02 ⏭.
+`LocalFolderStorageProvider` ✅ implements `StorageProvider` over Foundation's `FileManager` and URL resource keys. Its read, mutation, physical-root ownership, receipt, and recovery paths have core coverage over temporary directories. This document records that implemented provider contract. [01-package-and-metadata-safety.md](01-package-and-metadata-safety.md) is normative for the arbitrary-folder fidelity boundary that must land before production enrollment; NAS-specific qualification remains future work.
 
 ## 1. Shape
 
@@ -21,7 +21,7 @@ public actor LocalFolderStorageProvider: StorageProvider {
 
 A failed or timed-out probe freezes the conservative value (`false`/`nil`), never blocks construction. Frozen capabilities can go stale (a different volume mounted beneath the same path); that is safe: availability checks gate every run, and a stale `hasNativeTrash == true` degrades at runtime by falling back to quarantine (§5) — the degradation direction is always preservation. Sessions construct a fresh provider per composition rather than mutating capabilities in place.
 
-`VolumeInspecting` 🆕 is the testability seam — small by design, covering exactly the dangerous questions: *is the volume containing this URL mounted? does a bounded probe of it respond? what are its properties (case sensitivity, trash support, network-ness)? does this directory exist on it?* The real implementation answers via `URL.resourceValues` volume keys and bounded filesystem probes; test doubles script every answer. Everything else — enumeration, attribute reads, content I/O — uses `FileManager` directly.
+`VolumeInspecting` ✅ is the testability seam — small by design, covering exactly the dangerous questions: *is the volume containing this URL mounted? does a bounded probe of it respond? what are its properties (case sensitivity, trash support, network-ness)? does this directory exist on it?* The real implementation answers via `URL.resourceValues` volume keys and bounded filesystem probes; test doubles script every answer. Everything else — enumeration, attribute reads, content I/O — uses `FileManager` directly.
 
 ## 2. Capability declaration (initial, conservative)
 
@@ -53,7 +53,7 @@ The ordering matters: a missing root must be classified as *volume gone* before 
 `scan(_:)` enumerates the scope with `FileManager.enumerator(at:includingPropertiesForKeys:options:errorHandler:)`, prefetching: `isDirectoryKey`, `fileSizeKey`, `contentModificationDateKey`, `isSymbolicLinkKey`, `isUbiquitousItemKey`, `ubiquitousItemDownloadingStatusKey`. Normative:
 
 - **Availability is re-checked first.** A scan against an unavailable location returns `status: .unavailable(reason)` with no observations — it never enumerates.
-- **Any enumeration error ⇒ `.incomplete(reason:)`.** The error handler records the failure and the scan finishes with whatever it has, marked incomplete; the engine refuses to plan on it ✅. A `.complete` status is the proof obligation "I visited everything" — one unreadable subdirectory voids it.
+- **Any enumeration error ⇒ `.incomplete(reason:)`.** The error handler records the failure and the scan finishes with whatever it has, marked incomplete; the engine refuses to plan on it ✅. A `.complete` status proves every in-scope path is accounted for as an observation or typed item/subtree exclusion, with no unaccounted path. A deliberately non-descended excluded directory remains complete because its exclusion accounts for the subtree; an unreadable unclassified directory voids completeness.
 - **The whole scan runs under a deadline.** Expiry ⇒ `.incomplete` (volume was responsive at check time) — never a truncated `.complete`.
 - **Observations:** files and folders map to `ItemObservation` with `version = ItemVersion(size:modifiedAt:)`; no `contentHash`, no `itemID` (per §2); symlinks map to `ItemKind.symlink(target:)` and are excluded from propagation by the engine's built-in exclusions ✅.
 - **Dataless files are placeholders, defensively.** Any item whose resource values say it is ubiquitous-and-not-downloaded observes with `isPlaceholder = true` — even though iCloud scopes are a later milestone, a user can select a folder that contains evicted iCloud items today, and a placeholder must never look absent or edited (invariant 2). The provider never triggers materialization during a scan.
@@ -100,10 +100,10 @@ Ordinary reads that authorize sync truth use writer-preferred coordinator leases
 
 The enrollment identity read is the only local filesystem deadline helper outside an enrolled root owner: it cannot authorize sync or race a mutation for that not-yet-enrolled location. Every read used by an enrolled provider to authorize sync truth is retained by the root coordinator until physical completion. Any newly introduced local write, including metadata or staging writes, must route through the coordinator.
 
-## 7. Open questions (resolve before or during the tasks that touch them)
+## 7. Resolved and deferred boundaries
 
 1. **Stable IDs**: are APFS file IDs dependable across remounts for `hasStableItemIDs = true` on local volumes? Upgrade path: flag flip + conformance cases proving rename tracking. Until proven, `false`.
 2. **mtime granularity on network filesystems**: SMB servers commonly truncate to 1–2 s. Does `ItemVersion` comparison need an explicit tolerance, or does size+mtime equality remain safe as-is? (Direction of error today: coarse mtimes make *fewer* `same` verdicts, which routes to preservation — acceptable, but noisy.) Belongs to 02 ⏭.
-3. **Extended attributes, Finder tags, resource forks**: not preserved by the staging path today. Decide preserve-vs-document-loss before M4 ships a real sync.
-4. **Packages** (`.app`, `.photoslibrary`): the core ADR excludes symlinks by default but is silent on packages. Treating a package as an ordinary folder tree is mechanically fine but semantically risky mid-edit. Needs a core-level decision; candidate: observe, exclude by default, visible warning — mirroring symlinks.
-5. **Sandbox and security-scoped bookmarks**: the app is currently unsandboxed; real folder selection works with plain paths. Decide before M4 whether `WorkspaceEngineSession` persists security-scoped bookmarks now so later sandboxing needs no migration. Owned by 01-workspace-session.md ⏭ at the track level.
+3. **Extended attributes, Finder tags, FinderInfo, and resource forks:** resolved for the MVP by typed visible exclusion; see [01-package-and-metadata-safety.md](01-package-and-metadata-safety.md). No preservation claim is allowed.
+4. **Packages** (`.app`, `.photoslibrary`): resolved for the MVP by `isPackageKey` root rejection and typed subtree exclusion; see [01-package-and-metadata-safety.md](01-package-and-metadata-safety.md).
+5. **Sandbox and security-scoped bookmarks:** the app target is sandboxed today but configured only for read-only user selection, and it has no production picker/bookmark/session persistence. The target read/write entitlement, app-scoped bookmark, capability-secrecy, and scope-lifetime contract is [../01-workspace-engine-session.md](../01-workspace-engine-session.md).

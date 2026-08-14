@@ -2,7 +2,7 @@
 
 The single source of truth for what the app **actually does** versus what it **previews**. When a screen doc and this table disagree, this table wins; update it in the same commit as any status change. Statuses per the legend in [README.md](README.md#status-legend): ✅ functioning (real engine/bridge behavior inside the demo world) · 🎭 placeholder (visual scaffold, honest and inert).
 
-"Functioning" always means: *real `AetherloomCore` code paths over fake providers and in-memory stores.* No functioning feature touches the network or real user files yet — that boundary moves only when `WorkspaceEngineSession` exists.
+For app rows, “functioning” currently means real `AetherloomCore` paths behind `DemoEngineSession`. A real `LocalFolderStorageProvider` and local end-to-end tests exist in core, but the production app does not compose them. `WorkspaceEngineSession`, durable app workspace state, and folder access are not wired yet.
 
 ## Sync pipeline
 
@@ -12,7 +12,8 @@ The single source of truth for what the app **actually does** versus what it **p
 | Scanning, incomplete-scan refusal | ✅ | real scan path (timeouts included) |
 | Reconciliation, planning, gating (mass delete/edit, deletions review, conflicts) | ✅ | real planner + `ExecutionGate` |
 | Change preview (sections, causality, waiting, byte sizes) | ✅ | `ChangePreviewRenderer` output rendered verbatim |
-| Approval with acknowledged trash/conflict counts, fingerprint, 15-min expiry | ✅ | `PlanApproval` + engine validation |
+| Current demo-only approval with acknowledged counts, fingerprint, 15-min expiry | ✅ | current bridge/AppModel still expose core `PlanApproval`; L4 replaces that AppModel-facing seam with `WorkspaceExecutionConfirmation` |
+| Bridge-enforced intentional mass-deletion review UI | 🎭 | core already keeps ordinary `massDeletion` held and never constructs `ScheduleExecutor`; L4 removes confirmation/execution from that path and adds the exact-binding one-shot **Review intentional deletions** flow whose fresh match installs an opaque live execution reservation consumed before executor construction |
 | Execution: staging, journal, precondition verification, drift abort (`stoppedForReplan`) | ✅ | `ScheduleExecutor` |
 | Journal recovery after interrupted run | ✅ | `RunRecovery` (scripted trigger via Demo menu) |
 | Delete-to-trash (provider trash, recoverable) | ✅ | fake providers' trash |
@@ -20,7 +21,8 @@ The single source of truth for what the app **actually does** versus what it **p
 | On-device conflict advice + hold triage notes (attributed, dismissible) | ✅ | `HeuristicConflictAdvisor` through the real advisory pipeline |
 | Activity log (all categories, queries) | ✅ | engine `ActivityStore` |
 | Idempotent re-runs (second preview empty) | ✅ | engine behavior |
-| **Real cloud/local/NAS data** | 🎭 | none — demo world only; every byte is fake |
+| **Real local-folder data in the app** | 🎭 | local provider exists in core/tests; production launch still uses `DemoEngineSession` |
+| **Real cloud/NAS data in the app** | 🎭 | no cloud integration; NAS is not qualified for the local MVP |
 | Background / scheduled sync | 🎭 | none |
 | Change-hint (cursor) optimized scans | 🎭 (invisible) | full scans only in demo |
 
@@ -32,8 +34,9 @@ The single source of truth for what the app **actually does** versus what it **p
 | Edit mode/thresholds/exclusions, effective on next plan | ✅ | engine `SyncSettings` |
 | Pause/resume sync set | ✅ (bridge-level) | core has no pause by design; not yet persisted across relaunch |
 | Delete sync set (never touches files) | ✅ | bridge + stores |
-| Choose real folders / scopes via picker | 🎭 | text-field scopes over the demo tree only |
+| Choose real folders / scopes via picker | 🎭 | no production `NSOpenPanel` or security-scoped bookmark wiring |
 | Workspace persistence across relaunch | 🎭 | demo world reseeds each launch; file-backed stores exist in core for the future session |
+| Sandboxed read/write folder authority | 🎭 | sandbox is enabled, but the project is configured for read-only selection and has no app-scoped bookmark persistence |
 
 ## Providers & accounts
 
@@ -51,7 +54,7 @@ The single source of truth for what the app **actually does** versus what it **p
 | Capability | Status |
 | --- | --- |
 | Navigation, badges, workspace status footer, toasts, deep links | ✅ |
-| Keyboard shortcuts and approval focus order | ✅ |
+| Keyboard shortcuts and confirmation focus order | ✅ |
 | VoiceOver labels and run/hold announcements | ✅ |
 | Reduced motion and mesh scene/occlusion pausing | ✅ |
 | Menu bar extra / status line | 🎭 deferred; Settings has a disabled placeholder until background sync reintroduces the scene safely |
@@ -71,4 +74,4 @@ Binding rules for every 🎭 surface (enforced in review):
 
 ## Upgrade path
 
-Each 🎭 row upgrades by implementing capability behind the existing seam — `WorkspaceEngineSession` (real providers, file-backed stores, keychain-backed accounts) replaces `DemoEngineSession` per the core development order; the connect sheet's internals swap OAuth in; pickers swap `NSOpenPanel` in. **No screen layout waits on any of that.**
+Local rows upgrade through the ordered [Local Workspace MVP work](../providers/agents/local-workspace-mvp.md): durable state and `WorkspaceEngineSession`, then `NSOpenPanel`, app-scoped bookmarks, read/write entitlement, and production session selection. OAuth/account work remains later and does not block the local MVP. **No screen layout is evidence that those capabilities already function.**

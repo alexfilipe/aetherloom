@@ -1,5 +1,7 @@
 # 01 — Domain Model
 
+> Historical annotations labeled “current” describe the pre-migration scaffold. The migration has landed; use current source and active work orders for implementation status.
+
 The vocabulary, designed clean. Sections marked *(current)* note what exists in `Models/CoreModels.swift` today; the full mapping is in [11-migration.md](11-migration.md).
 
 ## 1. Identity of places
@@ -20,11 +22,13 @@ public struct SyncLocation: Codable, Hashable, Sendable, Identifiable {
     public var kind: ProviderKind
     public var displayName: String          // "Google Drive (alex@…)", "Media NAS" — embedded in conflict-copy names and log lines
     public var scope: SyncScope             // .selectedFolder(path:) | .entireDrive   (current ✅)
-    public var configuration: [String: String]  // opaque provider config; never credentials
+    public var configuration: [String: String]  // non-secret provider identity/config only
 }
 ```
 
 *(current)* `ProviderID` is a closed enum of three cloud services — no local, no NAS, no second account of anything. It is deleted, not deprecated: nothing outside the package consumes it yet.
+
+For the local workspace, recorded volume identity may live in `configuration`; security-scoped bookmark/capability bytes may not. Those bytes live only in bridge-owned `FolderAccessRecord` files per [the workspace contract](../providers/01-workspace-engine-session.md#3-folder-access-is-a-separate-capability).
 
 ## 2. Identity of things
 
@@ -40,6 +44,8 @@ public enum ItemKind: Codable, Hashable, Sendable {
     case symlink(target: String)   // observed, reported, excluded from propagation by default
 }
 ```
+
+`SyncPath` also owns the component-aware ancestry relation used by joins and subtree exclusions. “Equal to or below” compares normalized path components under the destination volume's case/diacritic-folding rules; it is never a raw string prefix (`/Work/App` is not an ancestor of `/Work/Apple`). Reconciliation, exclusion coverage, overlap checks, and tests MUST use this one relation.
 
 **Item identity across runs** = provider-native item ID when the provider has one (`hasStableItemIDs`), else canonical path. That ordering is what makes rename/move detection work; providers without stable IDs degrade to "delete+create", which is safe (create propagates; "delete" needs a base record and a healthy scan, and content-hash matching can upgrade it back to a move — [03 §5](03-reconciliation.md)).
 
@@ -129,9 +135,11 @@ public struct SyncSet: Codable, Hashable, Sendable, Identifiable {
 
 public struct SyncSettings: Codable, Hashable, Sendable {
     public var exclusions: [SyncExclusion]        // (current ✅) + non-removable built-ins: "/.aetherloom/" prefix, symlinks
-    public var thresholds: SafetyThresholds       // (current ✅) defaults: deletes 25/25%, edits 50/50%; clamped, never disable-able
+    public var thresholds: SafetyThresholds       // (current ✅) safe ranges below; defaults are the maximums, never disable-able
 }
 ```
+
+`SafetyThresholds` has one canonical normalizing initializer used by direct construction, decoding, bridge preferences, sync-set creation, and settings updates. It clamps mass-delete absolute to `1...25` and ratio to `0.01...0.25`, and mass-edit absolute to `1...50` and ratio to `0.01...0.50`. Defaults are the maximum permitted values (`25`/`0.25`, `50`/`0.50`): users may tighten them, and a later in-range increase may restore at most those defaults, but no persisted or decoded setting can relax the hard ceilings. Normalized values are what the engine stores, displays, and fingerprints; there is no alternate unchecked decoder/update path.
 
 ## 6. Snapshots
 
@@ -144,6 +152,7 @@ public struct LocationSnapshot: Sendable {
     public var status: ScanStatus                     // complete | unavailable(reason) | incomplete(reason)
     public var scannedAt: Date
     public var observations: ObservationIndex          // byPath, byItemID, byCaseFoldedPath — O(1) lookups, built once
+    public var exclusions: [ScanExclusion]             // positive present-but-unsupported evidence
 }
 
 public enum ScanStatus: Codable, Hashable, Sendable {
@@ -153,7 +162,9 @@ public enum ScanStatus: Codable, Hashable, Sendable {
 }
 ```
 
-Rule: `status == .complete` is a *proof obligation* on the provider — "I positively enumerated everything in scope". Only complete snapshots ever participate in reconciliation; anything else refuses the run ([04 §2](04-planning-and-gating.md)).
+Rule: `status == .complete` is a *proof obligation* on the provider — every in-scope path is accounted for as either an ordinary `ItemObservation` or a typed `ScanExclusion`, with no unaccounted path. A subtree-scoped exclusion accounts for its root and descendants without enumerating or fabricating observations for those descendants. Only complete snapshots ever participate in reconciliation; anything else refuses the run ([04 §2](04-planning-and-gating.md)).
+
+An exclusion is not scan incompleteness and is never absence: it positively reports a present item/subtree whose fidelity is unsupported. The local MVP's typed semantics are normative in [providers/local/01-package-and-metadata-safety.md](../providers/local/01-package-and-metadata-safety.md).
 
 ## 7. Determinism envelope
 

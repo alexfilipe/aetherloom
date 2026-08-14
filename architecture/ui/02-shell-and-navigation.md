@@ -51,9 +51,12 @@ private(set) var busySyncSets: Set<UUID>                  // in-flight prepare/e
 
 // Intents (all async, all forward to EngineSession)
 func refreshWorkspace() async
-func syncNow(_ syncSetID: UUID) async        // prepare → auto-execute if gate clear, else sheet
+func syncNow(_ syncSetID: UUID) async        // prepare → sheet; never auto-executes
 func preview(_ syncSetID: UUID) async        // prepare → sheet always
-func approveAndExecute(_ preparation: SyncPreparation, approval: PlanApproval) async
+func confirmAndExecute(
+    _ preparation: SyncPreparation,
+    confirmation: WorkspaceExecutionConfirmation
+) async
 func setPaused(_ paused: Bool, syncSetID: UUID) async
 func resolveConflict(_ id: UUID, as resolution: Resolution) async
 ```

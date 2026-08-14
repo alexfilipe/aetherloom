@@ -1,6 +1,6 @@
 # Local-Folder Provider
 
-Design for `LocalFolderStorageProvider` 🆕 — the first real `StorageProvider`, serving **local folders** and **NAS-backed folders through mounted macOS network filesystems** with one implementation. It is the backend for the first real sync (local↔local, milestone M4) and the base the iCloud Drive variant builds on (M6). Track context, milestones, and shared requirements: [../00-overview.md](../00-overview.md).
+Design for `LocalFolderStorageProvider` ✅ — the first real `StorageProvider`, with implementation and temporary-directory core tests already present. It is the backend for the Local Workspace MVP. The same architecture may serve mounted NAS filesystems later, but NAS qualification is not part of this MVP. Track context and current status: [../00-overview.md](../00-overview.md).
 
 The design centers on one asymmetry: **reading real directories is where the safety proof lives** (is this volume mounted? is this scan complete? is absence real?), while mutating them is where atomicity lives (no torn writes, no lost content on rename, trash that can be undone). The documents split along that line.
 
@@ -8,10 +8,9 @@ The design centers on one asymmetry: **reading real directories is where the saf
 
 | Doc | Contents |
 | --- | --- |
-| [00-overview.md](00-overview.md) | The provider's shape, capability declaration, availability algorithm, scan semantics, open questions — **the spec for the read side** |
-| 01-mutations-and-trash.md ⏭ | Atomic `store`, `relocate`, `makeFolder`; native trash vs `/.aetherloom/trash/` quarantine; precondition emulation |
+| [00-overview.md](00-overview.md) | Implemented provider shape, capabilities, availability, scanning, mutations, and ownership |
+| [01-package-and-metadata-safety.md](01-package-and-metadata-safety.md) | Normative MVP policy for packages, xattrs, Finder metadata, and resource forks |
 | 02-nas-hardening.md ⏭ | Timeout-bounded enumeration, `volumeUnreachable` vs `volumeNotMounted` fidelity on SMB/NFS/AFP, mtime-granularity degradation |
-| 03-testing.md ⏭ | Temp-dir rigs, the volume-inspection seam in tests, conformance harness, opt-in real-mount tests |
 | [agents/](agents/) | Implementation work orders for this backend |
 
 ⏭ marks documents planned but not yet written; no work order may dispatch against a ⏭ document.

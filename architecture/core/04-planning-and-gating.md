@@ -92,13 +92,14 @@ public enum Precondition: Codable, Hashable, Sendable {
 
 ```swift
 public enum ExecutionGate: Codable, Hashable, Sendable {
-    case clear                          // may run unattended
-    case hold([HoldReason])             // plan withheld; PlanApproval unlocks [06 §3]
+    case clear                          // executable; production still requires bridge confirmation
+    case hold([HoldReason])             // executable only when permitsApproval is true
 }
 
 public enum HoldReason: Codable, Hashable, Sendable {
     case conflicts(count: Int)
     case massDeletion(MassChangeEvidence)
+    case reviewedMassDeletion(ReviewedMassDeletionEvidence)
     case massEdit(MassChangeEvidence)
     case deletionsNeedReview(count: Int)     // SyncMode.askBeforeDeleting
 }
@@ -107,6 +108,25 @@ public struct MassChangeEvidence: Codable, Hashable, Sendable {
     public var intentCount: Int              // DECISIONS, not fan-out operations
     public var trackedCount: Int
     public var groups: [ChangeGroup]         // nearest-common-ancestor attribution: "all 312 under /Photos/2019"
+    public var evidenceDigest: String        // canonical sorted affected records/paths/locations/counts
+}
+
+public struct ReviewedMassDeletionEvidence: Codable, Hashable, Sendable {
+    public var originalUnreviewedFingerprint: PlanFingerprint
+    public var deletionEvidenceDigest: String
+    public var intentCount: Int
+    public var trackedCount: Int
+    public var settingsSnapshotDigest: String
+    public var worldSnapshotDigest: String
+    public var authorizationDigest: String   // audit binding, never bearer/reservation authority
+}
+
+public struct MassDeletionSafetyLatch: Codable, Hashable, Sendable {
+    public var syncSetID: UUID
+    public var deletionEvidenceDigest: String
+    public var intentCount: Int
+    public var trackedCount: Int
+    public var latchedAt: Date
 }
 ```
 
@@ -117,9 +137,29 @@ intents ≥ absoluteThreshold
 or (trackedCount ≥ absoluteThreshold and intents/trackedCount ≥ ratioThreshold)
 ```
 
-Defaults: deletions 25 / 25 %, edits 50 / 50 %. Counting **decisions** means "user deleted 30 files" gates identically whether the set has 2 or 5 locations (today, fan-out operations are counted, so the same act trips differently by topology). `SyncMode.noDeletePropagation` converts `propagateDeletion` verdicts into informational decisions with zero operations — visible in the preview, nothing trashed.
+Defaults are also the hard maximums: mass-delete absolute is normalized to `1...25` and ratio to `0.01...0.25`; mass-edit absolute is normalized to `1...50` and ratio to `0.01...0.50`. One canonical `SafetyThresholds` initializer applies those clamps to direct construction, decoding, bridge preferences, sync-set creation, and updates. Users may tighten the defaults, and later restore an in-range value only as far as the default maximum; no persistent setting can weaken these ceilings. The ratio formula above is unchanged. Consequently, **Review intentional deletions** is the sole path for a legitimate deletion at or above an otherwise tripped hard ceiling. Counting **decisions** means "user deleted 30 files" gates identically whether the set has 2 or 5 locations (today, fan-out operations are counted, so the same act trips differently by topology). `SyncMode.noDeletePropagation` converts `propagateDeletion` verdicts into informational decisions with zero operations — visible in the preview, nothing trashed.
 
-The gate is **monotone**: computed once from plan contents by a pure function, never downgraded by anything (not the orchestrator, not the advisor, not re-rendering). There is no third "paused" risk level — refusals took that role, typed.
+### Durable mass-deletion safety latch
+
+Pure planning derives candidate deletion evidence from the canonical sorted deletion decisions, affected base-record identities/versions, initiating and destination locations, grouped roots, and exact intent/tracked counts. Pure gating receives the orchestrator-loaded existing latch as an injected value and returns the candidate gate plus a typed latch transition (`unchanged`, `upsert/replace`, or `clear`); neither planner nor gate code reads or writes a store. A matching injected latch forces the ordinary `massDeletion` hold even if an earlier tighter threshold was later increased within the permitted range. Threshold settings are not part of deletion evidence and cannot authorize or clear a previously latched deletion set.
+
+The orchestrator/store layer loads the latch before the pure call and MUST durably apply its returned upsert, replacement, or clear before exposing the preparation. A prepare that newly trips `massDeletion` therefore exposes nothing until the exact sync-set/evidence latch is durable; a load or transition failure refuses deletion planning. Out-of-range persisted settings are normalized to the hard maxima before planning and fingerprinting, so corrupt or legacy values cannot weaken the stop for future deletion evidence.
+
+The latch is durable **safety state, never durable authority**. It clears only after (a) successful execution and journal/base-record reconciliation of the matching reviewed mass-deletion plan, or (b) a fresh complete prepare proves that the underlying deletion evidence digest or counts changed. A stopped, partial, expired, cancelled, failed, unreconciled, or merely confirmed run leaves it in place. When evidence changes, the old latch is cleared and the new plan is evaluated normally; if the changed evidence trips the rule, a new latch is created. Latch creation, replacement, and clearing are journaled and logged as `safety` activity.
+
+### One-shot review for intentional deletions
+
+An ordinary `massDeletion` reason never permits approval. Arbitrarily large legitimate deletions are reachable only through this explicit flow:
+
+1. The user inspects the ordinary non-approvable preview and chooses **Review intentional deletions**. The original preparation remains non-approvable.
+2. The orchestrator issues an opaque, single-use review authorization with a unique nonce and `issuedAt`/`expiresAt` (default 15 minutes). It is bound to the exact sync-set ID and canonical location membership, original unreviewed `PlanFingerprint`, deletion-evidence digest and exact intent/tracked counts, complete settings snapshot digest, and complete world snapshot digest. It is process-memory only, non-`Codable`, never written to a manifest/store, and cannot be restored after relaunch. Issuance is recorded in safety activity and the safety journal with only the authorization digest and bindings, never the bearer value.
+3. The review authorization can be consumed only by one fresh full `prepare`. That prepare repeats recovery, availability, complete scans, reconciliation, planning, and ordinary gating. Before the transition it recomputes the ordinary unreviewed plan and MUST match the original unreviewed fingerprint, deletion evidence/counts, exact sync set, settings snapshot, and world snapshot. Expiry, prior use, or any mismatch consumes/rejects the authorization, emits no reviewed plan or reservation, mutates no provider, and returns the fresh ordinary outcome for display.
+4. On an exact match, the orchestrator derives `reviewedMassDeletion(binding)`, computes a reviewed fingerprint that differs from the unreviewed one, and atomically transitions the bearer review authorization into a new opaque `MassDeletionExecutionReservation` before exposing the reviewed preparation. The reservation is actor-owned process memory, non-`Codable`, expiring (default 15 minutes), one-shot, and bound to the exact reviewed fingerprint, run ID, and preparation identity. Neither the bearer reservation nor a way to fabricate it crosses the core/session boundary. Only authorization/reservation digests, bindings, expiries, and transition results are recorded durably in safety activity/journal.
+5. The reviewed plan remains only evidence: its Codable `reviewedMassDeletion` value, fingerprint, audit digest, confirmation, durable latch, and journal records are not execution authority individually or together. The user must still inspect the fresh reviewed preview, acknowledge its exact trash/conflict counts, and provide an unexpired confirmation bound to the reviewed fingerprint. After validating that normal approval/confirmation, core `execute` MUST find and atomically consume the exact live reservation immediately before executor construction. A missing, expired, reused, relaunch-restored, wrong-run, wrong-preparation, or wrong-fingerprint reservation returns held/rejected with zero executor construction and zero executor/provider calls. Any other non-approvable reason still blocks execution.
+
+An executable preparation is exactly `gate == .clear`, or `gate == .hold && gate.permitsApproval`, with the additional live-reservation requirement above for any `reviewedMassDeletion`. `permitsApproval` is true only when every hold reason permits approval. `conflicts`, `massEdit`, `deletionsNeedReview`, and `reviewedMassDeletion` permit approval; ordinary `massDeletion` does not, so any mixed hold containing ordinary `massDeletion` is non-approvable. Confirmation cannot create, persist, or substitute for the review authorization or execution reservation.
+
+The gate is **monotone within a preparation**: computed from plan contents plus the durable latch, never downgraded by the advisor, confirmation, settings UI, or re-rendering. The separate reviewed plan is produced only by the fresh, exact-match transition above; it does not mutate or downgrade the original gate. Confirmation cannot convert a non-approvable hold into an executable plan. There is no third "paused" risk level — refusals and holds retain their distinct typed meanings.
 
 ## 5. Fingerprints
 
@@ -127,7 +167,9 @@ The gate is **monotone**: computed once from plan contents by a pure function, n
 public struct PlanFingerprint: Codable, Hashable, Sendable { public var rawValue: String }
 ```
 
-SHA-256 over the canonical encoding (sorted-keys JSON, ISO-8601 dates) of: sync set ID, decisions, schedule, gate, and a per-snapshot roll-up `(locationID, scannedAt, observation count, sorted version-token digest)`. Properties: identical inputs ⇒ stable across processes; any change to *what would run* or *what the world looked like* ⇒ different fingerprint. The fingerprint is what approvals bind to and what execution re-checks — it is the "what you saw is what runs" guarantee.
+SHA-256 over a dedicated canonical semantic projection, not a serialization of the runtime structs. It contains: exact sync-set ID and canonically sorted location membership; normalized mode/settings; semantic decisions; semantic operation DAG; gate/evidence; relevant base/conflict-resolution state; and, per location, canonical sorted observation and exclusion evidence (identity, normalized path, kind, version/placeholder/trash state, exclusion scope/reason). Every unordered collection is sorted by stable semantic keys. Dependencies reference deterministic semantic operation keys, so array/DAG traversal order is not material.
+
+The projection excludes ephemeral `runID`, preparation identity, `ItemDecision.id`, `Operation.id`, and other values produced by `makeID`; display/localization strings and display timestamps; `generatedAt`, `scannedAt`, and other sampling timestamps; and collection/traversal ordering accidents. An implementation MAY instead generate deterministic semantic decision/operation IDs, but such IDs MUST be derived solely from the same canonical semantic material. The same projection rules produce the `settingsSnapshotDigest`, `worldSnapshotDigest`, and deletion-evidence digest. Thus a fresh complete prepare with identical truth reproduces the original unreviewed fingerprint even when generated IDs, `generatedAt`/`scannedAt`, and input enumeration order differ, while any semantic change to what would run, settings, membership, base intent, provider truth, or exclusion evidence changes it. A reviewed mass-deletion binding and explicit marker are additional fingerprint inputs, guaranteeing that its reviewed fingerprint differs from the original unreviewed fingerprint. Confirmations/internal approvals bind that fingerprint; reviewed execution additionally requires the live reservation, preserving the "what you saw is what runs" guarantee without making a Codable plan authority.
 
 ## 6. Changing the current code
 

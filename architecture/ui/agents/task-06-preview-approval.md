@@ -1,5 +1,7 @@
 # UI Task 06 — Preview & Approval Sheet
 
+> **Historical work order — do not dispatch:** the L4 Local Workspace protocol migration supersedes its direct `PlanApproval` construction with non-optional `WorkspaceExecutionConfirmation`. The detail below records the pre-L4 implementation only.
+
 ## Role
 Senior SwiftUI engineer. The trust centerpiece: render real `SyncPreparation`s and implement the acknowledged-approval state machine. Highest-stakes UI task — the safety invariants are load-bearing here.
 

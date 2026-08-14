@@ -1,6 +1,6 @@
 # Aetherloom Provider Architecture
 
-This directory is the canonical design for Aetherloom's **real storage-provider integrations** — the track that moves the boundary named in [../ui/11-functioning-vs-placeholder.md](../ui/11-functioning-vs-placeholder.md): *"No functioning feature touches the network or real user files yet — that boundary moves only when `WorkspaceEngineSession` exists."* The engine ([../core/](../core/README.md)) is hardened against fake providers; this track builds the providers that make it sync real bytes, in the order that adds the fewest unknowns per step.
+This directory is the canonical design for Aetherloom's **real storage-provider integrations**. `LocalFolderStorageProvider` and its core tests exist today; the production app still runs `DemoEngineSession`, so no app feature yet operates on selected real folders. [01-workspace-engine-session.md](01-workspace-engine-session.md) defines the boundary that moves the production app to real local data.
 
 Two audiences:
 
@@ -9,22 +9,22 @@ Two audiences:
 
 ## Scope
 
-In scope now: the provider conformance suite, the local-folder provider (which also serves NAS-backed folders through mounted network filesystems), and `WorkspaceEngineSession` — real providers composed with the file-backed stores so the app performs its first real sync between two local folders.
+In scope now: the local-folder arbitrary-folder safety policy, durable workspace persistence, `WorkspaceEngineSession`, and real app enrollment for manually confirmed sync between two selected local folders.
 
-Next after that: the iCloud Drive local-folder variant (dataless placeholders, materialization).
+Future after the local alpha: NAS hardening and the iCloud Drive local-folder variant (dataless placeholders, materialization), each behind its own accepted architecture and work order.
 
-Out of scope now: OAuth and cloud SDKs (OneDrive, Google Drive, Dropbox), FSEvents change hints, background sync, App Store sandboxing, SQLite (the JSON file stores in [../core/09-persistence.md](../core/09-persistence.md) carry real syncs until scale says otherwise).
+Out of scope now: OAuth and cloud SDKs (OneDrive, Google Drive, Dropbox), FSEvents change hints, background/scheduled sync, whole-drive or NAS qualification, SQLite, migration UI, and App Store distribution. The app remains sandboxed; read/write folder authority and app-scoped bookmarks are part of the local MVP.
 
 ## Document map
 
 | Doc | Contents |
 | --- | --- |
 | [00-overview.md](00-overview.md) | Roadmap and milestones, shared normative requirements for every real provider, the conformance suite, targets and layering, decisions & rejected alternatives |
-| 01-workspace-session.md ⏭ | `WorkspaceEngineSession`: composing real providers with file-backed stores, folder selection, workspace persistence, coexistence with the demo session |
-| [local/](local/README.md) | The local-folder provider, serving local folders and NAS-backed folders — the first real backend |
+| [01-workspace-engine-session.md](01-workspace-engine-session.md) | Normative production session, sandbox/bookmark authority, identity/overlap, durable workspace, relaunch, and recovery contract |
+| [local/](local/README.md) | The implemented local-folder provider, its arbitrary-folder fidelity boundary, and future NAS use |
 | icloud/ ⏭ | iCloud Drive as a local-folder variant: placeholders, download status, materialization |
 | onedrive/, gdrive/, dropbox/ ⏭ | Cloud integrations — much later, per the development order |
-| [agents/](agents/) | Track-level implementation work orders and the cross-track dispatch graph |
+| [agents/local-workspace-mvp.md](agents/local-workspace-mvp.md) | Sole ordered L1–L6 dispatch map, acceptance ownership, and validation gates |
 
 ⏭ marks documents planned but not yet written; no work order may dispatch against a ⏭ document.
 
@@ -38,6 +38,6 @@ Out of scope now: OAuth and cloud SDKs (OneDrive, Google Drive, Dropbox), FSEven
 
 ## Status legend
 
-- ✅ **Exists today** in `src/` (the protocol, the fakes, the file-backed stores).
+- ✅ **Exists today** in `src/` (including the real local provider and its core tests).
 - 🆕 **New** — designed here, not yet implemented.
 - ⏭ **Planned** — deferred to a later phase of this track; design not yet written.

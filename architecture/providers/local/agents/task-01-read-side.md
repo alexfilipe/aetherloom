@@ -1,5 +1,7 @@
 # Task 01 — Local Provider Read Side (Milestone M2)
 
+> **Historical work order:** this milestone is implemented. Do not dispatch this prompt. Current work starts from [the Local Workspace MVP map](../../agents/local-workspace-mvp.md).
+
 ## Role
 Senior Swift engineer on `AetherloomCore`. You implement the first real `StorageProvider` over the filesystem — availability and scanning only. The provider must be able to *look* at real directories with the engine's full truthfulness discipline before it is allowed to touch anything. **Requires the conformance suite (`../../agents/task-01`) merged.**
 
@@ -7,7 +9,7 @@ Senior Swift engineer on `AetherloomCore`. You implement the first real `Storage
 `architecture/providers/local/00-overview.md` (your spec — implement exactly), `architecture/providers/00-overview.md` (§2, §5), `architecture/core/02-provider-abstraction.md`; current `Providers/*` sources and the conformance harness in test support. Baseline green first.
 
 ## Invariants (override this prompt)
-Failure never masquerades as emptiness: no code path may return a `.complete` snapshot after any enumeration error, timeout, or unavailability. A missing root is classified volume-first (`volumeNotMounted` before `scopeMissing`, per spec §3). Placeholders observe as present with `isPlaceholder = true`, never as absent, and scanning never triggers materialization.
+Failure never masquerades as emptiness: no code path may return a `.complete` snapshot after any enumeration error, timeout, unavailability, or unaccounted path. Complete means every in-scope path is an observation or is positively covered by a typed item/subtree exclusion. A missing root is classified volume-first (`volumeNotMounted` before `scopeMissing`, per spec §3). Placeholders observe as present with `isPlaceholder = true`, never as absent, and scanning never triggers materialization.
 
 ## Deliverables
 1. `LocalFolderStorageProvider` actor in `Sources/AetherloomCore/Providers/Local/` per spec §1, with the capability table from spec §2 verbatim (native-trash probing may land as a stub returning `false` until task-02).
