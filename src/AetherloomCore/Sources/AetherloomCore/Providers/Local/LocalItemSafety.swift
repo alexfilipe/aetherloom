@@ -214,9 +214,13 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
             if errno == ENOENT || errno == ENOATTR { return false }
             throw posixError()
         }
-        defer { acl_free(acl) }
+        defer { _ = acl_free(UnsafeMutableRawPointer(acl)) }
         var entry: acl_entry_t?
-        let result = acl_get_entry(acl, ACL_FIRST_ENTRY, &entry)
+        let result = acl_get_entry(
+            acl,
+            Int32(ACL_FIRST_ENTRY.rawValue),
+            &entry
+        )
         guard result >= 0 else { throw posixError() }
         return result == 1
 #else
