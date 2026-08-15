@@ -363,7 +363,11 @@ private struct PlanLowerer {
         case let .waiting(reason, locations):
             state.waiting.append(
                 WaitingItem(
-                    id: DeterministicID.uuid("waiting", item.primaryPath.rawValue, locations.map { $0.rawValue.uuidString }.joined()),
+                    id: DeterministicID.uuid(
+                        "waiting",
+                        item.primaryPath.rawValue,
+                        locations.sorted().map { $0.rawValue.uuidString }.joined()
+                    ),
                     path: item.primaryPath,
                     reason: reason,
                     locations: locations.sorted()
