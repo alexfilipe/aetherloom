@@ -16,7 +16,7 @@ public struct PlanFingerprint: Codable, Hashable, Sendable {
     ) -> PlanFingerprint {
         let payload = PlanFingerprintPayload(
             syncSetID: syncSetID,
-            decisions: decisions,
+            decisions: decisions.map(DecisionFingerprintRollup.init),
             schedule: schedule,
             gate: gate,
             snapshots: snapshots.map(SnapshotFingerprintRollup.init).sorted()
@@ -28,10 +28,67 @@ public struct PlanFingerprint: Codable, Hashable, Sendable {
 
 private struct PlanFingerprintPayload: Codable, Hashable, Sendable {
     var syncSetID: UUID
-    var decisions: [ItemDecision]
+    var decisions: [DecisionFingerprintRollup]
     var schedule: OperationSchedule
     var gate: ExecutionGate
     var snapshots: [SnapshotFingerprintRollup]
+}
+
+private struct DecisionFingerprintRollup: Codable, Hashable, Sendable {
+    var id: UUID
+    var path: SyncPath
+    var verdict: VerdictFingerprintRollup
+    var operations: [OperationID]
+    var explanation: String
+
+    init(_ decision: ItemDecision) {
+        self.id = decision.id
+        self.path = decision.path
+        self.verdict = VerdictFingerprintRollup(decision.verdict)
+        self.operations = decision.operations
+        self.explanation = decision.explanation
+    }
+}
+
+private indirect enum VerdictFingerprintRollup: Codable, Hashable, Sendable {
+    case inSync
+    case propagateContent(from: LocationID, to: [LocationID])
+    case propagateCreation(from: LocationID, to: [LocationID])
+    case propagatePath(to: [LocationID], newPath: SyncPath)
+    case propagateDeletion(to: [LocationID], initiatedBy: LocationID)
+    case conflict(ConflictDecision)
+    case waiting(WaitingReason, locations: [LocationID])
+    case excluded([LocatedScanExclusion], locations: [LocationID])
+    case compound([VerdictFingerprintRollup])
+
+    init(_ verdict: ItemVerdict) {
+        switch verdict {
+        case .inSync:
+            self = .inSync
+        case let .propagateContent(from, to):
+            self = .propagateContent(from: from, to: to.sorted())
+        case let .propagateCreation(from, to):
+            self = .propagateCreation(from: from, to: to.sorted())
+        case let .propagatePath(to, newPath):
+            self = .propagatePath(to: to.sorted(), newPath: newPath)
+        case let .propagateDeletion(to, initiatedBy):
+            self = .propagateDeletion(
+                to: to.sorted(),
+                initiatedBy: initiatedBy
+            )
+        case let .conflict(conflict):
+            self = .conflict(conflict)
+        case let .waiting(reason, locations):
+            self = .waiting(reason, locations: locations.sorted())
+        case let .excluded(exclusions, locations):
+            self = .excluded(
+                exclusions.sorted(),
+                locations: locations.sorted()
+            )
+        case let .compound(verdicts):
+            self = .compound(verdicts.map(Self.init))
+        }
+    }
 }
 
 private struct SnapshotFingerprintRollup: Codable, Hashable, Sendable, Comparable {
