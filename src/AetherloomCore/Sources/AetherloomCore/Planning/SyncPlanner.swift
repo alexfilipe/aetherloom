@@ -91,6 +91,8 @@ public struct SyncPlanner: Sendable {
             trackedCount: trackedCount,
             settings: input.settings,
             mode: syncSet.mode
+        ).addingHolds(
+            lowered.opaqueRelocationEvidence.map(HoldReason.opaqueRelocation)
         )
         let fingerprint = PlanFingerprint.compute(
             syncSetID: syncSet.id,
@@ -183,6 +185,7 @@ private struct LoweredPlan {
     var conflicts: [ConflictDecision]
     var waiting: [WaitingItem]
     var exclusions: [LocatedScanExclusion]
+    var opaqueRelocationEvidence: [OpaqueRelocationEvidence]
 }
 
 private struct PlanLowerer {
@@ -218,7 +221,8 @@ private struct PlanLowerer {
                 schedule: OperationSchedule(),
                 conflicts: [],
                 waiting: exclusionWaitingItems(exclusions),
-                exclusions: exclusions
+                exclusions: exclusions,
+                opaqueRelocationEvidence: []
             )
         }
 
@@ -266,7 +270,8 @@ private struct PlanLowerer {
             schedule: schedule,
             conflicts: state.conflicts,
             waiting: state.waiting + exclusionWaitingItems(exclusions),
-            exclusions: exclusions
+            exclusions: exclusions,
+            opaqueRelocationEvidence: state.opaqueRelocationEvidence
         )
     }
 
@@ -364,6 +369,14 @@ private struct PlanLowerer {
                     locations: locations.sorted()
                 )
             )
+            if !item.blockingExclusions.isEmpty {
+                state.opaqueRelocationEvidence.append(
+                    OpaqueRelocationEvidence(
+                        trackedPath: item.primaryPath,
+                        exclusions: item.blockingExclusions
+                    )
+                )
+            }
 
         case .excluded:
             // Exact root evidence is carried once in SyncPlan.exclusions.
@@ -499,7 +512,17 @@ private struct PlanLowerer {
             return "Deleted from \(locationName(initiatedBy)) since last sync."
         case let .conflict(conflict):
             return conflict.message
-        case .waiting, .excluded:
+        case let .waiting(reason, _):
+            switch reason {
+            case .contentNotMaterialized:
+                return "Waiting for this item to download."
+            case .unsupportedItem:
+                let evidence = item.blockingExclusions.map { located in
+                    "\(located.exclusion.path.rawValue) at \(locationName(located.location)) (\(located.exclusion.reason.message))"
+                }.joined(separator: "; ")
+                return "Deletion is waiting for review because newly observed excluded subtree evidence could contain this item: \(evidence)"
+            }
+        case .excluded:
             return "Provider unavailable"
         case let .compound(verdicts):
             return verdicts.map { explanation(for: $0, item: item) }.joined(separator: " ")
@@ -552,6 +575,7 @@ private struct LoweringState {
     var operationDecisionIDs: [OperationID: UUID] = [:]
     var conflicts: [ConflictDecision] = []
     var waiting: [WaitingItem] = []
+    var opaqueRelocationEvidence: [OpaqueRelocationEvidence] = []
     var existingPathsByLocation: [LocationID: Set<SyncPath>]
 }
 

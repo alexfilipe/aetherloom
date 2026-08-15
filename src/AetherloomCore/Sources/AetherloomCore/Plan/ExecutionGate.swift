@@ -98,6 +98,7 @@ public enum HoldReason: Codable, Hashable, Sendable {
     case massDeletion(MassChangeEvidence)
     case massEdit(MassChangeEvidence)
     case deletionsNeedReview(count: Int)
+    case opaqueRelocation(OpaqueRelocationEvidence)
 
     public var message: String {
         switch self {
@@ -109,16 +110,31 @@ public enum HoldReason: Codable, Hashable, Sendable {
             return ActivityMessageCatalog.manyEdits
         case .deletionsNeedReview:
             return ActivityMessageCatalog.deletionsNeedReview
+        case let .opaqueRelocation(evidence):
+            return "Deletion of \(evidence.trackedPath.rawValue) is waiting because a newly observed excluded subtree could contain this item."
         }
     }
 
     public var permitsApproval: Bool {
         switch self {
-        case .massDeletion:
+        case .massDeletion, .opaqueRelocation:
             return false
         case .conflicts, .massEdit, .deletionsNeedReview:
             return true
         }
+    }
+}
+
+public struct OpaqueRelocationEvidence: Codable, Hashable, Sendable {
+    public var trackedPath: SyncPath
+    public var exclusions: [LocatedScanExclusion]
+
+    public init(
+        trackedPath: SyncPath,
+        exclusions: [LocatedScanExclusion]
+    ) {
+        self.trackedPath = trackedPath
+        self.exclusions = Array(Set(exclusions)).sorted()
     }
 }
 

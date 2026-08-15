@@ -512,7 +512,7 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     #expect(!activity.contains { $0.message == ActivityMessageCatalog.runFinished })
 }
 
-@Test func opaqueRelocatedSubtreeCannotAuthorizeDeletion() {
+@Test func opaqueRelocatedSubtreeCannotAuthorizeDeletion() async throws {
     let left = LocationID(rawValue: UUID())
     let right = LocationID(rawValue: UUID())
     let syncSet = SyncSet(
@@ -522,14 +522,24 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
         createdAt: l2Date,
         updatedAt: l2Date
     )
-    let record = BaseRecord(
-        syncSetID: syncSet.id,
-        path: "/Projects/notes.txt",
-        kind: .file,
-        version: ItemVersion(contentHash: "base"),
-        createdAt: l2Date,
-        updatedAt: l2Date
-    )
+    let records = [
+        BaseRecord(
+            syncSetID: syncSet.id,
+            path: "/Projects",
+            kind: .folder,
+            version: ItemVersion(),
+            createdAt: l2Date,
+            updatedAt: l2Date
+        ),
+        BaseRecord(
+            syncSetID: syncSet.id,
+            path: "/Projects/notes.txt",
+            kind: .file,
+            version: ItemVersion(contentHash: "base"),
+            createdAt: l2Date,
+            updatedAt: l2Date
+        ),
+    ]
     let exclusion = ScanExclusion(
         path: "/Projects.app",
         scope: .subtree,
@@ -545,35 +555,217 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     let rightSnapshot = LocationSnapshot(
         location: right,
         scope: .entireDrive,
-        observations: [
+        observations: records.map {
             ItemObservation(
                 location: right,
-                path: record.path,
-                kind: record.kind,
-                version: record.version
+                path: $0.path,
+                kind: $0.kind,
+                version: $0.version
             )
-        ],
+        },
         scannedAt: l2Date
     )
 
     let outcome = SyncPlanner().plan(
         SyncPlanningInput(
             syncSet: syncSet,
-            records: [record],
+            records: records,
             snapshots: [leftSnapshot, rightSnapshot]
         ),
         environment: PlanningEnvironment(now: l2Date)
     )
     guard case let .plan(plan) = outcome else {
-        Issue.record("Expected an exclusion-only plan for opaque relocation")
+        Issue.record("Expected a review-held plan for opaque relocation")
         return
     }
     #expect(plan.schedule.operations.isEmpty)
-    #expect(plan.decisions.isEmpty)
+    #expect(plan.decisions.count == records.count)
+    #expect(!plan.decisions.contains(where: \.hasDeletionIntent))
+    #expect(plan.decisions.allSatisfy { decision in
+        if case let .waiting(.unsupportedItem, locations) = decision.verdict {
+            return locations == Set([left, right])
+        }
+        return false
+    })
     #expect(plan.exclusions == [
         LocatedScanExclusion(location: left, exclusion: exclusion)
     ])
-    #expect(plan.waiting.count == 1)
+    #expect(plan.waiting.count == records.count + 1)
+    #expect(!plan.gate.permitsApproval)
+    let opaqueHolds = plan.gate.holdReasons.compactMap { reason -> OpaqueRelocationEvidence? in
+        if case let .opaqueRelocation(evidence) = reason { return evidence }
+        return nil
+    }
+    #expect(Set(opaqueHolds.map(\.trackedPath)) == Set(records.map(\.path)))
+    #expect(opaqueHolds.allSatisfy {
+        $0.exclusions == [LocatedScanExclusion(location: left, exclusion: exclusion)]
+    })
+
+    let preview = ChangePreviewRenderer().render(
+        outcome: .plan(plan),
+        locations: [:],
+        base: records,
+        generatedAt: l2Date
+    )
+    #expect(preview.headline == "Paused for safety")
+    let previewHoldExclusions = preview.holds.flatMap { hold -> [LocatedScanExclusion] in
+        if case let .opaqueRelocation(evidence) = hold.reason {
+            return evidence.exclusions
+        }
+        return []
+    }
+    #expect(previewHoldExclusions.contains(
+        LocatedScanExclusion(location: left, exclusion: exclusion)
+    ))
+    let waitingPaths = Set(
+        preview.sections.first { $0.kind == .waiting }?.entries.map(\.path) ?? []
+    )
+    #expect(waitingPaths == Set(records.map(\.path) + [exclusion.path]))
+
+    let stores = EngineStores.inMemory()
+    for record in records {
+        try await stores.baseRecords.apply(.upsert(record))
+    }
+    let leftProvider = FakeStorageProvider(locationID: left)
+    let rightProvider = FakeStorageProvider(locationID: right)
+    let stageRoot = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "opaque-relocation-stage"
+    )
+    let executor = ScheduleExecutor(
+        providers: [left: leftProvider, right: rightProvider],
+        stores: stores,
+        stage: ContentStage(rootDirectory: stageRoot, byteLimit: 1_000_000),
+        environment: ExecutionEnvironment(now: { l2Date })
+    )
+    await #expect(throws: ScheduleExecutionError.planNeedsReview) {
+        try await executor.execute(plan)
+    }
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+    #expect(try await stores.baseRecords.records(for: syncSet.id) == records)
+    #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
+    let activity = await stores.activity.entries(matching: ActivityQuery(limit: 100))
+    #expect(!activity.contains { $0.message == ActivityMessageCatalog.runFinished })
+}
+
+@Test func longStandingUnrelatedSubtreeExclusionDoesNotSuppressDeletion() async throws {
+    let left = LocationID(
+        rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+    )
+    let right = LocationID(
+        rawValue: UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+    )
+    let syncSet = SyncSet(
+        id: UUID(),
+        name: "Unrelated exclusion",
+        locations: [left, right],
+        mode: .askBeforeDeleting,
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    let exclusion = ScanExclusion(
+        path: "/Projects/Demo.app",
+        scope: .subtree,
+        reason: .packageDirectory
+    )
+    let deletedPath: SyncPath = "/Documents/old-draft.txt"
+    let leftProvider = FakeStorageProvider(locationID: left)
+    let rightProvider = FakeStorageProvider(locationID: right)
+    await leftProvider.setScanExclusions([exclusion])
+    _ = await leftProvider.putFile(path: deletedPath, contents: Data("draft".utf8))
+
+    let stores = EngineStores.inMemory()
+    let stageRoot = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "unrelated-exclusion-stage"
+    )
+    let executor = ScheduleExecutor(
+        providers: [left: leftProvider, right: rightProvider],
+        stores: stores,
+        stage: ContentStage(rootDirectory: stageRoot, byteLimit: 1_000_000),
+        environment: ExecutionEnvironment(now: { l2Date })
+    )
+    let planner = SyncPlanner()
+
+    guard case let .plan(initialPlan) = planner.plan(
+        SyncPlanningInput(
+            syncSet: syncSet,
+            snapshots: [
+                await leftProvider.scan(.entireDrive),
+                await rightProvider.scan(.entireDrive),
+            ]
+        ),
+        environment: PlanningEnvironment(now: l2Date)
+    ) else {
+        Issue.record("Expected initial creation plan")
+        return
+    }
+    #expect(initialPlan.gate == .clear)
+    let initialSummary = try await executor.execute(initialPlan)
+    #expect(initialSummary.outcome == .completedWithExclusions)
+
+    let records = try await stores.baseRecords.records(for: syncSet.id)
+    let record = try #require(records.first { $0.path == deletedPath })
+    #expect(record.matchesSubtreeExclusionBaseline([exclusion], at: left))
+    #expect(await rightProvider.item(at: deletedPath) != nil)
+
+    await leftProvider.remove(path: deletedPath)
+    guard case let .plan(deletionPlan) = planner.plan(
+        SyncPlanningInput(
+            syncSet: syncSet,
+            records: records,
+            snapshots: [
+                await leftProvider.scan(.entireDrive),
+                await rightProvider.scan(.entireDrive),
+            ]
+        ),
+        environment: PlanningEnvironment(now: l2Date)
+    ) else {
+        Issue.record("Expected ordinary deletion plan")
+        return
+    }
+
+    #expect(deletionPlan.decisions.count == 1)
+    #expect(deletionPlan.decisions.first?.hasDeletionIntent == true)
+    #expect(deletionPlan.schedule.operations.count == 1)
+    #expect(deletionPlan.schedule.operations.first?.kind.isTrash == true)
+    #expect(deletionPlan.gate.holdReasons.contains { reason in
+        if case .deletionsNeedReview(count: 1) = reason { return true }
+        return false
+    })
+    #expect(!deletionPlan.gate.holdReasons.contains { reason in
+        if case .opaqueRelocation = reason { return true }
+        return false
+    })
+    #expect(deletionPlan.exclusions == [
+        LocatedScanExclusion(location: left, exclusion: exclusion)
+    ])
+    #expect(deletionPlan.waiting.count == 1)
+
+    let preview = ChangePreviewRenderer().render(
+        outcome: .plan(deletionPlan),
+        locations: [:],
+        base: records,
+        generatedAt: l2Date
+    )
+    #expect(preview.sections.first { $0.kind == .movesToTrash }?.entries.map(\.path) == [deletedPath])
+    #expect(preview.sections.first { $0.kind == .waiting }?.entries.map(\.path) == [exclusion.path])
+    #expect(preview.exclusions.map(\.path) == [exclusion.path])
+
+    let approval = PlanApproval(
+        planFingerprint: deletionPlan.fingerprint,
+        approvedAt: l2Date,
+        acknowledgedTrashCount: deletionPlan.approvalTrashCount,
+        acknowledgedConflictCount: deletionPlan.approvalConflictCount
+    )
+    let deletionSummary = try await executor.execute(
+        deletionPlan,
+        approval: approval
+    )
+    #expect(deletionSummary.outcome == .completedWithExclusions)
+    #expect(deletionSummary.appliedOperations.count == 1)
+    #expect(await rightProvider.item(at: deletedPath) == nil)
 }
 
 @Test func subtreeExclusionAlsoBlocksUntrackedCounterpartCreation() {

@@ -356,6 +356,9 @@ public struct ChangePreviewRenderer: Sendable {
 
     private func summary(for decision: ItemDecision, operations: [Operation], locations: LocationDirectory) -> String {
         if isWaiting(decision.verdict) {
+            if waitingReasons(decision.verdict).contains(.unsupportedItem) {
+                return decision.explanation
+            }
             let names = waitingLocations(decision.verdict).map { locationName($0, locations: locations) }.joined(separator: ", ")
             return "Waiting for \"\(decision.path.name)\" to download from \(names)."
         }
@@ -476,10 +479,11 @@ private extension HoldReason {
         switch self {
         case let .massDeletion(evidence), let .massEdit(evidence):
             return evidence
-        case .conflicts, .deletionsNeedReview:
+        case .conflicts, .deletionsNeedReview, .opaqueRelocation:
             return nil
         }
     }
+
 }
 
 private extension ItemVerdict {
@@ -513,6 +517,18 @@ private func waitingLocations(_ verdict: ItemVerdict) -> [LocationID] {
     case let .compound(verdicts):
         return Array(Set(verdicts.flatMap(waitingLocations))).sorted()
     case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .conflict, .excluded:
+        return []
+    }
+}
+
+private func waitingReasons(_ verdict: ItemVerdict) -> Set<WaitingReason> {
+    switch verdict {
+    case let .waiting(reason, _):
+        return [reason]
+    case let .compound(verdicts):
+        return Set(verdicts.flatMap { waitingReasons($0) })
+    case .inSync, .propagateContent, .propagateCreation, .propagatePath,
+         .propagateDeletion, .conflict, .excluded:
         return []
     }
 }

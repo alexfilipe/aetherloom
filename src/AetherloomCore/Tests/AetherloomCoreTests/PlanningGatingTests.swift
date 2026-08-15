@@ -776,7 +776,19 @@ import Testing
         kind: .file,
         version: ItemVersion(contentHash: "hash", size: 4, modifiedAt: fixedDate, revisionToken: "rev-1"),
         perLocation: [
-            .localFolder: LocationMemory(itemID: "local-1", revisionToken: "rev-1", lastSeenAt: fixedDate),
+            .localFolder: LocationMemory(
+                itemID: "local-1",
+                revisionToken: "rev-1",
+                lastSeenAt: fixedDate,
+                subtreeExclusionBaselineDigest: ScanExclusion
+                    .subtreeBaselineDigest([
+                        ScanExclusion(
+                            path: "/Projects/Demo.app",
+                            scope: .subtree,
+                            reason: .packageDirectory
+                        )
+                    ])
+            ),
             .nasFolder: LocationMemory(itemID: "nas-1", revisionToken: "rev-1", lastSeenAt: fixedDate)
         ],
         tombstone: Tombstone(deletedAt: fixedDate, initiatedBy: .localFolder),

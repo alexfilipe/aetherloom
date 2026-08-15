@@ -434,17 +434,41 @@ public struct BaseRecord: Codable, Hashable, Sendable, Identifiable {
     public func revisionToken(for location: LocationID) -> String? {
         perLocation[location]?.revisionToken
     }
+
+    /// Whether the complete scan that produced this location's base memory
+    /// carried the same exact opaque subtree-root set. An unchanged set cannot
+    /// explain a later absence: the record and every current root were already
+    /// positively accounted for together in that earlier scan.
+    public func matchesSubtreeExclusionBaseline(
+        _ exclusions: [ScanExclusion],
+        at location: LocationID
+    ) -> Bool {
+        guard let digest = perLocation[location]?
+            .subtreeExclusionBaselineDigest else {
+            return false
+        }
+        return digest == ScanExclusion.subtreeBaselineDigest(exclusions)
+    }
 }
 
 public struct LocationMemory: Codable, Hashable, Sendable {
     public var itemID: String?
     public var revisionToken: String?
     public var lastSeenAt: Date?
+    /// Digest of the exact subtree-root set positively excluded in the same
+    /// complete scan as `lastSeenAt`. `nil` means legacy/unknown evidence.
+    public var subtreeExclusionBaselineDigest: String?
 
-    public init(itemID: String? = nil, revisionToken: String? = nil, lastSeenAt: Date? = nil) {
+    public init(
+        itemID: String? = nil,
+        revisionToken: String? = nil,
+        lastSeenAt: Date? = nil,
+        subtreeExclusionBaselineDigest: String? = nil
+    ) {
         self.itemID = itemID
         self.revisionToken = revisionToken
         self.lastSeenAt = lastSeenAt
+        self.subtreeExclusionBaselineDigest = subtreeExclusionBaselineDigest
     }
 }
 

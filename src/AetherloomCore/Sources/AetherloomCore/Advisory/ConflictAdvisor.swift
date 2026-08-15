@@ -169,7 +169,7 @@ extension HoldReason {
         switch self {
         case let .massDeletion(evidence), let .massEdit(evidence):
             return evidence
-        case .conflicts, .deletionsNeedReview:
+        case .conflicts, .deletionsNeedReview, .opaqueRelocation:
             return nil
         }
     }

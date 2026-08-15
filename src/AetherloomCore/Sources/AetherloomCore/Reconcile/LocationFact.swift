@@ -157,35 +157,6 @@ public func deriveFacts(_ input: ReconciliationInput) -> [ReconciliationItem] {
             }
         }
 
-        // A missing tracked item cannot become deletion evidence while that
-        // location also contains an unenumerated excluded subtree. The item
-        // may have moved into that subtree, and no descendant observation is
-        // available for identity/hash move matching. Preserve the exact root
-        // evidence and hold the record everywhere until absence is provable.
-        let opaqueSubtreeExclusions = locations.flatMap { location -> [LocatedScanExclusion] in
-            guard facts[location]?.isMissing == true else { return [] }
-            return (input.snapshots[location]?.exclusions ?? []).compactMap { exclusion in
-                guard exclusion.scope == .subtree else { return nil }
-                return LocatedScanExclusion(location: location, exclusion: exclusion)
-            }
-        }.sorted()
-        if !opaqueSubtreeExclusions.isEmpty {
-            facts = Dictionary(uniqueKeysWithValues: locations.map {
-                ($0, LocationFact.excluded(opaqueSubtreeExclusions))
-            })
-            items.append(
-                ReconciliationItem(
-                    base: record,
-                    facts: facts,
-                    observations: observations,
-                    locations: locations,
-                    primaryPath: record.path,
-                    blockingExclusions: opaqueSubtreeExclusions
-                )
-            )
-            continue
-        }
-
         items.append(
             ReconciliationItem(
                 base: record,
@@ -235,7 +206,53 @@ public func deriveFacts(_ input: ReconciliationInput) -> [ReconciliationItem] {
         )
     }
 
-    return applyHashBasedMoveMatching(to: items)
+    return applyNewOpaqueSubtreeSafety(
+        to: applyHashBasedMoveMatching(to: items),
+        snapshots: input.snapshots
+    )
+}
+
+/// A newly observed opaque subtree can explain a tracked absence only when no
+/// ordinary observation or move match already explained it. A subtree root
+/// recorded beside the base observation is long-standing evidence and cannot
+/// explain the record's later disappearance, so ordinary deletion semantics
+/// remain available. Unknown/new evidence becomes a visible, non-mutating
+/// wait instead of a hidden `.excluded` fact.
+private func applyNewOpaqueSubtreeSafety(
+    to items: [ReconciliationItem],
+    snapshots: [LocationID: LocationSnapshot]
+) -> [ReconciliationItem] {
+    items.map { item in
+        guard let base = item.base else { return item }
+        var evidence: [LocatedScanExclusion] = []
+        var heldLocations: Set<LocationID> = []
+
+        for location in item.locations where item.facts[location]?.isMissing == true {
+            let subtreeExclusions = (snapshots[location]?.exclusions ?? [])
+                .filter { $0.scope == .subtree }
+            guard !subtreeExclusions.isEmpty,
+                  !base.matchesSubtreeExclusionBaseline(
+                      subtreeExclusions,
+                      at: location
+                  ) else {
+                continue
+            }
+            for exclusion in subtreeExclusions {
+                evidence.append(
+                    LocatedScanExclusion(location: location, exclusion: exclusion)
+                )
+                heldLocations.insert(location)
+            }
+        }
+
+        guard !evidence.isEmpty else { return item }
+        var updated = item
+        for location in heldLocations {
+            updated.facts[location] = .waiting
+        }
+        updated.blockingExclusions = Array(Set(evidence)).sorted()
+        return updated
+    }
 }
 
 private func locatedExclusions(

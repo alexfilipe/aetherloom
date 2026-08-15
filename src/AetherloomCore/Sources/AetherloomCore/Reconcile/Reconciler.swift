@@ -12,7 +12,14 @@ public struct Reconciler: Sendable {
     }
 
     public func reconcile(_ item: ReconciliationItem) -> ItemVerdict {
-        reconcile(
+        if !item.blockingExclusions.isEmpty,
+           item.facts.values.contains(where: { fact in
+               if case .waiting = fact { return true }
+               return false
+           }) {
+            return .waiting(.unsupportedItem, locations: Set(item.locations))
+        }
+        return reconcile(
             base: item.base,
             facts: item.facts,
             observations: item.observations,

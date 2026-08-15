@@ -156,6 +156,21 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
         }
     }
 
+    /// Stable equality evidence for the exact opaque subtree-root set carried
+    /// by one complete snapshot. Base memory uses the digest to distinguish an
+    /// unchanged, already-accounted-for set from newly opaque evidence without
+    /// duplicating every root beside every tracked record.
+    public static func subtreeBaselineDigest(
+        _ values: [ScanExclusion]
+    ) -> String {
+        let roots = values.compactMap { exclusion -> String? in
+            guard exclusion.scope == .subtree else { return nil }
+            return "\(exclusion.path.caseInsensitiveKey)|\(exclusion.path.rawValue)"
+        }.sorted()
+        let data = (try? CanonicalCoding.encoder().encode(roots)) ?? Data()
+        return "sha256-" + CanonicalCoding.sha256Hex(data)
+    }
+
     public var stableKey: String {
         [
             path.caseInsensitiveKey,

@@ -1058,6 +1058,11 @@ private extension HoldReason {
             return evidence.groups.map { group in
                 "all \(group.intentCount) under \(group.ancestor.rawValue)"
             }.joined(separator: ", ")
+        case let .opaqueRelocation(evidence):
+            let roots = evidence.exclusions.map { located in
+                "\(located.location.rawValue.uuidString):\(located.exclusion.path.rawValue)|\(located.exclusion.scope.rawValue)|\(located.exclusion.reason.stableKey)"
+            }.joined(separator: ", ")
+            return "\(evidence.trackedPath.rawValue) may be inside \(roots)"
         }
     }
 }

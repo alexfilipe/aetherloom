@@ -116,7 +116,7 @@ public struct HeuristicConflictAdvisor: ConflictAdvisor {
             return "\(shape) changed together. This may be intentional, but review is still required before any trash moves."
         case .massEdit:
             return "\(shape) were edited together. This may be intentional, but review is still required before syncing them."
-        case .conflicts, .deletionsNeedReview:
+        case .conflicts, .deletionsNeedReview, .opaqueRelocation:
             return "\(request.evidence.intentCount) changes need review."
         }
     }
