@@ -580,7 +580,7 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     }
     #expect(plan.schedule.operations.isEmpty)
     #expect(plan.decisions.count == records.count)
-    #expect(!plan.decisions.contains(where: \.hasDeletionIntent))
+    #expect(!plan.decisions.contains { $0.hasDeletionIntent })
     #expect(plan.decisions.allSatisfy { decision in
         if case let .waiting(.unsupportedItem, locations) = decision.verdict {
             return locations == Set([left, right])
