@@ -25,6 +25,13 @@ public struct PlanApproval: Codable, Hashable, Sendable {
         guard plan.gate.permitsApproval else {
             return .rejected(.safetyHoldNotApprovable)
         }
+        return validateBindings(against: plan, at: now)
+    }
+
+    /// Validates the immutable approval bindings without reclassifying a gate.
+    /// Used only after safe-subset admission has independently proved that
+    /// opaque-held items are outside the executable schedule.
+    func validateBindings(against plan: SyncPlan, at now: Date) -> ApprovalValidation {
         guard planFingerprint == plan.fingerprint else {
             return .rejected(.wrongFingerprint)
         }

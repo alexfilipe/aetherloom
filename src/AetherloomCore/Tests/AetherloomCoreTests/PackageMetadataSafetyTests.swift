@@ -909,14 +909,38 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
 
     await leftProvider.clearCallLog()
     await rightProvider.clearCallLog()
-    let activityBefore = await stores.activity.entries(
-        matching: ActivityQuery(limit: 100)
-    )
     let approval = PlanApproval(
         planFingerprint: deletionPlan.fingerprint,
         approvedAt: l2Date,
         acknowledgedTrashCount: deletionPlan.approvalTrashCount,
         acknowledgedConflictCount: deletionPlan.approvalConflictCount
+    )
+    let heldSummary = try await orchestrator.execute(
+        preparation,
+        approval: approval
+    )
+    #expect(heldSummary.outcome == .held)
+    let heldActivity = await stores.activity.entries(
+        matching: ActivityQuery(
+            syncSetID: syncSet.id,
+            runID: preparation.runID,
+            limit: 100
+        )
+    )
+    #expect(heldActivity.contains {
+        $0.message == ActivityMessageCatalog.runHeld
+    })
+    #expect(!heldActivity.contains {
+        $0.message == ActivityMessageCatalog.runFinished
+    })
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+    #expect(await rightProvider.item(at: deletedPath) != nil)
+    #expect(try await stores.baseRecords.records(for: syncSet.id) == records)
+    #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
+
+    let activityBeforeDirectExecutor = await stores.activity.entries(
+        matching: ActivityQuery(limit: 100)
     )
     await #expect(throws: ScheduleExecutionError.planNeedsReview) {
         try await executor.execute(deletionPlan, approval: approval)
@@ -926,7 +950,494 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     #expect(await rightProvider.item(at: deletedPath) != nil)
     #expect(try await stores.baseRecords.records(for: syncSet.id) == records)
     #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
-    #expect(await stores.activity.entries(matching: ActivityQuery(limit: 100)) == activityBefore)
+    #expect(
+        await stores.activity.entries(matching: ActivityQuery(limit: 100))
+            == activityBeforeDirectExecutor
+    )
+}
+
+@Test func opaqueDeletionExecutesOnlyIndependentEditCreateAndMove() async throws {
+    let left = LocationID(
+        rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000011")!
+    )
+    let right = LocationID(
+        rawValue: UUID(uuidString: "20000000-0000-0000-0000-000000000012")!
+    )
+    let syncSet = SyncSet(
+        id: UUID(),
+        name: "Independent opaque work",
+        locations: [left, right],
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    let exclusion = ScanExclusion(
+        path: "/Projects/Demo.app",
+        scope: .subtree,
+        reason: .packageDirectory
+    )
+    let deletedPath: SyncPath = "/Documents/old-draft.txt"
+    let editedPath: SyncPath = "/Documents/report.txt"
+    let createdPath: SyncPath = "/Documents/new.txt"
+    let movedPath: SyncPath = "/Documents/move-me.txt"
+    let movedDestination: SyncPath = "/Archive/moved.txt"
+    let leftProvider = FakeStorageProvider(locationID: left)
+    let rightProvider = FakeStorageProvider(locationID: right)
+    await leftProvider.setScanExclusions([exclusion])
+    _ = await leftProvider.putFile(
+        path: deletedPath,
+        contents: Data("delete later".utf8)
+    )
+    _ = await leftProvider.putFile(
+        path: editedPath,
+        contents: Data("before".utf8)
+    )
+    _ = await leftProvider.putFile(
+        path: movedPath,
+        contents: Data("move".utf8)
+    )
+
+    let stores = EngineStores.inMemory()
+    let stageRoot = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "opaque-independent-stage"
+    )
+    let stage = ContentStage(
+        rootDirectory: stageRoot,
+        byteLimit: 1_000_000
+    )
+    let planner = SyncPlanner()
+    guard case let .plan(initialPlan) = planner.plan(
+        SyncPlanningInput(
+            syncSet: syncSet,
+            snapshots: [
+                await leftProvider.scan(.entireDrive),
+                await rightProvider.scan(.entireDrive),
+            ]
+        ),
+        environment: PlanningEnvironment(now: l2Date)
+    ) else {
+        Issue.record("Expected the initial creation plan")
+        return
+    }
+    _ = try await ScheduleExecutor(
+        providers: [left: leftProvider, right: rightProvider],
+        stores: stores,
+        stage: stage,
+        environment: ExecutionEnvironment(now: { l2Date })
+    ).execute(initialPlan)
+
+    let initialRecords = try await stores.baseRecords.records(for: syncSet.id)
+    let heldRecord = try #require(
+        initialRecords.first { $0.path == deletedPath }
+    )
+    await leftProvider.remove(path: deletedPath)
+    let edited = await leftProvider.putFile(
+        path: editedPath,
+        contents: Data("after".utf8)
+    )
+    _ = await leftProvider.putFile(
+        path: createdPath,
+        contents: Data("new".utf8)
+    )
+    guard let moveSource = await leftProvider.item(at: movedPath) else {
+        Issue.record("Expected the move source")
+        return
+    }
+    _ = try await leftProvider.relocate(
+        moveSource,
+        to: movedDestination
+    )
+
+    let locations = Dictionary(uniqueKeysWithValues: [left, right].map {
+        ($0, SyncLocation(id: $0, kind: .localFolder, scope: .entireDrive))
+    })
+    let orchestrator = SyncOrchestrator(
+        locations: locations,
+        providers: [left: leftProvider, right: rightProvider],
+        stores: stores,
+        stage: stage,
+        environment: EngineEnvironment(now: { l2Date }, makeID: { UUID() })
+    )
+    let preparation = try await orchestrator.prepare(syncSet)
+    let plan = try #require(preparation.outcome.planValue)
+    #expect(plan.schedule.operations.count == 3)
+    #expect(plan.decisions.count == 4)
+    #expect(!plan.gate.permitsApproval)
+    guard case let .safeSubset(proof) = plan.executionAdmission else {
+        Issue.record("Expected planner-proven independent execution")
+        return
+    }
+    #expect(proof.heldDecisionIDs.count == 1)
+    #expect(proof.scheduledOperationIDs.count == 3)
+
+    let summary = try await orchestrator.execute(preparation)
+    #expect(summary.outcome == .completedWithExclusions)
+    #expect(summary.appliedOperations.count == 3)
+    #expect(summary.failedOperations.isEmpty)
+    let heldDecision = try #require(
+        plan.decisions.first { $0.path == deletedPath }
+    )
+    #expect(!summary.perItemResults.contains { $0.id == heldDecision.id })
+    #expect(
+        Set(summary.perItemResults.map(\.path))
+            == Set([editedPath, createdPath, movedDestination])
+    )
+    #expect(await rightProvider.item(at: deletedPath) != nil)
+    #expect(
+        await rightProvider.item(at: editedPath)?.version.contentHash
+            == edited.version.contentHash
+    )
+    #expect(await rightProvider.item(at: createdPath) != nil)
+    #expect(await rightProvider.item(at: movedPath) == nil)
+    #expect(await rightProvider.item(at: movedDestination) != nil)
+
+    let recordsAfterExecution = try await stores.baseRecords.records(
+        for: syncSet.id
+    )
+    #expect(
+        recordsAfterExecution.first { $0.id == heldRecord.id }
+            == heldRecord
+    )
+    #expect(recordsAfterExecution.contains { $0.path == createdPath })
+    #expect(recordsAfterExecution.contains { $0.path == movedDestination })
+    let activity = await stores.activity.entries(
+        matching: ActivityQuery(
+            syncSetID: syncSet.id,
+            runID: preparation.runID,
+            limit: 200
+        )
+    )
+    #expect(activity.contains {
+        $0.message == ActivityMessageCatalog.independentChangesApplied
+    })
+    #expect(!activity.contains {
+        $0.message == ActivityMessageCatalog.runFinished
+            || $0.message == ActivityMessageCatalog.runFinishedWithExclusions
+    })
+
+    let rerunPreparation = try await orchestrator.prepare(syncSet)
+    let rerunPlan = try #require(rerunPreparation.outcome.planValue)
+    #expect(rerunPlan.schedule.operations.isEmpty)
+    #expect(rerunPlan.executionAdmission == .blocked)
+    await leftProvider.clearCallLog()
+    await rightProvider.clearCallLog()
+    let rerunSummary = try await orchestrator.execute(rerunPreparation)
+    #expect(rerunSummary.outcome == .held)
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+    #expect(
+        try await stores.baseRecords.records(for: syncSet.id)
+            == recordsAfterExecution
+    )
+    #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
+}
+
+@Test func opaqueSafeSubsetAdmissionFailsClosedOnAmbiguousProof() throws {
+    let left = LocationID(
+        rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000021")!
+    )
+    let right = LocationID(
+        rawValue: UUID(uuidString: "20000000-0000-0000-0000-000000000022")!
+    )
+    let heldID = UUID(
+        uuidString: "30000000-0000-0000-0000-000000000023"
+    )!
+    let independentID = UUID(
+        uuidString: "40000000-0000-0000-0000-000000000024"
+    )!
+    let operationID = OperationID(
+        UUID(uuidString: "50000000-0000-0000-0000-000000000025")!
+    )
+    let exclusion = ScanExclusion(
+        path: "/Projects/Demo.app",
+        scope: .subtree,
+        reason: .packageDirectory
+    )
+    let located = LocatedScanExclusion(
+        location: left,
+        exclusion: exclusion
+    )
+    let operation = Operation(
+        id: operationID,
+        location: right,
+        kind: .makeFolder(at: "/Independent"),
+        precondition: .pathAbsent
+    )
+    let held = ItemDecision(
+        id: heldID,
+        path: "/Documents/deleted.txt",
+        verdict: .waiting(
+            .unsupportedItem,
+            locations: Set([left, right])
+        ),
+        operations: [],
+        explanation: "Paused for safety."
+    )
+    let independent = ItemDecision(
+        id: independentID,
+        path: "/Independent",
+        verdict: .propagateCreation(from: left, to: Set([right])),
+        operations: [operationID],
+        explanation: "Independent create."
+    )
+    let opaque = HoldReason.opaqueRelocation(
+        OpaqueRelocationEvidence(
+            trackedPath: held.path,
+            exclusions: [located]
+        )
+    )
+    let valid = SyncPlan(
+        syncSetID: UUID(),
+        participatingLocations: [left, right],
+        generatedAt: l2Date,
+        decisions: [held, independent],
+        schedule: OperationSchedule(operations: [operation]),
+        exclusions: [located],
+        gate: .hold([opaque]),
+        fingerprint: PlanFingerprint(rawValue: "safe-subset-proof")
+    )
+    guard case let .safeSubset(proof) = valid.executionAdmission else {
+        Issue.record("Expected a valid safe-subset proof")
+        return
+    }
+    #expect(proof.heldDecisionIDs == [heldID])
+    #expect(proof.scheduledOperationIDs == [operationID])
+
+    var unowned = valid
+    unowned.decisions[1].operations = []
+    #expect(unowned.executionAdmission == .blocked)
+
+    var mismatched = valid
+    mismatched.decisions[1].operations = [OperationID(UUID())]
+    #expect(mismatched.executionAdmission == .blocked)
+
+    var multiplyOwned = valid
+    multiplyOwned.decisions[0].operations = [operationID]
+    #expect(multiplyOwned.executionAdmission == .blocked)
+
+    var duplicateHeldPath = valid
+    duplicateHeldPath.decisions[1].path = "/documents/DELETED.txt"
+    #expect(duplicateHeldPath.executionAdmission == .blocked)
+
+    var trackedOverlap = valid
+    trackedOverlap.schedule.operations[0].kind = .makeFolder(
+        at: "/documents/deleted.txt/child"
+    )
+    #expect(trackedOverlap.executionAdmission == .blocked)
+
+    var opaqueRootOverlap = valid
+    opaqueRootOverlap.schedule.operations[0].location = left
+    opaqueRootOverlap.schedule.operations[0].kind = .makeFolder(
+        at: "/projects/demo.app/Child"
+    )
+    #expect(opaqueRootOverlap.executionAdmission == .blocked)
+
+    var mismatchedItemReference = valid
+    mismatchedItemReference.schedule.operations[0].location = left
+    mismatchedItemReference.schedule.operations[0].kind = .relocate(
+        itemRef: ItemRef(
+            location: right,
+            itemID: "mismatch",
+            path: "/Projects/Demo.app/child",
+            kind: .file,
+            expectedVersion: ItemVersion(revisionToken: "rev-1")
+        ),
+        to: "/Elsewhere/child"
+    )
+    mismatchedItemReference.schedule.operations[0].precondition = .versionMatches(
+        ItemVersion(revisionToken: "rev-1")
+    )
+    #expect(mismatchedItemReference.executionAdmission == .blocked)
+
+    var heldDependency = valid
+    let heldOperationID = OperationID(UUID())
+    heldDependency.decisions[0].operations = [heldOperationID]
+    heldDependency.schedule.operations.insert(
+        Operation(
+            id: heldOperationID,
+            location: right,
+            kind: .makeFolder(at: "/Held"),
+            precondition: .pathAbsent
+        ),
+        at: 0
+    )
+    heldDependency.schedule.operations[1].dependsOn = [heldOperationID]
+    #expect(heldDependency.executionAdmission == .blocked)
+
+    var outsideMembership = valid
+    outsideMembership.schedule.operations[0].location = LocationID()
+    #expect(outsideMembership.executionAdmission == .blocked)
+
+    var mismatchedEvidence = valid
+    mismatchedEvidence.exclusions = []
+    #expect(mismatchedEvidence.executionAdmission == .blocked)
+
+    var incompleteEvidence = valid
+    let secondLocated = LocatedScanExclusion(
+        location: left,
+        exclusion: ScanExclusion(
+            path: "/OtherOpaque.app",
+            scope: .subtree,
+            reason: .packageDirectory
+        )
+    )
+    incompleteEvidence.exclusions.append(secondLocated)
+    #expect(incompleteEvidence.executionAdmission == .blocked)
+
+    var duplicateEvidence = valid
+    duplicateEvidence.exclusions.append(located)
+    #expect(duplicateEvidence.executionAdmission == .blocked)
+
+    var incompleteWaitingLocations = valid
+    incompleteWaitingLocations.decisions[0].verdict = .waiting(
+        .unsupportedItem,
+        locations: Set([left])
+    )
+    #expect(incompleteWaitingLocations.executionAdmission == .blocked)
+
+    var duplicateMembership = valid
+    duplicateMembership.participatingLocations.append(left)
+    #expect(duplicateMembership.executionAdmission == .blocked)
+
+    var empty = valid
+    empty.decisions[1].operations = []
+    empty.schedule.operations = []
+    #expect(empty.executionAdmission == .blocked)
+
+    let massDeletion = MassChangeEvidence(
+        intentCount: 25,
+        trackedCount: 25,
+        groups: [ChangeGroup(ancestor: "/", intentCount: 25)]
+    )
+    #expect(
+        valid.addingHolds([.massDeletion(massDeletion)]).executionAdmission
+            == .blocked
+    )
+    #expect(valid.addingHolds([opaque]).executionAdmission == .blocked)
+}
+
+@Test func safeSubsetRetainsApprovalForOtherApprovableHolds() async throws {
+    let left = LocationID(
+        rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000031")!
+    )
+    let right = LocationID(
+        rawValue: UUID(uuidString: "20000000-0000-0000-0000-000000000032")!
+    )
+    let operationID = OperationID(UUID())
+    let exclusion = ScanExclusion(
+        path: "/Opaque.app",
+        scope: .subtree,
+        reason: .packageDirectory
+    )
+    let located = LocatedScanExclusion(location: left, exclusion: exclusion)
+    let held = ItemDecision(
+        id: UUID(),
+        path: "/Documents/deleted.txt",
+        verdict: .waiting(.unsupportedItem, locations: Set([left, right])),
+        operations: [],
+        explanation: "Paused for safety."
+    )
+    let independent = ItemDecision(
+        id: UUID(),
+        path: "/Independent",
+        verdict: .propagateCreation(from: left, to: Set([right])),
+        operations: [operationID],
+        explanation: "Independent create."
+    )
+    let operation = Operation(
+        id: operationID,
+        location: right,
+        kind: .makeFolder(at: independent.path),
+        precondition: .pathAbsent
+    )
+    let plan = SyncPlan(
+        syncSetID: UUID(),
+        participatingLocations: [left, right],
+        generatedAt: l2Date,
+        decisions: [held, independent],
+        schedule: OperationSchedule(operations: [operation]),
+        exclusions: [located],
+        gate: .hold([
+            .opaqueRelocation(
+                OpaqueRelocationEvidence(
+                    trackedPath: held.path,
+                    exclusions: [located]
+                )
+            ),
+            .massEdit(
+                MassChangeEvidence(
+                    intentCount: 1,
+                    trackedCount: 1,
+                    groups: [
+                        ChangeGroup(
+                            ancestor: independent.path,
+                            intentCount: 1
+                        )
+                    ]
+                )
+            ),
+        ]),
+        fingerprint: PlanFingerprint(rawValue: "safe-subset-approval")
+    )
+    #expect(!plan.gate.permitsApproval)
+    guard case .safeSubset = plan.executionAdmission else {
+        Issue.record("Expected safe-subset admission")
+        return
+    }
+    let approval = PlanApproval(
+        planFingerprint: plan.fingerprint,
+        approvedAt: l2Date,
+        acknowledgedTrashCount: plan.approvalTrashCount,
+        acknowledgedConflictCount: plan.approvalConflictCount
+    )
+    #expect(
+        approval.validate(against: plan, at: l2Date)
+            == .rejected(.safetyHoldNotApprovable)
+    )
+
+    let leftProvider = FakeStorageProvider(locationID: left)
+    let rightProvider = FakeStorageProvider(locationID: right)
+    let stores = EngineStores.inMemory()
+    let stageRoot = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "safe-subset-approval-stage"
+    )
+    let executor = ScheduleExecutor(
+        providers: [left: leftProvider, right: rightProvider],
+        stores: stores,
+        stage: ContentStage(
+            rootDirectory: stageRoot,
+            byteLimit: 1_000_000
+        ),
+        environment: ExecutionEnvironment(now: { l2Date })
+    )
+    await #expect(throws: ScheduleExecutionError.planNeedsReview) {
+        try await executor.execute(plan)
+    }
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+
+    let summary = try await executor.execute(plan, approval: approval)
+    #expect(summary.outcome == .completedWithExclusions)
+    #expect(summary.appliedOperations.count == 1)
+    #expect(await rightProvider.item(at: independent.path)?.isFolder == true)
+    let resultingRecords = try await stores.baseRecords.records(
+        for: plan.syncSetID
+    )
+    #expect(resultingRecords.map(\.path) == [independent.path])
+    let activity = await stores.activity.entries(
+        matching: ActivityQuery(runID: summary.runID, limit: 100)
+    )
+    #expect(activity.contains {
+        $0.message == ActivityMessageCatalog.independentChangesApplied
+    })
+    #expect(activity.contains {
+        $0.message.hasPrefix("You approved ")
+    })
+    #expect(!activity.contains {
+        $0.message == ActivityMessageCatalog.runFinished
+            || $0.message == ActivityMessageCatalog.runFinishedWithExclusions
+    })
 }
 
 @Test func noOpaqueSubtreeKeepsOrdinaryDeleteToTrashInspectableAndExecutable() async throws {

@@ -211,7 +211,12 @@ public struct ScheduleExecutor: Sendable {
         syncSetName: String? = nil,
         logRunBoundaryActivity: Bool = true
     ) async throws -> SyncRunSummary {
-        let acceptedApproval = try authorize(plan, approval: approval)
+        let admission = plan.executionAdmission
+        let acceptedApproval = try authorize(
+            plan,
+            admission: admission,
+            approval: approval
+        )
         do {
             try plan.schedule.validate(decisions: plan.decisions)
         } catch {
@@ -342,9 +347,9 @@ public struct ScheduleExecutor: Sendable {
                 syncSetID: plan.syncSetID,
                 runID: runID,
                 category: .sync,
-                message: summaryOutcome.hasWaitingExclusions
-                    ? ActivityMessageCatalog.runFinishedWithExclusions
-                    : ActivityMessageCatalog.runFinished,
+                message: summaryOutcome.activityMessage(
+                    admission: admission
+                ),
                 detail: summaryOutcome.detail
             )
         }
@@ -361,17 +366,39 @@ public struct ScheduleExecutor: Sendable {
         )
     }
 
-    private func authorize(_ plan: SyncPlan, approval: PlanApproval?) throws -> Bool {
-        guard !plan.gate.isClear else {
-            return false
-        }
-        guard plan.gate.permitsApproval else {
+    private func authorize(
+        _ plan: SyncPlan,
+        admission: PlanExecutionAdmission,
+        approval: PlanApproval?
+    ) throws -> Bool {
+        let validation: ApprovalValidation
+        switch admission {
+        case .blocked:
             throw ScheduleExecutionError.planNeedsReview
+
+        case .standard:
+            guard !plan.gate.isClear else { return false }
+            guard plan.gate.permitsApproval, let approval else {
+                throw ScheduleExecutionError.planNeedsReview
+            }
+            validation = approval.validate(against: plan, at: environment.now())
+
+        case .safeSubset:
+            let remaining = plan.nonOpaqueHoldReasons
+            guard !remaining.contains(where: { !$0.permitsApproval }) else {
+                throw ScheduleExecutionError.planNeedsReview
+            }
+            guard !remaining.isEmpty else { return false }
+            guard let approval else {
+                throw ScheduleExecutionError.planNeedsReview
+            }
+            validation = approval.validateBindings(
+                against: plan,
+                at: environment.now()
+            )
         }
-        guard let approval else {
-            throw ScheduleExecutionError.planNeedsReview
-        }
-        switch approval.validate(against: plan, at: environment.now()) {
+
+        switch validation {
         case .accepted:
             return true
         case let .rejected(reason):
@@ -1322,9 +1349,29 @@ extension SyncRunOutcome {
         return candidate
     }
 
-    var hasWaitingExclusions: Bool {
-        if case .completedWithExclusions = self { return true }
-        return false
+    func activityMessage(admission: PlanExecutionAdmission) -> String {
+        switch self {
+        case .refused, .held:
+            return ActivityMessageCatalog.runHeld
+        case .completed:
+            if case .safeSubset = admission {
+                return ActivityMessageCatalog.independentChangesApplied
+            }
+            return ActivityMessageCatalog.runFinished
+        case .completedWithExclusions:
+            if case .safeSubset = admission {
+                return ActivityMessageCatalog.independentChangesApplied
+            }
+            return ActivityMessageCatalog.runFinishedWithExclusions
+        case .stoppedForReplan:
+            return ActivityMessageCatalog.runStopped
+        case .mutationIndeterminate:
+            return ActivityMessageCatalog.mutationIndeterminate
+        case .cancelled:
+            return ActivityMessageCatalog.runCancelled
+        case .failed:
+            return ActivityMessageCatalog.runFailed
+        }
     }
 }
 

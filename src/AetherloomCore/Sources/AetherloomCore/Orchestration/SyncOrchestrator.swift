@@ -171,20 +171,25 @@ public actor SyncOrchestrator {
             await appendActivity(
                 syncSetID: syncSetID,
                 runID: preparation.runID,
-                category: .sync,
-                message: ActivityMessageCatalog.runFinished,
+                category: .safety,
+                message: ActivityMessageCatalog.runHeld,
                 detail: SyncRunOutcome.refused.detail
             )
             return SyncRunSummary(runID: preparation.runID, syncSetID: syncSetID, outcome: .refused)
 
         case let .plan(plan):
-            if !plan.gate.isClear, approval == nil || !plan.gate.permitsApproval {
+            let admission = plan.executionAdmission
+            if executionIsHeld(
+                plan: plan,
+                admission: admission,
+                approval: approval
+            ) {
                 await logHolds(plan.gate.holdReasons, syncSetID: syncSetID, runID: preparation.runID)
                 await appendActivity(
                     syncSetID: syncSetID,
                     runID: preparation.runID,
-                    category: .sync,
-                    message: ActivityMessageCatalog.runFinished,
+                    category: .safety,
+                    message: ActivityMessageCatalog.runHeld,
                     detail: SyncRunOutcome.held.detail
                 )
                 return SyncRunSummary(runID: preparation.runID, syncSetID: syncSetID, outcome: .held)
@@ -223,13 +228,31 @@ public actor SyncOrchestrator {
                     syncSetID: syncSetID,
                     runID: preparation.runID,
                     category: .sync,
-                    message: summary.outcome.hasWaitingExclusions
-                        ? ActivityMessageCatalog.runFinishedWithExclusions
-                        : ActivityMessageCatalog.runFinished,
+                    message: summary.outcome.activityMessage(
+                        admission: admission
+                    ),
                     detail: summary.outcome.detail
                 )
             }
             return summary
+        }
+    }
+
+    private func executionIsHeld(
+        plan: SyncPlan,
+        admission: PlanExecutionAdmission,
+        approval: PlanApproval?
+    ) -> Bool {
+        switch admission {
+        case .blocked:
+            return true
+        case .standard:
+            return !plan.gate.isClear
+                && (approval == nil || !plan.gate.permitsApproval)
+        case .safeSubset:
+            let remaining = plan.nonOpaqueHoldReasons
+            return remaining.contains(where: { !$0.permitsApproval })
+                || (!remaining.isEmpty && approval == nil)
         }
     }
 

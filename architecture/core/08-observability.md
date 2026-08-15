@@ -65,7 +65,7 @@ Implementations ([09]): `InMemoryActivityStore` (actor, ring buffer, cap 10 000 
 11. Post-write verification failure — `error`
 12. Conflict detected / resolved — `conflict`
 13. Recovery performed (what the journal established) — `safety`
-14. Run finished with outcome — `sync`
+14. Run boundary with the exact outcome — `sync` for completed/partial/stopped/cancelled/failed work, or `safety` for a held/refused run. Held/refused activity never says “Sync finished”; safe-subset activity says independent changes were applied while named items remain paused — `sync`/`safety`
 
 The run/safety journal durably records review issuance, the single authorization-to-reservation transition or rejection, reservation consumption/expiry/rejection, and latch lifecycle as typed audit events. Those digests and results may be restored; neither opaque bearer value may be restored or treated as authority. A safety-event append failure fails closed before a reviewed plan, live reservation, executor, or mutation authority is exposed.
 
