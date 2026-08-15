@@ -779,15 +779,7 @@ import Testing
             .localFolder: LocationMemory(
                 itemID: "local-1",
                 revisionToken: "rev-1",
-                lastSeenAt: fixedDate,
-                subtreeExclusionBaselineDigest: ScanExclusion
-                    .subtreeBaselineDigest([
-                        ScanExclusion(
-                            path: "/Projects/Demo.app",
-                            scope: .subtree,
-                            reason: .packageDirectory
-                        )
-                    ])
+                lastSeenAt: fixedDate
             ),
             .nasFolder: LocationMemory(itemID: "nas-1", revisionToken: "rev-1", lastSeenAt: fixedDate)
         ],

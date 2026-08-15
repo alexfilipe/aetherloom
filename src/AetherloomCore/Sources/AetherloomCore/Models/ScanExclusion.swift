@@ -1,5 +1,45 @@
 import Foundation
 
+public enum LocalFilesystemKind: Codable, Hashable, Sendable {
+    case regularFile
+    case directory
+    case symbolicLink
+    case fifo
+    case socket
+    case characterDevice
+    case blockDevice
+    case other(modeType: UInt16)
+    case indeterminate
+
+    var stableKey: String {
+        switch self {
+        case .regularFile: "regularFile"
+        case .directory: "directory"
+        case .symbolicLink: "symbolicLink"
+        case .fifo: "fifo"
+        case .socket: "socket"
+        case .characterDevice: "characterDevice"
+        case .blockDevice: "blockDevice"
+        case let .other(modeType): "other:\(modeType)"
+        case .indeterminate: "indeterminate"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .regularFile: "regular file"
+        case .directory: "directory"
+        case .symbolicLink: "symbolic link"
+        case .fifo: "FIFO"
+        case .socket: "Unix socket"
+        case .characterDevice: "character device"
+        case .blockDevice: "block device"
+        case .other: "special filesystem item"
+        case .indeterminate: "item with an indeterminate filesystem kind"
+        }
+    }
+}
+
 public enum MetadataKind: String, Codable, Hashable, Sendable, CaseIterable {
     case extendedAttributes
     case finderTags
@@ -31,12 +71,14 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
         case unsupportedPOSIXPermissions(actual: UInt16, required: UInt16)
         case accessControlList
         case unsupportedOwnership
+        case unsupportedFilesystemKind(LocalFilesystemKind)
 
         private enum CodingKeys: String, CodingKey {
             case kind
             case metadataKinds
             case actualMode
             case requiredMode
+            case filesystemKind
         }
 
         private enum Kind: String, Codable {
@@ -45,6 +87,7 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
             case unsupportedPOSIXPermissions
             case accessControlList
             case unsupportedOwnership
+            case unsupportedFilesystemKind
         }
 
         public init(from decoder: Decoder) throws {
@@ -66,6 +109,13 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
                 self = .accessControlList
             case .unsupportedOwnership:
                 self = .unsupportedOwnership
+            case .unsupportedFilesystemKind:
+                self = .unsupportedFilesystemKind(
+                    try container.decode(
+                        LocalFilesystemKind.self,
+                        forKey: .filesystemKind
+                    )
+                )
             }
         }
 
@@ -91,6 +141,15 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
                 try container.encode(Kind.accessControlList, forKey: .kind)
             case .unsupportedOwnership:
                 try container.encode(Kind.unsupportedOwnership, forKey: .kind)
+            case let .unsupportedFilesystemKind(filesystemKind):
+                try container.encode(
+                    Kind.unsupportedFilesystemKind,
+                    forKey: .kind
+                )
+                try container.encode(
+                    filesystemKind,
+                    forKey: .filesystemKind
+                )
             }
         }
 
@@ -106,6 +165,8 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
                 return "accessControlList"
             case .unsupportedOwnership:
                 return "unsupportedOwnership"
+            case let .unsupportedFilesystemKind(filesystemKind):
+                return "unsupportedFilesystemKind:\(filesystemKind.stableKey)"
             }
         }
 
@@ -122,6 +183,8 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
                 return "Aetherloom cannot yet preserve this item's access control list safely."
             case .unsupportedOwnership:
                 return "Aetherloom cannot yet preserve this item's user or group ownership safely."
+            case let .unsupportedFilesystemKind(filesystemKind):
+                return "Aetherloom cannot sync this \(filesystemKind.displayName) safely."
             }
         }
 
@@ -154,21 +217,6 @@ public struct ScanExclusion: Codable, Hashable, Sendable {
         return values.sorted(by: stableSort).filter { exclusion in
             seen.insert(exclusion.stableKey).inserted
         }
-    }
-
-    /// Stable equality evidence for the exact opaque subtree-root set carried
-    /// by one complete snapshot. Base memory uses the digest to distinguish an
-    /// unchanged, already-accounted-for set from newly opaque evidence without
-    /// duplicating every root beside every tracked record.
-    public static func subtreeBaselineDigest(
-        _ values: [ScanExclusion]
-    ) -> String {
-        let roots = values.compactMap { exclusion -> String? in
-            guard exclusion.scope == .subtree else { return nil }
-            return "\(exclusion.path.caseInsensitiveKey)|\(exclusion.path.rawValue)"
-        }.sorted()
-        let data = (try? CanonicalCoding.encoder().encode(roots)) ?? Data()
-        return "sha256-" + CanonicalCoding.sha256Hex(data)
     }
 
     public var stableKey: String {

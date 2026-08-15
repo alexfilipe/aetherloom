@@ -1,6 +1,9 @@
 import Foundation
 import Testing
 @testable import AetherloomCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
 
@@ -165,16 +168,16 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
 }
 #endif
 
-@Test func metadataClassifierCoversEveryAcceptedReasonAndBaseline() {
+@Test func metadataClassifierCoversEveryAcceptedReasonAndBaseline() throws {
     let inspector = ScriptedSafetyInspector(volumeRoot: URL(fileURLWithPath: "/"))
     let uid = LocalItemSafetyClassifier.currentEffectiveUserID
     let gid = LocalItemSafetyClassifier.currentEffectiveGroupID
 
-    #expect(LocalItemSafetyClassifier.exclusion(
+    #expect(try LocalItemSafetyClassifier.exclusion(
         for: "/ordinary.txt",
         metadata: inspector.file(mode: 0o644, owner: uid, group: gid)
     ) == nil)
-    #expect(LocalItemSafetyClassifier.exclusion(
+    #expect(try LocalItemSafetyClassifier.exclusion(
         for: "/ordinary",
         metadata: inspector.directory(mode: 0o755, owner: uid, group: gid)
     ) == nil)
@@ -186,7 +189,7 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
         (LocalItemSafetyClassifier.resourceForkName, 64, .resourceFork),
     ]
     for (name, size, expectedKind) in metadataCases {
-        let exclusion = LocalItemSafetyClassifier.exclusion(
+        let exclusion = try LocalItemSafetyClassifier.exclusion(
             for: "/metadata",
             metadata: inspector.file(xattrs: [name: size])
         )
@@ -197,13 +200,13 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
         #expect(kinds.contains(.extendedAttributes))
         #expect(kinds.contains(expectedKind))
     }
-    #expect(LocalItemSafetyClassifier.exclusion(
+    #expect(try LocalItemSafetyClassifier.exclusion(
         for: "/empty-resource-fork",
         metadata: inspector.file(
             xattrs: [LocalItemSafetyClassifier.resourceForkName: 0]
         )
     ) == nil)
-    #expect(LocalItemSafetyClassifier.exclusion(
+    #expect(try LocalItemSafetyClassifier.exclusion(
         for: "/empty-finder-info",
         metadata: inspector.file(
             xattrs: [LocalItemSafetyClassifier.finderInfoName: 0]
@@ -212,7 +215,7 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
 
     for mode: UInt16 in [0o664, 0o755, 0o600, 0o4755, 0o2755, 0o1755] {
         guard case let .unsupportedPOSIXPermissions(actual, required) =
-            LocalItemSafetyClassifier.exclusion(
+            try LocalItemSafetyClassifier.exclusion(
                 for: "/mode",
                 metadata: inspector.file(mode: mode)
             )?.reason else {
@@ -222,31 +225,88 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
         #expect(actual == mode)
         #expect(required == 0o644)
     }
-    #expect(LocalItemSafetyClassifier.exclusion(
+    #expect(try LocalItemSafetyClassifier.exclusion(
         for: "/directory",
         metadata: inspector.directory(mode: 0o775)
     )?.scope == .subtree)
-    #expect(LocalItemSafetyClassifier.exclusion(
+    #expect(try LocalItemSafetyClassifier.exclusion(
         for: "/acl",
         metadata: inspector.file(acl: true)
     )?.reason == .accessControlList)
-    #expect(LocalItemSafetyClassifier.exclusion(
+    #expect(try LocalItemSafetyClassifier.exclusion(
         for: "/owner",
         metadata: inspector.file(owner: uid &+ 1)
     )?.reason == .unsupportedOwnership)
-    #expect(LocalItemSafetyClassifier.exclusion(
+    #expect(try LocalItemSafetyClassifier.exclusion(
         for: "/group",
         metadata: inspector.file(group: gid &+ 1)
     )?.reason == .unsupportedOwnership)
 }
 
-@Test func symlinkMetadataDoesNotManufacturePermissionExclusion() {
+@Test func filesystemKindClassificationIsTypedAndFailsClosed() throws {
+    let inspector = ScriptedSafetyInspector(volumeRoot: URL(fileURLWithPath: "/"))
+    let unsupported: [LocalFilesystemKind] = [
+        .fifo,
+        .socket,
+        .characterDevice,
+        .blockDevice,
+        .other(modeType: 0o130000),
+    ]
+    for filesystemKind in unsupported {
+        let metadata = LocalItemSafetyMetadata(
+            filesystemKind: filesystemKind,
+            posixMode: 0o644,
+            ownerID: LocalItemSafetyClassifier.currentEffectiveUserID,
+            groupID: LocalItemSafetyClassifier.currentEffectiveGroupID
+        )
+        let exclusion = try #require(
+            try LocalItemSafetyClassifier.exclusion(
+                for: "/special",
+                metadata: metadata
+            )
+        )
+        #expect(exclusion.scope == .item)
+        #expect(exclusion.reason == .unsupportedFilesystemKind(filesystemKind))
+        #expect(exclusion.reason.message.contains(filesystemKind.displayName))
+        let encoded = try JSONEncoder().encode(exclusion)
+        #expect(try JSONDecoder().decode(ScanExclusion.self, from: encoded) == exclusion)
+    }
+
+    #expect(try LocalItemSafetyClassifier.exclusion(
+        for: "/file",
+        metadata: inspector.file()
+    ) == nil)
+    #expect(try LocalItemSafetyClassifier.exclusion(
+        for: "/folder",
+        metadata: inspector.directory()
+    ) == nil)
+    #expect(try LocalItemSafetyClassifier.exclusion(
+        for: "/link",
+        metadata: LocalItemSafetyMetadata(
+            filesystemKind: .symbolicLink,
+            posixMode: 0o777,
+            ownerID: LocalItemSafetyClassifier.currentEffectiveUserID,
+            groupID: LocalItemSafetyClassifier.currentEffectiveGroupID
+        )
+    ) == nil)
+    #expect(throws: LocalItemSafetyClassificationError.indeterminateFilesystemKind) {
+        try LocalItemSafetyClassifier.exclusion(
+            for: "/ambiguous",
+            metadata: LocalItemSafetyMetadata(
+                filesystemKind: .indeterminate,
+                posixMode: 0,
+                ownerID: 0,
+                groupID: 0
+            )
+        )
+    }
+}
+
+@Test func symlinkMetadataDoesNotManufacturePermissionExclusion() throws {
     let uid = LocalItemSafetyClassifier.currentEffectiveUserID
     let gid = LocalItemSafetyClassifier.currentEffectiveGroupID
     let metadata = LocalItemSafetyMetadata(
-        isDirectory: false,
-        isRegularFile: true,
-        isSymbolicLink: true,
+        filesystemKind: .symbolicLink,
         posixMode: 0o755,
         ownerID: uid,
         groupID: gid,
@@ -255,18 +315,16 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     )
 
     #expect(
-        LocalItemSafetyClassifier.exclusion(
+        try LocalItemSafetyClassifier.exclusion(
             for: "/current",
             metadata: metadata
         ) == nil
     )
     #expect(
-        LocalItemSafetyClassifier.exclusion(
+        try LocalItemSafetyClassifier.exclusion(
             for: "/Current.app",
             metadata: LocalItemSafetyMetadata(
-                isDirectory: true,
-                isRegularFile: false,
-                isSymbolicLink: true,
+                filesystemKind: .symbolicLink,
                 isPackage: true,
                 posixMode: 0o755,
                 ownerID: uid,
@@ -295,11 +353,89 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     let metadata = try SystemLocalItemSafetyInspector().metadata(at: link)
     #expect(metadata.isSymbolicLink)
     #expect(
-        LocalItemSafetyClassifier.exclusion(
+        try LocalItemSafetyClassifier.exclusion(
             for: "/current",
             metadata: metadata
         ) == nil
     )
+}
+
+@Test(.timeLimit(.minutes(1)))
+func fifoAndUnixSocketAreTypedWithoutObservationHashOrFetch() async throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "special-files"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let fifoURL = root.appendingPathComponent("events.pipe")
+    let socketURL = root.appendingPathComponent("service.sock")
+    let fifoResult = fifoURL.withUnsafeFileSystemRepresentation { path in
+        path.map { mkfifo($0, mode_t(0o644)) } ?? -1
+    }
+    guard fifoResult == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    let socketDescriptor = try makeBoundUnixSocket(at: socketURL)
+    defer { close(socketDescriptor) }
+
+    let hasher = RecordingSpecialFileHasher()
+    let fetcher = RecordingSpecialFileFetcher()
+    let provider = await makeLocalProvider(
+        root: root,
+        safetyInspector: SystemLocalItemSafetyInspector(),
+        registry: LocalRootIORegistry(),
+        fetching: fetcher,
+        hashing: hasher
+    )
+    let snapshot = await provider.scan(.entireDrive)
+    #expect(snapshot.status == .complete)
+    #expect(snapshot.observations.all.isEmpty)
+    #expect(snapshot.exclusions == [
+        ScanExclusion(
+            path: "/events.pipe",
+            scope: .item,
+            reason: .unsupportedFilesystemKind(.fifo)
+        ),
+        ScanExclusion(
+            path: "/service.sock",
+            scope: .item,
+            reason: .unsupportedFilesystemKind(.socket)
+        ),
+    ])
+
+    for (path, kind) in [
+        (SyncPath("/events.pipe"), LocalFilesystemKind.fifo),
+        (SyncPath("/service.sock"), LocalFilesystemKind.socket),
+    ] {
+        let classification = await provider.classify([
+            ProviderClassificationRequest(path: path, scope: .item)
+        ])
+        #expect(classification == .excluded([
+            ScanExclusion(
+                path: path,
+                scope: .item,
+                reason: .unsupportedFilesystemKind(kind)
+            )
+        ]))
+
+        let fabricated = ItemObservation(
+            location: .localFolder,
+            path: path,
+            kind: .file,
+            version: ItemVersion(size: 0, modifiedAt: l2Date)
+        )
+        await #expect(throws: ProviderError.self) {
+            try await provider.refineEvidence(for: fabricated)
+        }
+        let stageURL = root.appendingPathComponent(UUID().uuidString)
+        await #expect(throws: ProviderError.self) {
+            try await provider.fetch(fabricated, to: stageURL)
+        }
+        #expect(!FileManager.default.fileExists(atPath: stageURL.path))
+    }
+    #expect(hasher.callCount == 0)
+    #expect(fetcher.callCount == 0)
 }
 #endif
 
@@ -512,7 +648,7 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     #expect(!activity.contains { $0.message == ActivityMessageCatalog.runFinished })
 }
 
-@Test func opaqueRelocatedSubtreeCannotAuthorizeDeletion() async throws {
+@Test func stableOpaqueRootExternalRelocationCannotAuthorizeDeletion() async throws {
     let left = LocationID(rawValue: UUID())
     let right = LocationID(rawValue: UUID())
     let syncSet = SyncSet(
@@ -522,64 +658,78 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
         createdAt: l2Date,
         updatedAt: l2Date
     )
-    let records = [
-        BaseRecord(
-            syncSetID: syncSet.id,
-            path: "/Projects",
-            kind: .folder,
-            version: ItemVersion(),
-            createdAt: l2Date,
-            updatedAt: l2Date
-        ),
-        BaseRecord(
-            syncSetID: syncSet.id,
-            path: "/Projects/notes.txt",
-            kind: .file,
-            version: ItemVersion(contentHash: "base"),
-            createdAt: l2Date,
-            updatedAt: l2Date
-        ),
-    ]
+    let trackedPath: SyncPath = "/Documents/notes.txt"
+    let hiddenRelocation: SyncPath = "/Projects.app/notes.txt"
     let exclusion = ScanExclusion(
         path: "/Projects.app",
         scope: .subtree,
         reason: .packageDirectory
     )
-    let leftSnapshot = LocationSnapshot(
-        location: left,
-        scope: .entireDrive,
-        observations: [],
-        exclusions: [exclusion],
-        scannedAt: l2Date
-    )
-    let rightSnapshot = LocationSnapshot(
-        location: right,
-        scope: .entireDrive,
-        observations: records.map {
-            ItemObservation(
-                location: right,
-                path: $0.path,
-                kind: $0.kind,
-                version: $0.version
-            )
-        },
-        scannedAt: l2Date
+    let leftProvider = FakeStorageProvider(locationID: left)
+    let rightProvider = FakeStorageProvider(locationID: right)
+    await leftProvider.setScanExclusions([exclusion])
+    _ = await leftProvider.putFile(
+        path: trackedPath,
+        contents: Data("base".utf8)
     )
 
-    let outcome = SyncPlanner().plan(
+    let stores = EngineStores.inMemory()
+    let stageRoot = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "opaque-relocation-stage"
+    )
+    let executor = ScheduleExecutor(
+        providers: [left: leftProvider, right: rightProvider],
+        stores: stores,
+        stage: ContentStage(rootDirectory: stageRoot, byteLimit: 1_000_000),
+        environment: ExecutionEnvironment(now: { l2Date })
+    )
+    let planner = SyncPlanner()
+
+    guard case let .plan(initialPlan) = planner.plan(
+        SyncPlanningInput(
+            syncSet: syncSet,
+            snapshots: [
+                await leftProvider.scan(.entireDrive),
+                await rightProvider.scan(.entireDrive),
+            ]
+        ),
+        environment: PlanningEnvironment(now: l2Date)
+    ) else {
+        Issue.record("Expected the initial plan beside the opaque root")
+        return
+    }
+    #expect(initialPlan.gate == .clear)
+    let initialSummary = try await executor.execute(initialPlan)
+    #expect(initialSummary.outcome == .completedWithExclusions)
+    let records = try await stores.baseRecords.records(for: syncSet.id)
+    #expect(records.map(\.path) == [trackedPath])
+    #expect(await rightProvider.item(at: trackedPath) != nil)
+
+    await leftProvider.remove(path: trackedPath)
+    _ = await leftProvider.putFile(
+        path: hiddenRelocation,
+        contents: Data("base".utf8)
+    )
+    let relocatedSnapshot = await leftProvider.scan(.entireDrive)
+    #expect(relocatedSnapshot.exclusions == [exclusion])
+    #expect(!relocatedSnapshot.observations.all.map(\.path).contains(hiddenRelocation))
+    guard case let .plan(plan) = planner.plan(
         SyncPlanningInput(
             syncSet: syncSet,
             records: records,
-            snapshots: [leftSnapshot, rightSnapshot]
+            snapshots: [
+                relocatedSnapshot,
+                await rightProvider.scan(.entireDrive),
+            ]
         ),
         environment: PlanningEnvironment(now: l2Date)
-    )
-    guard case let .plan(plan) = outcome else {
+    ) else {
         Issue.record("Expected a review-held plan for opaque relocation")
         return
     }
     #expect(plan.schedule.operations.isEmpty)
-    #expect(plan.decisions.count == records.count)
+    #expect(plan.decisions.count == 1)
     #expect(!plan.decisions.contains { $0.hasDeletionIntent })
     #expect(plan.decisions.allSatisfy { decision in
         if case let .waiting(.unsupportedItem, locations) = decision.verdict {
@@ -596,7 +746,7 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
         if case let .opaqueRelocation(evidence) = reason { return evidence }
         return nil
     }
-    #expect(Set(opaqueHolds.map(\.trackedPath)) == Set(records.map(\.path)))
+    #expect(opaqueHolds.map(\.trackedPath) == [trackedPath])
     #expect(opaqueHolds.allSatisfy {
         $0.exclusions == [LocatedScanExclusion(location: left, exclusion: exclusion)]
     })
@@ -620,36 +770,26 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     let waitingPaths = Set(
         preview.sections.first { $0.kind == .waiting }?.entries.map(\.path) ?? []
     )
-    #expect(waitingPaths == Set(records.map(\.path) + [exclusion.path]))
+    #expect(waitingPaths == Set([trackedPath, exclusion.path]))
 
-    let stores = EngineStores.inMemory()
-    for record in records {
-        try await stores.baseRecords.apply(.upsert(record))
-    }
-    let leftProvider = FakeStorageProvider(locationID: left)
-    let rightProvider = FakeStorageProvider(locationID: right)
-    let stageRoot = try TestTemporaryDirectory.make(
-        suite: "l2",
-        name: "opaque-relocation-stage"
-    )
-    let executor = ScheduleExecutor(
-        providers: [left: leftProvider, right: rightProvider],
-        stores: stores,
-        stage: ContentStage(rootDirectory: stageRoot, byteLimit: 1_000_000),
-        environment: ExecutionEnvironment(now: { l2Date })
+    await leftProvider.clearCallLog()
+    await rightProvider.clearCallLog()
+    let activityBefore = await stores.activity.entries(
+        matching: ActivityQuery(limit: 100)
     )
     await #expect(throws: ScheduleExecutionError.planNeedsReview) {
         try await executor.execute(plan)
     }
     #expect(await leftProvider.callLog().isEmpty)
     #expect(await rightProvider.callLog().isEmpty)
+    #expect(await rightProvider.item(at: trackedPath) != nil)
+    #expect(await leftProvider.item(at: hiddenRelocation) != nil)
     #expect(try await stores.baseRecords.records(for: syncSet.id) == records)
     #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
-    let activity = await stores.activity.entries(matching: ActivityQuery(limit: 100))
-    #expect(!activity.contains { $0.message == ActivityMessageCatalog.runFinished })
+    #expect(await stores.activity.entries(matching: ActivityQuery(limit: 100)) == activityBefore)
 }
 
-@Test func longStandingUnrelatedSubtreeExclusionDoesNotSuppressDeletion() async throws {
+@Test func longStandingUnrelatedSubtreeExclusionVisiblyHoldsGenuineDeletion() async throws {
     let left = LocationID(
         rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
     )
@@ -706,42 +846,52 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     #expect(initialSummary.outcome == .completedWithExclusions)
 
     let records = try await stores.baseRecords.records(for: syncSet.id)
-    let record = try #require(records.first { $0.path == deletedPath })
-    #expect(record.matchesSubtreeExclusionBaseline([exclusion], at: left))
+    _ = try #require(records.first { $0.path == deletedPath })
     #expect(await rightProvider.item(at: deletedPath) != nil)
 
     await leftProvider.remove(path: deletedPath)
-    guard case let .plan(deletionPlan) = planner.plan(
-        SyncPlanningInput(
-            syncSet: syncSet,
-            records: records,
-            snapshots: [
-                await leftProvider.scan(.entireDrive),
-                await rightProvider.scan(.entireDrive),
-            ]
-        ),
-        environment: PlanningEnvironment(now: l2Date)
-    ) else {
-        Issue.record("Expected ordinary deletion plan")
+    let locations = Dictionary(uniqueKeysWithValues: [left, right].map {
+        ($0, SyncLocation(id: $0, kind: .localFolder, scope: .entireDrive))
+    })
+    let orchestrator = SyncOrchestrator(
+        locations: locations,
+        providers: [left: leftProvider, right: rightProvider],
+        stores: stores,
+        stage: ContentStage(rootDirectory: stageRoot, byteLimit: 1_000_000),
+        environment: EngineEnvironment(now: { l2Date }, makeID: { UUID() })
+    )
+    let preparation = try await orchestrator.prepare(syncSet)
+    guard case let .plan(deletionPlan) = preparation.outcome else {
+        Issue.record("Expected a held deletion preparation")
         return
     }
 
     #expect(deletionPlan.decisions.count == 1)
-    #expect(deletionPlan.decisions.first?.hasDeletionIntent == true)
-    #expect(deletionPlan.schedule.operations.count == 1)
-    #expect(deletionPlan.schedule.operations.first?.kind.isTrash == true)
+    #expect(deletionPlan.decisions.first?.hasDeletionIntent == false)
+    #expect(deletionPlan.schedule.operations.isEmpty)
+    #expect(!deletionPlan.gate.permitsApproval)
     #expect(deletionPlan.gate.holdReasons.contains { reason in
-        if case .deletionsNeedReview(count: 1) = reason { return true }
-        return false
-    })
-    #expect(!deletionPlan.gate.holdReasons.contains { reason in
-        if case .opaqueRelocation = reason { return true }
-        return false
+        guard case let .opaqueRelocation(evidence) = reason else { return false }
+        return evidence.trackedPath == deletedPath
+            && evidence.exclusions == [
+                LocatedScanExclusion(location: left, exclusion: exclusion)
+            ]
     })
     #expect(deletionPlan.exclusions == [
         LocatedScanExclusion(location: left, exclusion: exclusion)
     ])
-    #expect(deletionPlan.waiting.count == 1)
+    #expect(deletionPlan.waiting.count == 2)
+
+    let activity = await stores.activity.entries(
+        matching: ActivityQuery(syncSetID: syncSet.id, runID: preparation.runID, limit: 100)
+    )
+    #expect(activity.contains { entry in
+        entry.message
+            == "Deletion of \(deletedPath.rawValue) needs review because an excluded subtree could contain this item."
+            && entry.detail
+                == "\(deletedPath.rawValue) may be inside \(left.rawValue.uuidString):\(exclusion.path.rawValue)|subtree|\(exclusion.reason.stableKey)"
+    })
+    #expect(!activity.contains { $0.message == ActivityMessageCatalog.runFinished })
 
     let preview = ChangePreviewRenderer().render(
         outcome: .plan(deletionPlan),
@@ -749,23 +899,407 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
         base: records,
         generatedAt: l2Date
     )
-    #expect(preview.sections.first { $0.kind == .movesToTrash }?.entries.map(\.path) == [deletedPath])
-    #expect(preview.sections.first { $0.kind == .waiting }?.entries.map(\.path) == [exclusion.path])
+    #expect(preview.headline == "Paused for safety")
+    #expect(preview.sections.first { $0.kind == .movesToTrash }?.entries.isEmpty == true)
+    #expect(Set(preview.sections.first { $0.kind == .waiting }?.entries.map(\.path) ?? []) == Set([
+        deletedPath,
+        exclusion.path,
+    ]))
     #expect(preview.exclusions.map(\.path) == [exclusion.path])
 
+    await leftProvider.clearCallLog()
+    await rightProvider.clearCallLog()
+    let activityBefore = await stores.activity.entries(
+        matching: ActivityQuery(limit: 100)
+    )
     let approval = PlanApproval(
         planFingerprint: deletionPlan.fingerprint,
         approvedAt: l2Date,
         acknowledgedTrashCount: deletionPlan.approvalTrashCount,
         acknowledgedConflictCount: deletionPlan.approvalConflictCount
     )
-    let deletionSummary = try await executor.execute(
-        deletionPlan,
-        approval: approval
+    await #expect(throws: ScheduleExecutionError.planNeedsReview) {
+        try await executor.execute(deletionPlan, approval: approval)
+    }
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+    #expect(await rightProvider.item(at: deletedPath) != nil)
+    #expect(try await stores.baseRecords.records(for: syncSet.id) == records)
+    #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
+    #expect(await stores.activity.entries(matching: ActivityQuery(limit: 100)) == activityBefore)
+}
+
+@Test func noOpaqueSubtreeKeepsOrdinaryDeleteToTrashInspectableAndExecutable() async throws {
+    let left = LocationID(rawValue: UUID())
+    let right = LocationID(rawValue: UUID())
+    let syncSet = SyncSet(
+        id: UUID(),
+        name: "Ordinary deletion",
+        locations: [left, right],
+        mode: .askBeforeDeleting,
+        createdAt: l2Date,
+        updatedAt: l2Date
     )
-    #expect(deletionSummary.outcome == .completedWithExclusions)
-    #expect(deletionSummary.appliedOperations.count == 1)
-    #expect(await rightProvider.item(at: deletedPath) == nil)
+    let path: SyncPath = "/Documents/old-draft.txt"
+    let leftProvider = FakeStorageProvider(locationID: left)
+    let rightProvider = FakeStorageProvider(locationID: right)
+    let leftItem = await leftProvider.putFile(
+        path: path,
+        contents: Data("draft".utf8)
+    )
+    let rightItem = await rightProvider.putFile(
+        path: path,
+        contents: Data("draft".utf8)
+    )
+    let record = BaseRecord(
+        syncSetID: syncSet.id,
+        path: path,
+        kind: .file,
+        version: leftItem.version,
+        perLocation: [
+            left: LocationMemory(
+                itemID: leftItem.itemID,
+                revisionToken: leftItem.version.revisionToken,
+                lastSeenAt: l2Date
+            ),
+            right: LocationMemory(
+                itemID: rightItem.itemID,
+                revisionToken: rightItem.version.revisionToken,
+                lastSeenAt: l2Date
+            ),
+        ],
+        lastConvergedAt: l2Date,
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    await leftProvider.remove(path: path)
+
+    guard case let .plan(plan) = SyncPlanner().plan(
+        SyncPlanningInput(
+            syncSet: syncSet,
+            records: [record],
+            snapshots: [
+                await leftProvider.scan(.entireDrive),
+                await rightProvider.scan(.entireDrive),
+            ]
+        ),
+        environment: PlanningEnvironment(now: l2Date)
+    ) else {
+        Issue.record("Expected an ordinary deletion plan")
+        return
+    }
+    #expect(plan.decisions.count == 1)
+    #expect(plan.decisions.first?.hasDeletionIntent == true)
+    #expect(plan.schedule.operations.count == 1)
+    #expect(plan.schedule.operations.first?.kind.isTrash == true)
+    #expect(plan.gate.permitsApproval)
+    #expect(!plan.gate.holdReasons.contains { reason in
+        if case .opaqueRelocation = reason { return true }
+        return false
+    })
+    let preview = ChangePreviewRenderer().render(
+        outcome: .plan(plan),
+        locations: [:],
+        base: [record],
+        generatedAt: l2Date
+    )
+    #expect(preview.headline == "Needs review")
+    #expect(
+        preview.sections.first { $0.kind == .movesToTrash }?.entries.map(\.path)
+            == [path]
+    )
+
+    let stores = EngineStores.inMemory()
+    try await stores.baseRecords.apply(.upsert(record))
+    let stageRoot = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "ordinary-deletion-stage"
+    )
+    let executor = ScheduleExecutor(
+        providers: [left: leftProvider, right: rightProvider],
+        stores: stores,
+        stage: ContentStage(rootDirectory: stageRoot, byteLimit: 1_000_000),
+        environment: ExecutionEnvironment(now: { l2Date })
+    )
+    let summary = try await executor.execute(
+        plan,
+        approval: PlanApproval(
+            planFingerprint: plan.fingerprint,
+            approvedAt: l2Date,
+            acknowledgedTrashCount: plan.approvalTrashCount,
+            acknowledgedConflictCount: plan.approvalConflictCount
+        )
+    )
+    #expect(summary.appliedOperations.count == 1)
+    #expect(await rightProvider.item(at: path) == nil)
+}
+
+@Test func opaqueRootTransitionsRemainExactIsolatedAndIdempotent() throws {
+    let left = LocationID(
+        rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+    )
+    let right = LocationID(
+        rawValue: UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+    )
+    let syncSet = SyncSet(
+        id: UUID(uuidString: "30000000-0000-0000-0000-000000000003")!,
+        name: "Opaque transitions",
+        locations: [left, right],
+        mode: .askBeforeDeleting,
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    let path: SyncPath = "/Documents/report.txt"
+    let version = ItemVersion(contentHash: "content")
+    let record = BaseRecord(
+        id: UUID(uuidString: "40000000-0000-0000-0000-000000000004")!,
+        syncSetID: syncSet.id,
+        path: path,
+        kind: .file,
+        version: version,
+        perLocation: [
+            left: LocationMemory(lastSeenAt: l2Date),
+            right: LocationMemory(lastSeenAt: l2Date),
+        ],
+        lastConvergedAt: l2Date,
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    let leftBase = ItemObservation(
+        location: left,
+        path: path,
+        kind: .file,
+        version: version
+    )
+    let rightBase = ItemObservation(
+        location: right,
+        path: path,
+        kind: .file,
+        version: version
+    )
+    let firstRoot = ScanExclusion(
+        path: "/Opaque/Ápp",
+        scope: .subtree,
+        reason: .packageDirectory
+    )
+    let secondRoot = ScanExclusion(
+        path: "/Other.app",
+        scope: .subtree,
+        reason: .unsupportedPOSIXPermissions(actual: 0o775, required: 0o755)
+    )
+    let addedRoot = ScanExclusion(
+        path: "/Third.app",
+        scope: .subtree,
+        reason: .unsupportedOwnership
+    )
+    let environment = PlanningEnvironment(now: l2Date)
+
+    func makePlan(
+        leftObservations: [ItemObservation],
+        leftExclusions: [ScanExclusion],
+        rightObservations: [ItemObservation] = [rightBase],
+        rightExclusions: [ScanExclusion] = [],
+        trackedRecord: BaseRecord? = nil
+    ) throws -> SyncPlan {
+        let outcome = SyncPlanner().plan(
+            SyncPlanningInput(
+                syncSet: syncSet,
+                records: [trackedRecord ?? record],
+                snapshots: [
+                    LocationSnapshot(
+                        location: left,
+                        scope: .entireDrive,
+                        observations: leftObservations,
+                        exclusions: leftExclusions,
+                        scannedAt: l2Date
+                    ),
+                    LocationSnapshot(
+                        location: right,
+                        scope: .entireDrive,
+                        observations: rightObservations,
+                        exclusions: rightExclusions,
+                        scannedAt: l2Date
+                    ),
+                ]
+            ),
+            environment: environment
+        )
+        guard case let .plan(plan) = outcome else {
+            Issue.record("Expected a plan for complete opaque-root snapshots")
+            throw CancellationError()
+        }
+        return plan
+    }
+
+    let stable = try makePlan(
+        leftObservations: [],
+        leftExclusions: [firstRoot, secondRoot]
+    )
+    let stableRerun = try makePlan(
+        leftObservations: [],
+        leftExclusions: [secondRoot, firstRoot]
+    )
+    #expect(stable == stableRerun)
+    let stableEvidence = try #require(stable.gate.holdReasons.compactMap { reason in
+        if case let .opaqueRelocation(evidence) = reason { return evidence }
+        return nil
+    }.first)
+    #expect(stableEvidence.trackedPath == path)
+    #expect(stableEvidence.exclusions == [
+        LocatedScanExclusion(location: left, exclusion: firstRoot),
+        LocatedScanExclusion(location: left, exclusion: secondRoot),
+    ].sorted())
+
+    var legacyRecord = record
+    legacyRecord.perLocation = [:]
+    let legacy = try makePlan(
+        leftObservations: [],
+        leftExclusions: [firstRoot, secondRoot],
+        trackedRecord: legacyRecord
+    )
+    #expect(legacy.gate.holdReasons.contains { reason in
+        guard case let .opaqueRelocation(evidence) = reason else { return false }
+        return evidence.trackedPath == path && evidence.exclusions == stableEvidence.exclusions
+    })
+
+    let withAddition = try makePlan(
+        leftObservations: [],
+        leftExclusions: [firstRoot, secondRoot, addedRoot]
+    )
+    #expect(withAddition.gate.holdReasons.contains { reason in
+        guard case let .opaqueRelocation(evidence) = reason else { return false }
+        return evidence.exclusions.count == 3
+    })
+
+    let removed = try makePlan(leftObservations: [], leftExclusions: [])
+    #expect(removed.decisions.first?.hasDeletionIntent == true)
+    #expect(removed.schedule.operations.first?.kind.isTrash == true)
+    #expect(removed.gate.permitsApproval)
+
+    let respelledRoot = ScanExclusion(
+        path: "/opaque/A\u{301}PP",
+        scope: .subtree,
+        reason: .packageDirectory
+    )
+    let reappeared = try makePlan(
+        leftObservations: [],
+        leftExclusions: [respelledRoot]
+    )
+    #expect(reappeared.gate.holdReasons.contains { reason in
+        guard case let .opaqueRelocation(evidence) = reason else { return false }
+        return evidence.exclusions == [
+            LocatedScanExclusion(location: left, exclusion: respelledRoot)
+        ] && evidence.exclusions.first?.exclusion.path.rawValue
+            == respelledRoot.path.rawValue
+    })
+
+    let isolated = try makePlan(
+        leftObservations: [],
+        leftExclusions: [],
+        rightExclusions: [firstRoot, secondRoot]
+    )
+    #expect(isolated.decisions.first?.hasDeletionIntent == true)
+    #expect(!isolated.gate.holdReasons.contains { reason in
+        if case .opaqueRelocation = reason { return true }
+        return false
+    })
+
+    let inSync = try makePlan(
+        leftObservations: [leftBase],
+        leftExclusions: [firstRoot, secondRoot]
+    )
+    #expect(inSync.decisions.isEmpty)
+    #expect(inSync.schedule.operations.isEmpty)
+    #expect(inSync.gate == .clear)
+
+    let movedPath: SyncPath = "/Moved/report.txt"
+    let moved = try makePlan(
+        leftObservations: [
+            ItemObservation(
+                location: left,
+                path: movedPath,
+                kind: .file,
+                version: version
+            )
+        ],
+        leftExclusions: [firstRoot, secondRoot]
+    )
+    #expect(moved.schedule.operations.contains { operation in
+        if case let .relocate(_, newPath) = operation.kind {
+            return operation.location == right && newPath == movedPath
+        }
+        return false
+    })
+    #expect(!moved.gate.holdReasons.contains { reason in
+        if case .opaqueRelocation = reason { return true }
+        return false
+    })
+}
+
+@Test func incompleteSnapshotWithOpaqueEvidenceRefusesBeforeAbsenceReasoning() {
+    let left = LocationID(rawValue: UUID())
+    let right = LocationID(rawValue: UUID())
+    let syncSet = SyncSet(
+        id: UUID(),
+        name: "Incomplete opaque snapshot",
+        locations: [left, right],
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    let path: SyncPath = "/Tracked.txt"
+    let record = BaseRecord(
+        syncSetID: syncSet.id,
+        path: path,
+        kind: .file,
+        version: ItemVersion(contentHash: "base"),
+        createdAt: l2Date,
+        updatedAt: l2Date
+    )
+    let exclusion = ScanExclusion(
+        path: "/Opaque.app",
+        scope: .subtree,
+        reason: .packageDirectory
+    )
+    let outcome = SyncPlanner().plan(
+        SyncPlanningInput(
+            syncSet: syncSet,
+            records: [record],
+            snapshots: [
+                LocationSnapshot(
+                    location: left,
+                    scope: .entireDrive,
+                    observations: [],
+                    exclusions: [exclusion],
+                    status: .incomplete(reason: "lstat ambiguity"),
+                    scannedAt: l2Date
+                ),
+                LocationSnapshot(
+                    location: right,
+                    scope: .entireDrive,
+                    observations: [
+                        ItemObservation(
+                            location: right,
+                            path: path,
+                            kind: .file,
+                            version: record.version
+                        )
+                    ],
+                    scannedAt: l2Date
+                ),
+            ]
+        ),
+        environment: PlanningEnvironment(now: l2Date)
+    )
+    guard case let .refusal(refusal) = outcome else {
+        Issue.record("Expected incomplete-scan refusal")
+        return
+    }
+    #expect(refusal.reasons.contains { reason in
+        if case let .scanIncomplete(location, detail) = reason {
+            return location == left && detail == "lstat ambiguity"
+        }
+        return false
+    })
 }
 
 @Test func subtreeExclusionAlsoBlocksUntrackedCounterpartCreation() {
@@ -1206,6 +1740,43 @@ func classificationAmbiguityOrUnavailabilityHasZeroMutations(
     #expect(snapshot.exclusions.isEmpty)
 }
 
+@Test func indeterminateFilesystemKindMakesScanAndLiveClassificationAmbiguous() async throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "kind-ambiguity"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let ambiguous = root.appendingPathComponent("ambiguous.txt")
+    try Data("truth".utf8).write(to: ambiguous)
+    let inspector = ScriptedSafetyInspector(volumeRoot: root)
+    inspector.overrides[ambiguous.path] = LocalItemSafetyMetadata(
+        filesystemKind: .indeterminate,
+        posixMode: 0,
+        ownerID: 0,
+        groupID: 0
+    )
+    let provider = await makeLocalProvider(
+        root: root,
+        safetyInspector: inspector,
+        registry: LocalRootIORegistry()
+    )
+
+    let snapshot = await provider.scan(.entireDrive)
+    guard case .incomplete = snapshot.status else {
+        Issue.record("An indeterminate lstat kind must make the scan incomplete")
+        return
+    }
+    #expect(snapshot.observations.all.isEmpty)
+    #expect(snapshot.exclusions.isEmpty)
+    guard case .ambiguous = await provider.classify([
+        ProviderClassificationRequest(path: "/ambiguous.txt", scope: .item)
+    ]) else {
+        Issue.record("An indeterminate lstat kind must make live classification ambiguous")
+        return
+    }
+}
+
 @Test func unreadableDirectoryMetadataDoesNotAuthorizeDescent() async throws {
     let root = try TestTemporaryDirectory.make(suite: "l2", name: "directory-ambiguity")
     let lease = TestDirectoryLease(rootURL: root)
@@ -1275,7 +1846,9 @@ private func makeLocalProvider(
     root: URL,
     safetyInspector: any LocalItemSafetyInspecting,
     registry: LocalRootIORegistry,
-    locationID: LocationID = .localFolder
+    locationID: LocationID = .localFolder,
+    fetching: any LocalFetchPerforming = SystemLocalFetchPerformer(),
+    hashing: any LocalFileHashing = SystemLocalFileHasher()
 ) async -> LocalFolderStorageProvider {
     var location = SyncLocation(
         id: locationID,
@@ -1288,9 +1861,77 @@ private func makeLocalProvider(
         location: location,
         rootURL: root,
         volumes: ScriptedVolumeInspector(),
+        fetching: fetching,
+        hashing: hashing,
         safetyInspector: safetyInspector,
         registry: registry
     )
+}
+
+#if canImport(Darwin)
+private func makeBoundUnixSocket(at url: URL) throws -> Int32 {
+    let descriptor = socket(AF_UNIX, Int32(SOCK_STREAM), 0)
+    guard descriptor >= 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(url.path.utf8) + [0]
+    let capacity = MemoryLayout.size(ofValue: address.sun_path)
+    guard pathBytes.count <= capacity else {
+        close(descriptor)
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENAMETOOLONG))
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+        buffer.copyBytes(from: pathBytes)
+    }
+    let result = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard result == 0 else {
+        let code = errno
+        close(descriptor)
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+    }
+    return descriptor
+}
+#endif
+
+private final class RecordingSpecialFileHasher: @unchecked Sendable, LocalFileHashing {
+    private let lock = NSLock()
+    private var calls = 0
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+
+    func hashFile(at _: URL, chunkSize _: Int) throws -> (hash: String, size: Int64) {
+        lock.lock()
+        calls += 1
+        lock.unlock()
+        return ("unexpected", 0)
+    }
+}
+
+private final class RecordingSpecialFileFetcher: @unchecked Sendable, LocalFetchPerforming {
+    private let lock = NSLock()
+    private var calls = 0
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+
+    func copyItem(at _: URL, to _: URL) throws {
+        lock.lock()
+        calls += 1
+        lock.unlock()
+    }
 }
 
 private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafetyInspecting {
@@ -1327,8 +1968,7 @@ private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafet
         xattrs: [String: Int] = [:]
     ) -> LocalItemSafetyMetadata {
         LocalItemSafetyMetadata(
-            isDirectory: false,
-            isRegularFile: true,
+            filesystemKind: .regularFile,
             posixMode: mode,
             ownerID: owner,
             groupID: group,
@@ -1346,8 +1986,7 @@ private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafet
         xattrs: [String: Int] = [:]
     ) -> LocalItemSafetyMetadata {
         LocalItemSafetyMetadata(
-            isDirectory: true,
-            isRegularFile: false,
+            filesystemKind: .directory,
             isPackage: package,
             posixMode: mode,
             ownerID: owner,

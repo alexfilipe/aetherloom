@@ -816,11 +816,7 @@ public struct ScheduleExecutor: Sendable {
                 LocationMemory(
                     itemID: observation.itemID,
                     revisionToken: observation.version.revisionToken,
-                    lastSeenAt: now,
-                    subtreeExclusionBaselineDigest: subtreeExclusionBaselineDigest(
-                        for: observation.location,
-                        plan: plan
-                    )
+                    lastSeenAt: now
                 )
             )
         })
@@ -837,19 +833,6 @@ public struct ScheduleExecutor: Sendable {
             createdAt: existing?.createdAt ?? now,
             updatedAt: now
         )
-    }
-
-    private func subtreeExclusionBaselineDigest(
-        for location: LocationID,
-        plan: SyncPlan
-    ) -> String? {
-        let exclusions = plan.exclusions
-            .filter {
-                $0.location == location && $0.exclusion.scope == .subtree
-            }
-            .map(\.exclusion)
-        guard !exclusions.isEmpty else { return nil }
-        return ScanExclusion.subtreeBaselineDigest(exclusions)
     }
 
     private func observationsForRecord(

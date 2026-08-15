@@ -20,9 +20,9 @@ public enum ExecutionGate: Codable, Hashable, Sendable {
 
     /// Whether a reviewed plan may proceed with a time-limited approval.
     ///
-    /// A mass-deletion threshold is a safety stop, not an approval prompt. The
-    /// operator must first change the underlying files or sync configuration so
-    /// that a fresh plan no longer contains the hold.
+    /// A mass-deletion threshold or opaque-relocation ambiguity is a safety
+    /// stop, not an approval prompt. Fresh filesystem/configuration truth must
+    /// produce a plan without the hold before execution can continue.
     public var permitsApproval: Bool {
         !isClear && holdReasons.allSatisfy(\.permitsApproval)
     }
@@ -111,7 +111,7 @@ public enum HoldReason: Codable, Hashable, Sendable {
         case .deletionsNeedReview:
             return ActivityMessageCatalog.deletionsNeedReview
         case let .opaqueRelocation(evidence):
-            return "Deletion of \(evidence.trackedPath.rawValue) is waiting because a newly observed excluded subtree could contain this item."
+            return "Deletion of \(evidence.trackedPath.rawValue) needs review because an excluded subtree could contain this item."
         }
     }
 

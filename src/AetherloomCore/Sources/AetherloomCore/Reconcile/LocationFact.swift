@@ -206,35 +206,29 @@ public func deriveFacts(_ input: ReconciliationInput) -> [ReconciliationItem] {
         )
     }
 
-    return applyNewOpaqueSubtreeSafety(
+    return applyOpaqueSubtreeRelocationSafety(
         to: applyHashBasedMoveMatching(to: items),
         snapshots: input.snapshots
     )
 }
 
-/// A newly observed opaque subtree can explain a tracked absence only when no
-/// ordinary observation or move match already explained it. A subtree root
-/// recorded beside the base observation is long-standing evidence and cannot
-/// explain the record's later disappearance, so ordinary deletion semantics
-/// remain available. Unknown/new evidence becomes a visible, non-mutating
-/// wait instead of a hidden `.excluded` fact.
-private func applyNewOpaqueSubtreeSafety(
+/// A complete snapshot containing an opaque subtree cannot prove that a
+/// tracked item still missing after ordinary observation and move matching was
+/// deleted rather than relocated into that subtree. Every such ambiguity is a
+/// visible, non-approvable, non-mutating wait with the exact current roots.
+private func applyOpaqueSubtreeRelocationSafety(
     to items: [ReconciliationItem],
     snapshots: [LocationID: LocationSnapshot]
 ) -> [ReconciliationItem] {
     items.map { item in
-        guard let base = item.base else { return item }
+        guard item.base != nil else { return item }
         var evidence: [LocatedScanExclusion] = []
         var heldLocations: Set<LocationID> = []
 
         for location in item.locations where item.facts[location]?.isMissing == true {
             let subtreeExclusions = (snapshots[location]?.exclusions ?? [])
                 .filter { $0.scope == .subtree }
-            guard !subtreeExclusions.isEmpty,
-                  !base.matchesSubtreeExclusionBaseline(
-                      subtreeExclusions,
-                      at: location
-                  ) else {
+            guard !subtreeExclusions.isEmpty else {
                 continue
             }
             for exclusion in subtreeExclusions {

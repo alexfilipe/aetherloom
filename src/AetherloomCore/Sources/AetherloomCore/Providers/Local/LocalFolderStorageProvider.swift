@@ -931,7 +931,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             recovered = try observation(
                 locationID: locationID,
                 url: recoveryURL,
-                path: expected.path
+                path: expected.path,
+                safetyInspector: safetyInspector
             )
         } catch {
             throw unavailable(
@@ -940,7 +941,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         }
         do {
             let metadata = try safetyInspector.metadata(at: recoveryURL)
-            if LocalItemSafetyClassifier.exclusion(
+            if try LocalItemSafetyClassifier.exclusion(
                 for: expected.path,
                 metadata: metadata
             ) != nil {
@@ -965,7 +966,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             let after = try observation(
                 locationID: locationID,
                 url: recoveryURL,
-                path: expected.path
+                path: expected.path,
+                safetyInspector: safetyInspector
             )
             guard let afterSize = after.version.size,
                   evidence.size == afterSize,
@@ -1120,7 +1122,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             }
             do {
                 let metadata = try safetyInspector.metadata(at: url)
-                if let exclusion = LocalItemSafetyClassifier.exclusion(
+                if let exclusion = try LocalItemSafetyClassifier.exclusion(
                     for: path,
                     metadata: metadata
                 ) {
@@ -1131,7 +1133,12 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     continue
                 }
                 observations.append(
-                    try observation(locationID: locationID, url: url, path: path)
+                    try observation(
+                        locationID: locationID,
+                        url: url,
+                        path: path,
+                        safetyInspector: safetyInspector
+                    )
                 )
             } catch {
                 errors.append("\(url.path): \(error)")
@@ -1150,8 +1157,16 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
     private static func observation(
         locationID: LocationID,
         url: URL,
-        path: SyncPath
+        path: SyncPath,
+        safetyInspector: any LocalItemSafetyInspecting
     ) throws -> ItemObservation {
+        let metadata = try safetyInspector.metadata(at: url)
+        guard try LocalItemSafetyClassifier.exclusion(
+            for: path,
+            metadata: metadata
+        ) == nil else {
+            throw CocoaError(.fileReadUnknown)
+        }
         var freshURL = url
         freshURL.removeAllCachedResourceValues()
         let values = try freshURL.resourceValues(
@@ -1165,14 +1180,16 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             ]
         )
         let kind: ItemKind
-        if values.isSymbolicLink == true {
+        if metadata.isSymbolicLink {
             kind = .symlink(
                 target: try FileManager.default.destinationOfSymbolicLink(atPath: url.path)
             )
-        } else if values.isDirectory == true {
+        } else if metadata.isDirectory {
             kind = .folder
-        } else {
+        } else if metadata.isRegularFile {
             kind = .file
+        } else {
+            throw CocoaError(.fileReadUnknown)
         }
         let isPlaceholder = values.isUbiquitousItem == true
             && values.ubiquitousItemDownloadingStatus == .notDownloaded
@@ -1411,7 +1428,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
                 do {
                     let metadata = try safetyInspector.metadata(at: url)
-                    if let exclusion = LocalItemSafetyClassifier.exclusion(
+                    if let exclusion = try LocalItemSafetyClassifier.exclusion(
                         for: path,
                         metadata: metadata
                     ) {
@@ -1478,7 +1495,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                         try LocalFolderStorageProvider.observation(
                             locationID: locationID,
                             url: url,
-                            path: observation.path
+                            path: observation.path,
+                            safetyInspector: safetyInspector
                         )
                     )
                 } catch {
@@ -1541,7 +1559,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 let before = try LocalFolderStorageProvider.observation(
                     locationID: locationID,
                     url: url,
-                    path: expected.path
+                    path: expected.path,
+                    safetyInspector: safetyInspector
                 )
                 guard before.kind == .file, !before.isPlaceholder else {
                     throw ProviderError.evidenceUnavailable(
@@ -1579,7 +1598,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 let after = try LocalFolderStorageProvider.observation(
                     locationID: locationID,
                     url: url,
-                    path: expected.path
+                    path: expected.path,
+                    safetyInspector: safetyInspector
                 )
                 guard after.kind == .file,
                       let afterSize = after.version.size,
@@ -2024,7 +2044,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 let observation = try LocalFolderStorageProvider.observation(
                         locationID: locationID,
                         url: committedURL,
-                        path: committedPath
+                        path: committedPath,
+                        safetyInspector: safetyInspector
                     )
                 try requireSafeForMutation(paths: [committedPath])
                 return .success(observation)
@@ -2084,7 +2105,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 let observation = try LocalFolderStorageProvider.observation(
                         locationID: locationID,
                         url: destination,
-                        path: path
+                        path: path,
+                        safetyInspector: safetyInspector
                     )
                 try requireSafeForMutation(paths: [path])
                 return .success(observation)
@@ -2245,7 +2267,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     try LocalFolderStorageProvider.observation(
                         locationID: locationID,
                         url: destination,
-                        path: newPath
+                        path: newPath,
+                        safetyInspector: safetyInspector
                     )
                 )
             } catch let error as ProviderError {
@@ -2678,7 +2701,8 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     observation: try LocalFolderStorageProvider.observation(
                         locationID: locationID,
                         url: url,
-                        path: actualPath
+                        path: actualPath,
+                        safetyInspector: safetyInspector
                     )
                 )
             } catch {
@@ -2764,7 +2788,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 }
                 do {
                     let metadata = try safetyInspector.metadata(at: url)
-                    if let exclusion = LocalItemSafetyClassifier.exclusion(
+                    if let exclusion = try LocalItemSafetyClassifier.exclusion(
                         for: path,
                         metadata: metadata
                     ) {
@@ -2836,7 +2860,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             )
 #endif
             let metadata = try safetyInspector.metadata(at: url)
-            guard LocalItemSafetyClassifier.exclusion(
+            guard try LocalItemSafetyClassifier.exclusion(
                 for: .root,
                 metadata: metadata
             ) == nil else {

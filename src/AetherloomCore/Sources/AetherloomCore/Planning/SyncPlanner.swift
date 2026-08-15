@@ -520,7 +520,7 @@ private struct PlanLowerer {
                 let evidence = item.blockingExclusions.map { located in
                     "\(located.exclusion.path.rawValue) at \(locationName(located.location)) (\(located.exclusion.reason.message))"
                 }.joined(separator: "; ")
-                return "Deletion is waiting for review because newly observed excluded subtree evidence could contain this item: \(evidence)"
+                return "Deletion needs review because excluded subtree evidence could contain this item: \(evidence)"
             }
         case .excluded:
             return "Provider unavailable"

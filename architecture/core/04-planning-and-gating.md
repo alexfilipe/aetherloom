@@ -102,6 +102,12 @@ public enum HoldReason: Codable, Hashable, Sendable {
     case reviewedMassDeletion(ReviewedMassDeletionEvidence)
     case massEdit(MassChangeEvidence)
     case deletionsNeedReview(count: Int)     // SyncMode.askBeforeDeleting
+    case opaqueRelocation(OpaqueRelocationEvidence)
+}
+
+public struct OpaqueRelocationEvidence: Codable, Hashable, Sendable {
+    public var trackedPath: SyncPath
+    public var exclusions: [LocatedScanExclusion] // exact missing location/root/scope/reason
 }
 
 public struct MassChangeEvidence: Codable, Hashable, Sendable {
@@ -138,6 +144,8 @@ or (trackedCount ≥ absoluteThreshold and intents/trackedCount ≥ ratioThresho
 ```
 
 Defaults are also the hard maximums: mass-delete absolute is normalized to `1...25` and ratio to `0.01...0.25`; mass-edit absolute is normalized to `1...50` and ratio to `0.01...0.50`. One canonical `SafetyThresholds` initializer applies those clamps to direct construction, decoding, bridge preferences, sync-set creation, and updates. Users may tighten the defaults, and later restore an in-range value only as far as the default maximum; no persistent setting can weaken these ceilings. The ratio formula above is unchanged. Consequently, **Review intentional deletions** is the sole path for a legitimate deletion at or above an otherwise tripped hard ceiling. Counting **decisions** means "user deleted 30 files" gates identically whether the set has 2 or 5 locations (today, fan-out operations are counted, so the same act trips differently by topology). `SyncMode.noDeletePropagation` converts `propagateDeletion` verdicts into informational decisions with zero operations — visible in the preview, nothing trashed.
+
+`opaqueRelocation` is a non-approvable **Needs review** hold, not deletion intent. It is derived only after observation and move matching when a tracked path remains missing at a location whose complete snapshot contains opaque subtree evidence. Existing conflict, edit, deletion, mass-deletion, or bridge confirmation approval cannot override it. It carries one deterministic entry per held tracked path and every exact current subtree root at the missing location; it schedules no mutation and authorizes no base or recovery convergence.
 
 ### Durable mass-deletion safety latch
 

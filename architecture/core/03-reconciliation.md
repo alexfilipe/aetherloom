@@ -15,7 +15,7 @@ public struct ReconciliationInput: Sendable {
 }
 ```
 
-**Precondition (enforced by the caller, [04 §2](04-planning-and-gating.md)):** every location in the set has a snapshot with `status == .complete`. Reconciliation is never invoked otherwise — unavailability and incomplete scans refuse the run *before* any per-item reasoning, so "missing" below always means *positively absent from a complete, healthy scan*.
+**Precondition (enforced by the caller, [04 §2](04-planning-and-gating.md)):** every location in the set has a snapshot with `status == .complete`. Reconciliation is never invoked otherwise — unavailability and incomplete scans refuse the run *before* any per-item reasoning. A missing observation is ordinary absence evidence only when that same location snapshot has no opaque subtree exclusion; otherwise relocation into the unenumerated subtree remains ambiguous under the local fidelity contract.
 
 ## 2. Step 1 — derive per-location facts
 
@@ -38,6 +38,8 @@ public enum LocationFact: Hashable, Sendable {
 Fact derivation is where `VersionComparison` ([01 §3](01-domain-model.md)) does its work: `same` ⇒ matches, `different` ⇒ changed, **`unknown` ⇒ treated as `changed` with an unknown version — which can never win an overwrite and therefore lands in preservation rows below.** Placeholders derive `waiting` regardless of reported size/mtime (a dataless stub's metadata is not content). Folders never derive `changed` (folder "versions" are structural).
 
 Typed provider scan exclusions are different from user-pattern filtering. They are positive presence evidence and are lowered to visible exclusion/waiting decisions before ordinary fact derivation. For every existing `BaseRecord`, the reconciler MUST first test whether its path equals an item exclusion or equals/lies below a subtree exclusion. A covered record derives exclusion/waiting at every location, never `missing`, absence, or deletion, even when no descendant observation was emitted. Coverage uses the same component-aware normalized and case/diacritic-folded `SyncPath` ancestry relation as the item join, never a raw string prefix. The affected item/subtree is non-mutating at every location and cannot update base state or appear converged; see [the local fidelity contract](../providers/local/01-package-and-metadata-safety.md).
+
+After ordinary observation and authoritative move matching, a tracked record still missing at a location whose complete snapshot carries any subtree exclusion derives a separate visible opaque-relocation wait with the exact tracked path, missing location, and exact current exclusion roots. It does so regardless of whether the roots are new, stable, reappeared, respelled, or unrelated. The wait is non-approvable and prevents deletion, mutation, base/recovery convergence, and success presentation. If the same missing location has no subtree exclusion, the ordinary deletion rows below remain available. Historical digest equality is not deletion authority.
 
 ## 3. Step 2 — the verdict table
 
@@ -65,7 +67,7 @@ The normative table, generalized to n locations. "Changed sides" = locations who
 | 6 | ≥ 2 `relocated` to the **same** path | convergent move → `inSync` (base path updated) |
 | 7 | ≥ 2 `relocated` to **different** paths | `conflict(.moveMove)` — nothing moves until reviewed |
 | 8 | one `changedAndRelocated`, rest match base | `propagateContent` + `propagatePath` (two decisions, one item) |
-| 9 | ≥ 1 `missing`; **all** present sides `matchesBase` | `propagateDeletion(to: present, initiatedBy: a missing one)` |
+| 9 | ≥ 1 `missing`; every missing location has no opaque subtree exclusion; **all** present sides `matchesBase` | `propagateDeletion(to: present, initiatedBy: a missing one)` |
 | 10 | ≥ 1 `missing`; ≥ 1 side `changed` | `conflict(.editDelete)` — never trash; edited version re-propagates to the missing locations |
 | 11 | ≥ 1 `missing`; ≥ 1 side `relocated` | treat as 5 with absence at others → `propagatePath` + `propagateCreation` to missing; if versions diverge too → `conflict(.editDelete)` |
 | 12 | all `missing` | base record ready for tombstone confirmation → `inSync`-with-tombstone (nothing to do at providers) |

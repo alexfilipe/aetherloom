@@ -4,9 +4,7 @@ import Darwin
 #endif
 
 public struct LocalItemSafetyMetadata: Hashable, Sendable {
-    public var isDirectory: Bool
-    public var isRegularFile: Bool
-    public var isSymbolicLink: Bool
+    public var filesystemKind: LocalFilesystemKind
     public var isPackage: Bool
     public var posixMode: UInt16
     public var ownerID: UInt32
@@ -15,9 +13,7 @@ public struct LocalItemSafetyMetadata: Hashable, Sendable {
     public var extendedAttributeSizes: [String: Int]
 
     public init(
-        isDirectory: Bool,
-        isRegularFile: Bool,
-        isSymbolicLink: Bool = false,
+        filesystemKind: LocalFilesystemKind,
         isPackage: Bool = false,
         posixMode: UInt16,
         ownerID: UInt32,
@@ -25,9 +21,7 @@ public struct LocalItemSafetyMetadata: Hashable, Sendable {
         hasAccessControlList: Bool = false,
         extendedAttributeSizes: [String: Int] = [:]
     ) {
-        self.isDirectory = isDirectory
-        self.isRegularFile = isRegularFile
-        self.isSymbolicLink = isSymbolicLink
+        self.filesystemKind = filesystemKind
         self.isPackage = isPackage
         self.posixMode = posixMode
         self.ownerID = ownerID
@@ -35,6 +29,10 @@ public struct LocalItemSafetyMetadata: Hashable, Sendable {
         self.hasAccessControlList = hasAccessControlList
         self.extendedAttributeSizes = extendedAttributeSizes
     }
+
+    public var isDirectory: Bool { filesystemKind == .directory }
+    public var isRegularFile: Bool { filesystemKind == .regularFile }
+    public var isSymbolicLink: Bool { filesystemKind == .symbolicLink }
 }
 
 public protocol LocalItemSafetyInspecting: Sendable {
@@ -122,19 +120,29 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
     public init() {}
 
     public func metadata(at url: URL) throws -> LocalItemSafetyMetadata {
+        let identity = try posixIdentity(at: url)
+        let filesystemKind = identity.filesystemKind
+        guard filesystemKind != .indeterminate else {
+            throw CocoaError(.fileReadUnknown)
+        }
+
+        // Settings exclude symbolic links, and known special kinds are typed
+        // exclusions. Do not perform metadata probes intended for regular
+        // files or directories against either category.
+        guard filesystemKind == .regularFile || filesystemKind == .directory else {
+            return LocalItemSafetyMetadata(
+                filesystemKind: filesystemKind,
+                posixMode: identity.mode,
+                ownerID: identity.owner,
+                groupID: identity.group
+            )
+        }
+
         var fresh = url
         fresh.removeAllCachedResourceValues()
-        let values = try fresh.resourceValues(forKeys: [
-            .isDirectoryKey,
-            .isRegularFileKey,
-            .isSymbolicLinkKey,
-            .isPackageKey,
-        ])
-        let identity = try posixIdentity(at: url)
+        let values = try fresh.resourceValues(forKeys: [.isPackageKey])
         return LocalItemSafetyMetadata(
-            isDirectory: values.isDirectory == true,
-            isRegularFile: values.isRegularFile == true,
-            isSymbolicLink: values.isSymbolicLink == true,
+            filesystemKind: filesystemKind,
             isPackage: values.isPackage == true,
             posixMode: identity.mode,
             ownerID: identity.owner,
@@ -146,7 +154,12 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
 
     private func posixIdentity(
         at url: URL
-    ) throws -> (mode: UInt16, owner: UInt32, group: UInt32) {
+    ) throws -> (
+        mode: UInt16,
+        owner: UInt32,
+        group: UInt32,
+        filesystemKind: LocalFilesystemKind
+    ) {
 #if canImport(Darwin)
         var status = stat()
         let result = url.withUnsafeFileSystemRepresentation { path in
@@ -156,7 +169,8 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
         return (
             UInt16(status.st_mode & mode_t(0o7777)),
             UInt32(status.st_uid),
-            UInt32(status.st_gid)
+            UInt32(status.st_gid),
+            filesystemKind(from: status.st_mode)
         )
 #else
         let attributes = try FileManager.default.attributesOfItem(
@@ -167,9 +181,36 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
               let group = (attributes[.groupOwnerAccountID] as? NSNumber)?.uint32Value else {
             throw CocoaError(.fileReadUnknown)
         }
-        return (permissions & 0o7777, owner, group)
+        let kind: LocalFilesystemKind
+        switch attributes[.type] as? FileAttributeType {
+        case .typeRegular: kind = .regularFile
+        case .typeDirectory: kind = .directory
+        case .typeSymbolicLink: kind = .symbolicLink
+        case .typeSocket: kind = .socket
+        case .typeCharacterSpecial: kind = .characterDevice
+        case .typeBlockSpecial: kind = .blockDevice
+        default: kind = .indeterminate
+        }
+        return (permissions & 0o7777, owner, group, kind)
 #endif
     }
+
+#if canImport(Darwin)
+    private func filesystemKind(from mode: mode_t) -> LocalFilesystemKind {
+        let modeType = mode & mode_t(S_IFMT)
+        switch modeType {
+        case mode_t(S_IFREG): return .regularFile
+        case mode_t(S_IFDIR): return .directory
+        case mode_t(S_IFLNK): return .symbolicLink
+        case mode_t(S_IFIFO): return .fifo
+        case mode_t(S_IFSOCK): return .socket
+        case mode_t(S_IFCHR): return .characterDevice
+        case mode_t(S_IFBLK): return .blockDevice
+        case 0: return .indeterminate
+        default: return .other(modeType: UInt16(modeType))
+        }
+    }
+#endif
 
     public func volumeRoot(for url: URL) throws -> URL {
         let values = try url.resourceValues(forKeys: [.volumeURLKey])
@@ -251,6 +292,10 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
     }
 }
 
+enum LocalItemSafetyClassificationError: Error, Equatable, Sendable {
+    case indeterminateFilesystemKind
+}
+
 enum LocalItemSafetyClassifier {
     static let finderTagsName = "com.apple.metadata:_kMDItemUserTags"
     static let finderInfoName = "com.apple.FinderInfo"
@@ -261,12 +306,26 @@ enum LocalItemSafetyClassifier {
         metadata: LocalItemSafetyMetadata,
         effectiveUserID: UInt32 = currentEffectiveUserID,
         effectiveGroupID: UInt32 = currentEffectiveGroupID
-    ) -> ScanExclusion? {
+    ) throws -> ScanExclusion? {
         // Symlinks are excluded by SyncSettings after observation. Their
         // lstat identity describes the link, while Foundation's file-kind
         // resource values may describe the target, so applying file or
         // directory baselines here would manufacture a misleading reason.
         if metadata.isSymbolicLink { return nil }
+        switch metadata.filesystemKind {
+        case .regularFile, .directory:
+            break
+        case .indeterminate:
+            throw LocalItemSafetyClassificationError.indeterminateFilesystemKind
+        case .fifo, .socket, .characterDevice, .blockDevice, .other:
+            return ScanExclusion(
+                path: path,
+                scope: .item,
+                reason: .unsupportedFilesystemKind(metadata.filesystemKind)
+            )
+        case .symbolicLink:
+            return nil
+        }
         let scope: ScanExclusion.Scope = metadata.isDirectory ? .subtree : .item
         if metadata.isDirectory, metadata.isPackage {
             return ScanExclusion(path: path, scope: .subtree, reason: .packageDirectory)
