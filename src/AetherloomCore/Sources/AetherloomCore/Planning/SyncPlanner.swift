@@ -466,8 +466,7 @@ private struct PlanLowerer {
             "decision",
             syncSet.id.uuidString,
             String(index),
-            reconciledItem.item.primaryPath.rawValue,
-            String(describing: reconciledItem.verdict)
+            reconciledItem.item.primaryPath.rawValue
         )
     }
 
