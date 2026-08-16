@@ -96,7 +96,9 @@
                         "url": "https://aetherloom.app/",
                         "name": "Aetherloom",
                         "alternateName": ["Aetherloom app", "Aetherloom for Mac"],
-                        "publisher": { "@id": "https://aetherloom.app/#author" },
+                        "publisher": {
+                            "@id": "https://livingintelligence.xyz/#organization"
+                        },
                         "inLanguage": "en"
                     },
                     {
@@ -130,6 +132,9 @@
                             "Provider outages and unmounted volumes are never treated as deletions"
                         ],
                         "author": { "@id": "https://aetherloom.app/#author" },
+                        "publisher": {
+                            "@id": "https://livingintelligence.xyz/#organization"
+                        },
                         "sameAs": ["https://github.com/alexfilipe/aetherloom"]
                     },
                     {
@@ -137,7 +142,16 @@
                         "@id": "https://aetherloom.app/#author",
                         "name": "\u00c1lex Filipe Santos",
                         "url": "https://alexfili.pe",
+                        "worksFor": {
+                            "@id": "https://livingintelligence.xyz/#organization"
+                        },
                         "sameAs": ["https://github.com/alexfilipe"]
+                    },
+                    {
+                        "@type": "Organization",
+                        "@id": "https://livingintelligence.xyz/#organization",
+                        "name": "Living Intelligence",
+                        "url": "https://livingintelligence.xyz"
                     }
                 ]
             }
@@ -1078,6 +1092,7 @@
             .footer-tagline {
                 color: rgba(242, 244, 248, 0.5);
                 font-size: 13px;
+                white-space: nowrap;
             }
 
             .footer-links {
@@ -1108,11 +1123,17 @@
                 color: rgba(242, 244, 248, 0.45);
                 font-size: 13.5px;
                 letter-spacing: 0.02em;
+                row-gap: 20px;
             }
 
             .footer-meta a {
                 color: rgba(242, 244, 248, 0.75);
                 font-weight: 600;
+            }
+
+            .footer-credit-company,
+            .footer-credit-location {
+                white-space: nowrap;
             }
 
             .footer-license {
@@ -1847,7 +1868,14 @@
                             <a href="https://alexfili.pe" target="_blank" rel="noopener"
                                 >&Aacute;lex Filipe Santos</a
                             >
-                            in San Francisco.</span
+                            at
+                            <a
+                                class="footer-credit-company"
+                                href="https://livingintelligence.xyz"
+                                target="_blank"
+                                rel="noopener"
+                                >Living Intelligence</a
+                            >, <span class="footer-credit-location">in San Francisco</span></span
                         >
                         <span class="footer-license"
                             >&copy; 2026 &nbsp;·&nbsp;
