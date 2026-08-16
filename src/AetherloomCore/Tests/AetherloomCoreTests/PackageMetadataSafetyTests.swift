@@ -340,9 +340,9 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
 }
 
 #if canImport(Darwin)
-@Test func systemProvenanceAdapterReturnsNativeOrTypedUnavailable() {
+@Test func systemProvenanceAdapterLinksAndReturnsNativeTotalClassification() {
     let result = SystemLocalProvenanceSyncIntentClassifier().classify()
-    #expect(result == .ignored || result == .preserve || result == .unavailable)
+    #expect(result == .ignored || result == .preserve)
 }
 
 @Test func systemDataForkCopierDoesNotTransferExtendedAttributes() throws {
@@ -355,6 +355,10 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     let source = root.appendingPathComponent("source.txt")
     let destination = root.appendingPathComponent("destination.txt")
     try Data("content".utf8).write(to: source)
+    try FileManager.default.setAttributes(
+        [.modificationDate: l2Date],
+        ofItemAtPath: source.path
+    )
     try setTestExtendedAttribute(at: source, name: "com.aetherloom.transport-test")
 
     try SystemLocalDataForkCopier().copyItem(
@@ -364,6 +368,7 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     )
 
     #expect(try Data(contentsOf: destination) == Data("content".utf8))
+    #expect(try modificationDate(at: destination) == modificationDate(at: source))
     #expect(
         try !extendedAttributeNames(at: destination)
             .contains("com.aetherloom.transport-test")
@@ -390,6 +395,7 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
         at: sourceFile,
         to: fetchedFile
     )
+    #expect(try modificationDate(at: fetchedFile) == modificationDate(at: sourceFile))
 
     let sourceDirectory = root.appendingPathComponent("Source", isDirectory: true)
     let sourceChild = sourceDirectory.appendingPathComponent("child.txt")
@@ -399,6 +405,10 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
         withIntermediateDirectories: true
     )
     try Data("child".utf8).write(to: sourceChild)
+    try FileManager.default.setAttributes(
+        [.modificationDate: l2Date.addingTimeInterval(20)],
+        ofItemAtPath: sourceChild.path
+    )
     try setTestExtendedAttribute(
         at: sourceDirectory,
         name: "com.aetherloom.directory-source"
@@ -426,6 +436,11 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
         try !extendedAttributeNames(
             at: relocatedDirectory.appendingPathComponent("child.txt")
         ).contains("com.aetherloom.child-source")
+    )
+    #expect(
+        try modificationDate(
+            at: relocatedDirectory.appendingPathComponent("child.txt")
+        ) == modificationDate(at: sourceChild)
     )
 }
 
@@ -456,7 +471,9 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
         at: "/file.txt",
         options: StoreOptions(overwrite: .neverOverwrite)
     )
+    let strongFirst = try await provider.refineEvidence(for: first)
     let destination = root.appendingPathComponent("file.txt")
+    #expect(try modificationDate(at: destination) == modificationDate(at: firstStage))
     #expect(
         try !extendedAttributeNames(at: destination)
             .contains("com.aetherloom.source-provenance")
@@ -475,10 +492,11 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     _ = try await provider.store(
         from: secondStage,
         at: "/file.txt",
-        options: StoreOptions(overwrite: .ifVersionMatches(first.version))
+        options: StoreOptions(overwrite: .ifVersionMatches(strongFirst.version))
     )
 
     #expect(try Data(contentsOf: destination) == Data("second".utf8))
+    #expect(try modificationDate(at: destination) == modificationDate(at: secondStage))
     let destinationAttributes = try extendedAttributeNames(at: destination)
     #expect(!destinationAttributes.contains("com.aetherloom.source-provenance"))
     #expect(!destinationAttributes.contains("com.aetherloom.destination-local"))
@@ -3300,5 +3318,13 @@ private func extendedAttributeNames(at url: URL) throws -> Set<String> {
         start = index + 1
     }
     return names
+}
+
+private func modificationDate(at url: URL) throws -> Date {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    guard let date = attributes[.modificationDate] as? Date else {
+        throw CocoaError(.fileReadUnknown)
+    }
+    return date
 }
 #endif

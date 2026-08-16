@@ -15,6 +15,15 @@ int aetherloom_copy_data_fork(
     int recursive
 );
 
+// Applies only the regular source file's modification time to the regular
+// destination file without following symlinks. This is the one filesystem
+// field represented by the synchronized ItemVersion; it does not copy xattrs
+// or other metadata. Returns 0 on success or a positive errno value.
+int aetherloom_apply_regular_file_modification_time(
+    const char *source,
+    const char *destination
+);
+
 // Atomically replaces destination with source through rename(2). This moves
 // the new object and does not request metadata transfer from either object.
 // Returns 0 on success or a positive errno value on failure.
