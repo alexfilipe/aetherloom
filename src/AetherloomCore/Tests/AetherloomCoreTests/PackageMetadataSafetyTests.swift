@@ -394,7 +394,10 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     let sourceDirectory = root.appendingPathComponent("Source", isDirectory: true)
     let sourceChild = sourceDirectory.appendingPathComponent("child.txt")
     let relocatedDirectory = root.appendingPathComponent("Relocated", isDirectory: true)
-    try FileManager.default.createDirectory(at: sourceDirectory)
+    try FileManager.default.createDirectory(
+        at: sourceDirectory,
+        withIntermediateDirectories: true
+    )
     try Data("child".utf8).write(to: sourceChild)
     try setTestExtendedAttribute(
         at: sourceDirectory,
@@ -492,7 +495,10 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     _ = lease
     let directory = root.appendingPathComponent("Documents", isDirectory: true)
     let file = directory.appendingPathComponent("note.txt")
-    try FileManager.default.createDirectory(at: directory)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
     try Data("note".utf8).write(to: file)
 
     let inspector = ScriptedSafetyInspector(volumeRoot: root)
@@ -514,7 +520,10 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     let withProvenance = await provider.scan(.entireDrive)
     #expect(withProvenance.status == .complete)
     #expect(withProvenance.exclusions.isEmpty)
-    #expect(Set(withProvenance.observations.map(\.path)) == ["/Documents", "/Documents/note.txt"])
+    #expect(Set(withProvenance.observations.all.map(\.path)) == [
+        "/Documents",
+        "/Documents/note.txt",
+    ])
 
     inspector.overrides[directory.path] = inspector.directory(
         xattrs: [LocalItemSafetyClassifier.provenanceName: 99],
@@ -558,7 +567,10 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
             reason: .unsupportedMetadata([.extendedAttributes])
         ),
     ])
-    #expect(!preserveResult.observations.map(\.path).contains("/Documents/note.txt"))
+    #expect(
+        !preserveResult.observations.all.map(\.path)
+            .contains("/Documents/note.txt")
+    )
 }
 
 @Test func provenanceClassificationFlipStopsBeforeMaterialization() async throws {
@@ -2546,7 +2558,10 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     let lease = TestDirectoryLease(rootURL: root)
     _ = lease
     let folder = root.appendingPathComponent("Folder", isDirectory: true)
-    try FileManager.default.createDirectory(at: folder)
+    try FileManager.default.createDirectory(
+        at: folder,
+        withIntermediateDirectories: true
+    )
     let inspector = ScriptedSafetyInspector(volumeRoot: root)
     inspector.overrides[folder.path] = inspector.directory(
         xattrs: [LocalItemSafetyClassifier.provenanceName: 0],
@@ -2970,7 +2985,10 @@ func classificationAmbiguityOrUnavailabilityHasZeroMutations(
     let lease = TestDirectoryLease(rootURL: root)
     _ = lease
     let recovered = root.appendingPathComponent("Recovered", isDirectory: true)
-    try FileManager.default.createDirectory(at: recovered)
+    try FileManager.default.createDirectory(
+        at: recovered,
+        withIntermediateDirectories: true
+    )
     let inspector = ScriptedSafetyInspector(volumeRoot: root)
     inspector.overrides[recovered.path] = inspector.directory(
         xattrs: [LocalItemSafetyClassifier.provenanceName: 0],
@@ -3233,11 +3251,18 @@ private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafet
 #if canImport(Darwin)
 private func setTestExtendedAttribute(at url: URL, name: String) throws {
     let bytes = [UInt8]("opaque-test-value".utf8)
-    let result = bytes.withUnsafeBytes { value in
-        url.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return -1 }
-            return name.withCString { name in
-                setxattr(path, name, value.baseAddress, value.count, 0, 0)
+    let result: Int32 = url.withUnsafeFileSystemRepresentation { path in
+        guard let path else { return -1 }
+        return name.withCString { namePointer in
+            bytes.withUnsafeBytes { value -> Int32 in
+                setxattr(
+                    path,
+                    namePointer,
+                    value.baseAddress,
+                    value.count,
+                    0,
+                    0
+                )
             }
         }
     }
