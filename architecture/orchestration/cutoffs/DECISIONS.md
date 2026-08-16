@@ -60,6 +60,12 @@ Full entries for decisions whose feature or pull request is still in flight. App
 - Status: proposed
 - Resolving PR/SHA: expected draft PR #30 / pending.
 
+## Evaluation/correction metadata appended 2026-08-16
+
+- CUT-027 independent evaluation: Exact published head `8118e3d0ad9f2a1ca157ba849b3fd858172d1813` received **NEEDS CORRECTION**, P0 0, P1 1, P2 1. The P1 found that classification and payload-non-authority prose did not operationally prevent copy-based staging, materialization, replacement, relocate fallback, or recovery from propagating source provenance metadata. The P2 found that the native C predicate was incorrectly described as capable of returning error or ambiguity even though it is a total integer classification.
+- CUT-027 authorized correction: One coherent docs-only batch binds every cross-location/cross-filesystem copy and staging/materialization/recovery path to data-fork-only behavior, distinguishes same-object moves from materialization, leaves destination provenance OS-owned without blindly restoring old payloads, adds injected call/flag acceptance evidence, and defines a typed adapter where native `0` means ignore and every native nonzero means preserve. Binding unavailability/call failure are adapter outcomes; ambiguity exists only at the injected test seam. The original CUT-027 wording is superseded by this adapter clarification without rewriting the recorded entry.
+- CUT-027 evidence invalidation and evaluation boundary: This correction changes the documented security/trust transfer boundary, so E09 requires a second fresh complete independent evaluation after publication. Prior exact-head equality, static evidence, CI run `31926567239`, and evaluation at `8118e3d0ad9f2a1ca157ba849b3fd858172d1813` do not validate the corrected head. Repeat documentation link/diff/scope/contradiction checks, local/upstream/origin/GitHub base/head equality, exact-head CI, and the fresh evaluation. Any remaining P0/P1 blocks. The user remains the sole merger; PR #27 and L3 remain paused and unmodified.
+
 ## Carried backlog
 
 Open deferrals and accepted residual risks from closed decisions. Each is still live: treat the trigger as the condition that turns it into work. The named entry holds the full reasoning and evidence; retrieve it with its batch's command in the closed index below.
