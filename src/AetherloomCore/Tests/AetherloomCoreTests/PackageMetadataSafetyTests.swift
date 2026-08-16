@@ -243,6 +243,384 @@ private let l2Date = Date(timeIntervalSince1970: 1_790_000_000)
     )?.reason == .unsupportedOwnership)
 }
 
+@Test func provenanceClassificationIsExactTypedAndFailClosed() throws {
+    let inspector = ScriptedSafetyInspector(volumeRoot: URL(fileURLWithPath: "/"))
+    let exactName = LocalItemSafetyClassifier.provenanceName
+
+    #expect(try LocalItemSafetyClassifier.exclusion(
+        for: "/ignored.txt",
+        metadata: inspector.file(
+            xattrs: [exactName: 0],
+            provenance: .ignored
+        )
+    ) == nil)
+
+    let failClosedResults: [LocalProvenanceSyncIntentResult] = [
+        .preserve,
+        .unavailable,
+        .callFailed,
+        .ambiguous,
+    ]
+    for result in failClosedResults {
+        let exclusion = try #require(
+            try LocalItemSafetyClassifier.exclusion(
+                for: "/refused.txt",
+                metadata: inspector.file(
+                    xattrs: [exactName: 0],
+                    provenance: result
+                )
+            )
+        )
+        #expect(exclusion.reason == .unsupportedMetadata([.extendedAttributes]))
+    }
+
+    for nearName in [
+        "Com.apple.provenance",
+        "com.apple.provenance.extra",
+        "com.apple.provenanc\u{65}\u{301}",
+    ] {
+        let exclusion = try #require(
+            try LocalItemSafetyClassifier.exclusion(
+                for: "/near.txt",
+                metadata: inspector.file(
+                    xattrs: [nearName: 0],
+                    provenance: .ignored
+                )
+            )
+        )
+        #expect(exclusion.reason == .unsupportedMetadata([.extendedAttributes]))
+    }
+
+    let companion = try #require(
+        try LocalItemSafetyClassifier.exclusion(
+            for: "/companion.txt",
+            metadata: inspector.file(
+                xattrs: [exactName: 0, "user.example": 1],
+                provenance: .ignored
+            )
+        )
+    )
+    #expect(companion.reason == .unsupportedMetadata([.extendedAttributes]))
+}
+
+@Test func provenanceNativeAndAdapterResultsMapExactly() {
+    #expect(SystemLocalProvenanceSyncIntentClassifier.classification(
+        wrapperStatus: 0,
+        nativeResult: 0
+    ) == .ignored)
+    for nativeResult: Int32 in [-7, -1, 1, 7] {
+        #expect(SystemLocalProvenanceSyncIntentClassifier.classification(
+            wrapperStatus: 0,
+            nativeResult: nativeResult
+        ) == .preserve)
+    }
+    #expect(SystemLocalProvenanceSyncIntentClassifier.classification(
+        wrapperStatus: 1,
+        nativeResult: 0
+    ) == .unavailable)
+    #expect(SystemLocalProvenanceSyncIntentClassifier.classification(
+        wrapperStatus: 2,
+        nativeResult: 0
+    ) == .callFailed)
+}
+
+@Test func provenanceAdapterIsCalledOnlyForTheExactRawName() {
+    let classifier = RecordingProvenanceClassifier(result: .ignored)
+    #expect(SystemLocalItemSafetyInspector.provenanceResult(
+        forExtendedAttributeNames: ["Com.apple.provenance"],
+        classifier: classifier
+    ) == nil)
+    #expect(classifier.callCount == 0)
+
+    #expect(SystemLocalItemSafetyInspector.provenanceResult(
+        forExtendedAttributeNames: [LocalItemSafetyClassifier.provenanceName],
+        classifier: classifier
+    ) == .ignored)
+    #expect(classifier.callCount == 1)
+}
+
+#if canImport(Darwin)
+@Test func systemProvenanceAdapterReturnsNativeOrTypedUnavailable() {
+    let result = SystemLocalProvenanceSyncIntentClassifier().classify()
+    #expect(result == .ignored || result == .preserve || result == .unavailable)
+}
+
+@Test func systemDataForkCopierDoesNotTransferExtendedAttributes() throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "data-fork-copy"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let source = root.appendingPathComponent("source.txt")
+    let destination = root.appendingPathComponent("destination.txt")
+    try Data("content".utf8).write(to: source)
+    try setTestExtendedAttribute(at: source, name: "com.aetherloom.transport-test")
+
+    try SystemLocalDataForkCopier().copyItem(
+        at: source,
+        to: destination,
+        kind: .file
+    )
+
+    #expect(try Data(contentsOf: destination) == Data("content".utf8))
+    #expect(
+        try !extendedAttributeNames(at: destination)
+            .contains("com.aetherloom.transport-test")
+    )
+}
+
+@Test func fetchAndRelocationSelectExplicitDataForkCopyKinds() throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "data-fork-call-evidence"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let recorder = RecordingDataForkCopier(delegate: SystemLocalDataForkCopier())
+
+    let sourceFile = root.appendingPathComponent("source.txt")
+    let fetchedFile = root.appendingPathComponent("fetched.txt")
+    try Data("file".utf8).write(to: sourceFile)
+    try setTestExtendedAttribute(
+        at: sourceFile,
+        name: "com.aetherloom.fetch-source"
+    )
+    try SystemLocalFetchPerformer(copier: recorder).copyItem(
+        at: sourceFile,
+        to: fetchedFile
+    )
+
+    let sourceDirectory = root.appendingPathComponent("Source", isDirectory: true)
+    let sourceChild = sourceDirectory.appendingPathComponent("child.txt")
+    let relocatedDirectory = root.appendingPathComponent("Relocated", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceDirectory)
+    try Data("child".utf8).write(to: sourceChild)
+    try setTestExtendedAttribute(
+        at: sourceDirectory,
+        name: "com.aetherloom.directory-source"
+    )
+    try setTestExtendedAttribute(
+        at: sourceChild,
+        name: "com.aetherloom.child-source"
+    )
+    try SystemLocalRelocationPerformer(copier: recorder).copyItem(
+        at: sourceDirectory,
+        to: relocatedDirectory,
+        kind: .directoryTree
+    )
+
+    #expect(recorder.events == [.copy(.file), .copy(.directoryTree)])
+    #expect(
+        try !extendedAttributeNames(at: fetchedFile)
+            .contains("com.aetherloom.fetch-source")
+    )
+    #expect(
+        try !extendedAttributeNames(at: relocatedDirectory)
+            .contains("com.aetherloom.directory-source")
+    )
+    #expect(
+        try !extendedAttributeNames(
+            at: relocatedDirectory.appendingPathComponent("child.txt")
+        ).contains("com.aetherloom.child-source")
+    )
+}
+
+@Test func providerStoreUsesDataForkOnlyCopyAndAtomicRenameReplacement() async throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "data-fork-store"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let recorder = RecordingDataForkCopier(delegate: SystemLocalDataForkCopier())
+    let inspector = ScriptedSafetyInspector(volumeRoot: root)
+    let provider = await makeLocalProvider(
+        root: root,
+        safetyInspector: inspector,
+        registry: LocalRootIORegistry(),
+        materialization: recorder
+    )
+
+    let firstStage = root.appendingPathComponent("first-stage")
+    try Data("first".utf8).write(to: firstStage)
+    try setTestExtendedAttribute(
+        at: firstStage,
+        name: "com.aetherloom.source-provenance"
+    )
+    let first = try await provider.store(
+        from: firstStage,
+        at: "/file.txt",
+        options: StoreOptions(overwrite: .neverOverwrite)
+    )
+    let destination = root.appendingPathComponent("file.txt")
+    #expect(
+        try !extendedAttributeNames(at: destination)
+            .contains("com.aetherloom.source-provenance")
+    )
+
+    try setTestExtendedAttribute(
+        at: destination,
+        name: "com.aetherloom.destination-local"
+    )
+    let secondStage = root.appendingPathComponent("second-stage")
+    try Data("second".utf8).write(to: secondStage)
+    try setTestExtendedAttribute(
+        at: secondStage,
+        name: "com.aetherloom.source-provenance"
+    )
+    _ = try await provider.store(
+        from: secondStage,
+        at: "/file.txt",
+        options: StoreOptions(overwrite: .ifVersionMatches(first.version))
+    )
+
+    #expect(try Data(contentsOf: destination) == Data("second".utf8))
+    let destinationAttributes = try extendedAttributeNames(at: destination)
+    #expect(!destinationAttributes.contains("com.aetherloom.source-provenance"))
+    #expect(!destinationAttributes.contains("com.aetherloom.destination-local"))
+    #expect(recorder.events == [.copy(.file), .copy(.file), .replace])
+}
+#endif
+
+@Test func ignoredProvenanceDirectoryScansDescendantsAndRemainsStable() async throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "provenance-scan"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let directory = root.appendingPathComponent("Documents", isDirectory: true)
+    let file = directory.appendingPathComponent("note.txt")
+    try FileManager.default.createDirectory(at: directory)
+    try Data("note".utf8).write(to: file)
+
+    let inspector = ScriptedSafetyInspector(volumeRoot: root)
+    let provenance = [LocalItemSafetyClassifier.provenanceName: 0]
+    inspector.overrides[directory.path] = inspector.directory(
+        xattrs: provenance,
+        provenance: .ignored
+    )
+    inspector.overrides[file.path] = inspector.file(
+        xattrs: provenance,
+        provenance: .ignored
+    )
+    let provider = await makeLocalProvider(
+        root: root,
+        safetyInspector: inspector,
+        registry: LocalRootIORegistry()
+    )
+
+    let withProvenance = await provider.scan(.entireDrive)
+    #expect(withProvenance.status == .complete)
+    #expect(withProvenance.exclusions.isEmpty)
+    #expect(Set(withProvenance.observations.map(\.path)) == ["/Documents", "/Documents/note.txt"])
+
+    inspector.overrides[directory.path] = inspector.directory(
+        xattrs: [LocalItemSafetyClassifier.provenanceName: 99],
+        provenance: .ignored
+    )
+    inspector.overrides[file.path] = inspector.file(
+        xattrs: [LocalItemSafetyClassifier.provenanceName: 123],
+        provenance: .ignored
+    )
+    let changedProvenance = await provider.scan(.entireDrive)
+    #expect(changedProvenance.exclusions.isEmpty)
+    #expect(changedProvenance.observations == withProvenance.observations)
+
+    inspector.overrides[directory.path] = inspector.directory()
+    inspector.overrides[file.path] = inspector.file()
+    let withoutProvenance = await provider.scan(.entireDrive)
+    #expect(withoutProvenance.exclusions.isEmpty)
+    #expect(withoutProvenance.observations == withProvenance.observations)
+
+    inspector.overrides[directory.path] = inspector.directory(
+        xattrs: provenance,
+        provenance: .ignored
+    )
+    inspector.overrides[file.path] = inspector.file(
+        xattrs: provenance,
+        provenance: .ignored
+    )
+    let restoredProvenance = await provider.scan(.entireDrive)
+    #expect(restoredProvenance.exclusions.isEmpty)
+    #expect(restoredProvenance.observations == withProvenance.observations)
+
+    inspector.overrides[directory.path] = inspector.directory(
+        xattrs: provenance,
+        provenance: .preserve
+    )
+    let preserveResult = await provider.scan(.entireDrive)
+    #expect(preserveResult.exclusions == [
+        ScanExclusion(
+            path: "/Documents",
+            scope: .subtree,
+            reason: .unsupportedMetadata([.extendedAttributes])
+        ),
+    ])
+    #expect(!preserveResult.observations.map(\.path).contains("/Documents/note.txt"))
+}
+
+@Test func provenanceClassificationFlipStopsBeforeMaterialization() async throws {
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "provenance-mutation-flip"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let inspector = ScriptedSafetyInspector(volumeRoot: root)
+    let materialization = RecordingDataForkCopier(
+        delegate: SystemLocalDataForkCopier()
+    )
+    let provider = await makeLocalProvider(
+        root: root,
+        safetyInspector: inspector,
+        registry: LocalRootIORegistry(),
+        materialization: materialization
+    )
+    let initialStage = root.appendingPathComponent("initial-stage")
+    try Data("initial".utf8).write(to: initialStage)
+    let initial = try await provider.store(
+        from: initialStage,
+        at: "/report.txt",
+        options: StoreOptions(overwrite: .neverOverwrite)
+    )
+    materialization.clear()
+
+    let destination = root.appendingPathComponent("report.txt")
+    let replacementStage = root.appendingPathComponent("replacement-stage")
+    try Data("replacement".utf8).write(to: replacementStage)
+    for result: LocalProvenanceSyncIntentResult in [
+        .preserve,
+        .unavailable,
+        .callFailed,
+        .ambiguous,
+    ] {
+        inspector.overrides[destination.path] = inspector.file(
+            xattrs: [LocalItemSafetyClassifier.provenanceName: 0],
+            provenance: result
+        )
+        #expect(await provider.classify([
+            ProviderClassificationRequest(path: "/report.txt", scope: .item),
+        ]) == .excluded([
+            ScanExclusion(
+                path: "/report.txt",
+                scope: .item,
+                reason: .unsupportedMetadata([.extendedAttributes])
+            ),
+        ]))
+        await #expect(throws: ProviderError.self) {
+            try await provider.store(
+                from: replacementStage,
+                at: "/report.txt",
+                options: StoreOptions(overwrite: .ifVersionMatches(initial.version))
+            )
+        }
+        #expect(materialization.events.isEmpty)
+        #expect(try Data(contentsOf: destination) == Data("initial".utf8))
+    }
+}
+
 @Test func filesystemKindClassificationIsTypedAndFailsClosed() throws {
     let inspector = ScriptedSafetyInspector(volumeRoot: URL(fileURLWithPath: "/"))
     let unsupported: [LocalFilesystemKind] = [
@@ -483,6 +861,15 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     )
 
     let inspector = ScriptedSafetyInspector(volumeRoot: root)
+    let provenance = [LocalItemSafetyClassifier.provenanceName: 0]
+    inspector.overrides[documents.path] = inspector.directory(
+        xattrs: provenance,
+        provenance: .ignored
+    )
+    inspector.overrides[projects.path] = inspector.directory(
+        xattrs: provenance,
+        provenance: .ignored
+    )
     inspector.overrides[privateFile.path] = inspector.file(mode: 0o600)
     inspector.overrides[executable.path] = inspector.file(mode: 0o755)
     inspector.overrides[team.path] = inspector.file(mode: 0o664)
@@ -2144,6 +2531,68 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     }
 }
 
+@Test func provenanceFailClosedAtLastLocationStopsAllLocationPreflight() async throws {
+    let first = LocationID(
+        rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+    )
+    let last = LocationID(
+        rawValue: UUID(uuidString: "f0000000-0000-0000-0000-000000000002")!
+    )
+    let firstProvider = FakeStorageProvider(locationID: first)
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "provenance-all-location-preflight"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let folder = root.appendingPathComponent("Folder", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder)
+    let inspector = ScriptedSafetyInspector(volumeRoot: root)
+    inspector.overrides[folder.path] = inspector.directory(
+        xattrs: [LocalItemSafetyClassifier.provenanceName: 0],
+        provenance: .callFailed
+    )
+    let lastProvider = await makeLocalProvider(
+        root: root,
+        safetyInspector: inspector,
+        registry: LocalRootIORegistry(),
+        locationID: last
+    )
+    let operation = Operation(
+        id: OperationID(UUID()),
+        location: first,
+        kind: .makeFolder(at: "/Folder"),
+        precondition: .pathAbsent
+    )
+    let syncSetID = UUID()
+    let stores = EngineStores.inMemory()
+    let plan = SyncPlan(
+        syncSetID: syncSetID,
+        participatingLocations: [first, last],
+        generatedAt: l2Date,
+        decisions: [],
+        schedule: OperationSchedule(operations: [operation]),
+        gate: .clear,
+        fingerprint: PlanFingerprint(rawValue: "provenance-all-location-preflight")
+    )
+    let stageRoot = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "provenance-all-location-stage"
+    )
+    let executor = ScheduleExecutor(
+        providers: [first: firstProvider, last: lastProvider],
+        stores: stores,
+        stage: ContentStage(rootDirectory: stageRoot, byteLimit: 1_000_000)
+    )
+
+    await #expect(throws: ScheduleExecutionError.self) {
+        try await executor.execute(plan)
+    }
+    #expect(await firstProvider.callLog().map(\.operation) == [.classify])
+    #expect(await firstProvider.item(at: "/Folder") == nil)
+    #expect(try await stores.journal.unfinishedRun(for: syncSetID) == nil)
+}
+
 @Test func makeFolderDescendantDriftAbortsEveryLocationBeforeMutation() async throws {
     let first = LocationID(
         rawValue: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
@@ -2512,12 +2961,59 @@ func classificationAmbiguityOrUnavailabilityHasZeroMutations(
     })
 }
 
+@Test func provenanceFailClosedRecoveryKeepsJournalAndBaseUnresolved() async throws {
+    let location = LocationID(rawValue: UUID())
+    let root = try TestTemporaryDirectory.make(
+        suite: "l2",
+        name: "provenance-recovery"
+    )
+    let lease = TestDirectoryLease(rootURL: root)
+    _ = lease
+    let recovered = root.appendingPathComponent("Recovered", isDirectory: true)
+    try FileManager.default.createDirectory(at: recovered)
+    let inspector = ScriptedSafetyInspector(volumeRoot: root)
+    inspector.overrides[recovered.path] = inspector.directory(
+        xattrs: [LocalItemSafetyClassifier.provenanceName: 0],
+        provenance: .unavailable
+    )
+    let provider = await makeLocalProvider(
+        root: root,
+        safetyInspector: inspector,
+        registry: LocalRootIORegistry(),
+        locationID: location
+    )
+    let operation = Operation(
+        id: OperationID(UUID()),
+        location: location,
+        kind: .makeFolder(at: "/Recovered"),
+        precondition: .pathAbsent
+    )
+    let runID = UUID()
+    let syncSetID = UUID()
+    let stores = EngineStores.inMemory()
+    try await stores.journal.begin(
+        runID: runID,
+        syncSetID: syncSetID,
+        fingerprint: PlanFingerprint(rawValue: "provenance-recovery")
+    )
+    try await stores.journal.append(.intent(operation), runID: runID)
+    let replay = try #require(try await stores.journal.unfinishedRun(for: syncSetID))
+
+    await #expect(throws: RunRecoveryError.self) {
+        try await RunRecovery(providers: [location: provider], stores: stores)
+            .recover(replay)
+    }
+    #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
+    #expect(try await stores.baseRecords.records(for: syncSetID).isEmpty)
+}
+
 private func makeLocalProvider(
     root: URL,
     safetyInspector: any LocalItemSafetyInspecting,
     registry: LocalRootIORegistry,
     locationID: LocationID = .localFolder,
     fetching: any LocalFetchPerforming = SystemLocalFetchPerformer(),
+    materialization: any LocalDataForkCopying = SystemLocalDataForkCopier(),
     hashing: any LocalFileHashing = SystemLocalFileHasher()
 ) async -> LocalFolderStorageProvider {
     var location = SyncLocation(
@@ -2532,6 +3028,7 @@ private func makeLocalProvider(
         rootURL: root,
         volumes: ScriptedVolumeInspector(),
         fetching: fetching,
+        materialization: materialization,
         hashing: hashing,
         safetyInspector: safetyInspector,
         registry: registry
@@ -2604,6 +3101,68 @@ private final class RecordingSpecialFileFetcher: @unchecked Sendable, LocalFetch
     }
 }
 
+private final class RecordingProvenanceClassifier:
+    @unchecked Sendable,
+    LocalProvenanceSyncIntentClassifying
+{
+    private let lock = NSLock()
+    private let result: LocalProvenanceSyncIntentResult
+    private var calls = 0
+
+    init(result: LocalProvenanceSyncIntentResult) {
+        self.result = result
+    }
+
+    var callCount: Int {
+        lock.withLock { calls }
+    }
+
+    func classify() -> LocalProvenanceSyncIntentResult {
+        lock.withLock { calls += 1 }
+        return result
+    }
+}
+
+private final class RecordingDataForkCopier:
+    @unchecked Sendable,
+    LocalDataForkCopying
+{
+    enum Event: Equatable {
+        case copy(LocalDataForkCopyKind)
+        case replace
+    }
+
+    private let lock = NSLock()
+    private let delegate: any LocalDataForkCopying
+    private var recorded: [Event] = []
+
+    init(delegate: any LocalDataForkCopying) {
+        self.delegate = delegate
+    }
+
+    var events: [Event] {
+        lock.withLock { recorded }
+    }
+
+    func clear() {
+        lock.withLock { recorded.removeAll() }
+    }
+
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind: LocalDataForkCopyKind
+    ) throws {
+        lock.withLock { recorded.append(.copy(kind)) }
+        try delegate.copyItem(at: source, to: destination, kind: kind)
+    }
+
+    func replaceItem(at destination: URL, withItemAt source: URL) throws {
+        lock.withLock { recorded.append(.replace) }
+        try delegate.replaceItem(at: destination, withItemAt: source)
+    }
+}
+
 private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafetyInspecting {
     let volumeRootURL: URL
     var overrides: [String: LocalItemSafetyMetadata] = [:]
@@ -2635,7 +3194,8 @@ private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafet
         owner: UInt32 = LocalItemSafetyClassifier.currentEffectiveUserID,
         group: UInt32 = LocalItemSafetyClassifier.currentEffectiveGroupID,
         acl: Bool = false,
-        xattrs: [String: Int] = [:]
+        xattrs: [String: Int] = [:],
+        provenance: LocalProvenanceSyncIntentResult? = nil
     ) -> LocalItemSafetyMetadata {
         LocalItemSafetyMetadata(
             filesystemKind: .regularFile,
@@ -2643,7 +3203,8 @@ private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafet
             ownerID: owner,
             groupID: group,
             hasAccessControlList: acl,
-            extendedAttributeSizes: xattrs
+            extendedAttributeSizes: xattrs,
+            provenanceSyncIntentResult: provenance
         )
     }
 
@@ -2653,7 +3214,8 @@ private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafet
         owner: UInt32 = LocalItemSafetyClassifier.currentEffectiveUserID,
         group: UInt32 = LocalItemSafetyClassifier.currentEffectiveGroupID,
         acl: Bool = false,
-        xattrs: [String: Int] = [:]
+        xattrs: [String: Int] = [:],
+        provenance: LocalProvenanceSyncIntentResult? = nil
     ) -> LocalItemSafetyMetadata {
         LocalItemSafetyMetadata(
             filesystemKind: .directory,
@@ -2662,7 +3224,56 @@ private final class ScriptedSafetyInspector: @unchecked Sendable, LocalItemSafet
             ownerID: owner,
             groupID: group,
             hasAccessControlList: acl,
-            extendedAttributeSizes: xattrs
+            extendedAttributeSizes: xattrs,
+            provenanceSyncIntentResult: provenance
         )
     }
 }
+
+#if canImport(Darwin)
+private func setTestExtendedAttribute(at url: URL, name: String) throws {
+    let bytes = [UInt8]("opaque-test-value".utf8)
+    let result = bytes.withUnsafeBytes { value in
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return -1 }
+            return name.withCString { name in
+                setxattr(path, name, value.baseAddress, value.count, 0, 0)
+            }
+        }
+    }
+    guard result == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+}
+
+private func extendedAttributeNames(at url: URL) throws -> Set<String> {
+    let required = url.withUnsafeFileSystemRepresentation { path in
+        path.map { listxattr($0, nil, 0, XATTR_NOFOLLOW) } ?? -1
+    }
+    guard required >= 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    guard required > 0 else { return [] }
+    var bytes = [CChar](repeating: 0, count: required)
+    let read = bytes.withUnsafeMutableBufferPointer { buffer in
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path, let base = buffer.baseAddress else { return -1 }
+            return listxattr(path, base, buffer.count, XATTR_NOFOLLOW)
+        }
+    }
+    guard read >= 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    var names: Set<String> = []
+    var start = 0
+    for index in 0..<read where bytes[index] == 0 {
+        let rawName = bytes[start..<index].map { UInt8(bitPattern: $0) }
+        guard let name = String(bytes: rawName, encoding: .utf8) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        names.insert(name)
+        start = index + 1
+    }
+    return names
+}
+#endif

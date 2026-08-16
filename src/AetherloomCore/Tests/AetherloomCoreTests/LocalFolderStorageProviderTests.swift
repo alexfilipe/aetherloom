@@ -5402,7 +5402,10 @@ private struct SourceMutatingFetchPerformer: LocalFetchPerforming {
     let replacement: Data
     let modifiedAt: Date
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL
+    ) throws {
         try FileManager.default.copyItem(at: source, to: destination)
         try replacement.write(to: source)
         try FileManager.default.setAttributes(
@@ -5415,7 +5418,10 @@ private struct SourceMutatingFetchPerformer: LocalFetchPerforming {
 private struct CorruptingFetchPerformer: LocalFetchPerforming {
     let replacement: Data
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL
+    ) throws {
         try FileManager.default.copyItem(at: source, to: destination)
         try replacement.write(to: destination)
     }
@@ -5603,7 +5609,11 @@ private final class PartialCopyOnceRelocationPerformer:
     private let lock = NSLock()
     private var shouldFail = true
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind _: LocalDataForkCopyKind
+    ) throws {
         lock.lock()
         let failsThisCall = shouldFail
         shouldFail = false
@@ -5626,7 +5636,11 @@ private final class TrashFailureOnceRelocationPerformer:
     private let lock = NSLock()
     private var shouldFail = true
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind _: LocalDataForkCopyKind
+    ) throws {
         try FileManager.default.copyItem(at: source, to: destination)
     }
 
@@ -5655,7 +5669,11 @@ private final class ScriptedCrossVolumeCopyFailurePerformer:
         self.destination = destination.standardizedFileURL
     }
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind _: LocalDataForkCopyKind
+    ) throws {
         switch mode {
         case .noMutation:
             break
@@ -5705,7 +5723,11 @@ private final class RetargetingBeforeSourceTrashRelocationPerformer:
         self.replacementRoot = replacementRoot
     }
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind _: LocalDataForkCopyKind
+    ) throws {
         try FileManager.default.copyItem(at: source, to: destination)
     }
 

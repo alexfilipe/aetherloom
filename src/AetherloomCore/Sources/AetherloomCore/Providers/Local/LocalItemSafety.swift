@@ -1,7 +1,51 @@
+import AetherloomSystemSupport
 import Foundation
 #if canImport(Darwin)
 import Darwin
 #endif
+
+public enum LocalProvenanceSyncIntentResult: String, Hashable, Sendable {
+    case ignored
+    case preserve
+    case unavailable
+    case callFailed
+    case ambiguous
+}
+
+public protocol LocalProvenanceSyncIntentClassifying: Sendable {
+    func classify() -> LocalProvenanceSyncIntentResult
+}
+
+public struct SystemLocalProvenanceSyncIntentClassifier:
+    LocalProvenanceSyncIntentClassifying
+{
+    public init() {}
+
+    public func classify() -> LocalProvenanceSyncIntentResult {
+        var nativeResult: Int32 = 0
+        let status = LocalItemSafetyClassifier.provenanceName.withCString { name in
+            aetherloom_provenance_sync_intent(name, &nativeResult)
+        }
+        return Self.classification(
+            wrapperStatus: status,
+            nativeResult: nativeResult
+        )
+    }
+
+    static func classification(
+        wrapperStatus: Int32,
+        nativeResult: Int32
+    ) -> LocalProvenanceSyncIntentResult {
+        switch wrapperStatus {
+        case 0:
+            return nativeResult == 0 ? .ignored : .preserve
+        case 1:
+            return .unavailable
+        default:
+            return .callFailed
+        }
+    }
+}
 
 public struct LocalItemSafetyMetadata: Hashable, Sendable {
     public var filesystemKind: LocalFilesystemKind
@@ -11,6 +55,7 @@ public struct LocalItemSafetyMetadata: Hashable, Sendable {
     public var groupID: UInt32
     public var hasAccessControlList: Bool
     public var extendedAttributeSizes: [String: Int]
+    public var provenanceSyncIntentResult: LocalProvenanceSyncIntentResult?
 
     public init(
         filesystemKind: LocalFilesystemKind,
@@ -19,7 +64,8 @@ public struct LocalItemSafetyMetadata: Hashable, Sendable {
         ownerID: UInt32,
         groupID: UInt32,
         hasAccessControlList: Bool = false,
-        extendedAttributeSizes: [String: Int] = [:]
+        extendedAttributeSizes: [String: Int] = [:],
+        provenanceSyncIntentResult: LocalProvenanceSyncIntentResult? = nil
     ) {
         self.filesystemKind = filesystemKind
         self.isPackage = isPackage
@@ -28,6 +74,7 @@ public struct LocalItemSafetyMetadata: Hashable, Sendable {
         self.groupID = groupID
         self.hasAccessControlList = hasAccessControlList
         self.extendedAttributeSizes = extendedAttributeSizes
+        self.provenanceSyncIntentResult = provenanceSyncIntentResult
     }
 
     public var isDirectory: Bool { filesystemKind == .directory }
@@ -117,7 +164,14 @@ public struct LocalPackageAncestryValidator: Sendable {
 }
 
 public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
-    public init() {}
+    private let provenanceClassifier: any LocalProvenanceSyncIntentClassifying
+
+    public init(
+        provenanceClassifier: any LocalProvenanceSyncIntentClassifying =
+            SystemLocalProvenanceSyncIntentClassifier()
+    ) {
+        self.provenanceClassifier = provenanceClassifier
+    }
 
     public func metadata(at url: URL) throws -> LocalItemSafetyMetadata {
         let identity = try posixIdentity(at: url)
@@ -141,6 +195,11 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
         var fresh = url
         fresh.removeAllCachedResourceValues()
         let values = try fresh.resourceValues(forKeys: [.isPackageKey])
+        let extendedAttributeSizes = try extendedAttributeSizes(at: url)
+        let provenanceResult = Self.provenanceResult(
+            forExtendedAttributeNames: Set(extendedAttributeSizes.keys),
+            classifier: provenanceClassifier
+        )
         return LocalItemSafetyMetadata(
             filesystemKind: filesystemKind,
             isPackage: values.isPackage == true,
@@ -148,8 +207,19 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
             ownerID: identity.owner,
             groupID: identity.group,
             hasAccessControlList: try hasExtendedACL(at: url),
-            extendedAttributeSizes: try extendedAttributeSizes(at: url)
+            extendedAttributeSizes: extendedAttributeSizes,
+            provenanceSyncIntentResult: provenanceResult
         )
+    }
+
+    static func provenanceResult(
+        forExtendedAttributeNames names: Set<String>,
+        classifier: any LocalProvenanceSyncIntentClassifying
+    ) -> LocalProvenanceSyncIntentResult? {
+        guard names.contains(LocalItemSafetyClassifier.provenanceName) else {
+            return nil
+        }
+        return classifier.classify()
     }
 
     private func posixIdentity(
@@ -243,6 +313,13 @@ public struct SystemLocalItemSafetyInspector: LocalItemSafetyInspecting {
             guard let value = String(bytes: name, encoding: .utf8) else {
                 throw CocoaError(.fileReadUnknown)
             }
+            // Presence is sufficient for the bounded predicate. Do not read
+            // or retain the opaque provenance payload length.
+            if value == LocalItemSafetyClassifier.provenanceName {
+                result[value] = 0
+                start = index + 1
+                continue
+            }
             let size = url.withUnsafeFileSystemRepresentation { path -> Int in
                 guard let path else { return -1 }
                 return value.withCString { name in
@@ -297,6 +374,7 @@ enum LocalItemSafetyClassificationError: Error, Equatable, Sendable {
 }
 
 enum LocalItemSafetyClassifier {
+    static let provenanceName = "com.apple.provenance"
     static let finderTagsName = "com.apple.metadata:_kMDItemUserTags"
     static let finderInfoName = "com.apple.FinderInfo"
     static let resourceForkName = "com.apple.ResourceFork"
@@ -334,7 +412,11 @@ enum LocalItemSafetyClassifier {
         let nonempty = metadata.extendedAttributeSizes.filter { $0.value > 0 }
         let ignorableWhenEmpty = Set([finderInfoName, resourceForkName])
         let unsupportedAttributes = metadata.extendedAttributeSizes.filter {
-            $0.value > 0 || !ignorableWhenEmpty.contains($0.key)
+            if $0.key == provenanceName,
+               metadata.provenanceSyncIntentResult == .ignored {
+                return false
+            }
+            return $0.value > 0 || !ignorableWhenEmpty.contains($0.key)
         }
         var metadataKinds: Set<MetadataKind> = []
         if !unsupportedAttributes.isEmpty {

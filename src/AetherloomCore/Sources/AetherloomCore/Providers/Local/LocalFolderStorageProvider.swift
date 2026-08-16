@@ -47,6 +47,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
     private let expectedVolumeIdentity: String?
     private let deadlines: ProviderDeadlines
     private let fetching: any LocalFetchPerforming
+    private let materialization: any LocalDataForkCopying
     private let nativeTrash: any LocalNativeTrashPerforming
     private let relocation: any LocalRelocationPerforming
     private let quarantine: any LocalQuarantinePerforming
@@ -97,6 +98,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             deadlines: deadlines,
             capabilities: capabilities,
             fetching: SystemLocalFetchPerformer(),
+            materialization: SystemLocalDataForkCopier(),
             nativeTrash: SystemLocalNativeTrashPerformer(),
             relocation: SystemLocalRelocationPerformer(),
             quarantine: SystemLocalQuarantinePerformer(),
@@ -114,6 +116,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         volumes: any VolumeInspecting,
         deadlines: ProviderDeadlines = ProviderDeadlines(),
         fetching: any LocalFetchPerforming = SystemLocalFetchPerformer(),
+        materialization: any LocalDataForkCopying = SystemLocalDataForkCopier(),
         nativeTrash: any LocalNativeTrashPerforming = SystemLocalNativeTrashPerformer(),
         relocation: any LocalRelocationPerforming = SystemLocalRelocationPerformer(),
         quarantine: any LocalQuarantinePerforming = SystemLocalQuarantinePerformer(),
@@ -153,6 +156,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 isCaseSensitive: isNAS ? nil : properties?.isCaseSensitive
             ),
             fetching: fetching,
+            materialization: materialization,
             nativeTrash: nativeTrash,
             relocation: relocation,
             quarantine: quarantine,
@@ -215,6 +219,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         deadlines: ProviderDeadlines,
         capabilities: ProviderCapabilities,
         fetching: any LocalFetchPerforming,
+        materialization: any LocalDataForkCopying,
         nativeTrash: any LocalNativeTrashPerforming,
         relocation: any LocalRelocationPerforming,
         quarantine: any LocalQuarantinePerforming,
@@ -231,6 +236,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         self.expectedVolumeIdentity = expectedVolumeIdentity
         self.deadlines = deadlines
         self.fetching = fetching
+        self.materialization = materialization
         self.nativeTrash = nativeTrash
         self.relocation = relocation
         self.quarantine = quarantine
@@ -780,6 +786,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
             expectedVolumeIdentity: expectedVolumeIdentity,
             deadlines: deadlines,
             fetching: fetching,
+            materialization: materialization,
             nativeTrash: nativeTrash,
             relocation: relocation,
             quarantine: quarantine,
@@ -1847,6 +1854,7 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         let expectedVolumeIdentity: String?
         let deadlines: ProviderDeadlines
         let fetching: any LocalFetchPerforming
+        let materialization: any LocalDataForkCopying
         let nativeTrash: any LocalNativeTrashPerforming
         let relocation: any LocalRelocationPerforming
         let quarantine: any LocalQuarantinePerforming
@@ -2000,7 +2008,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     try? FileManager.default.removeItem(at: temporary)
                 }
                 try await requireCurrentRootIdentity()
-                try FileManager.default.copyItem(at: stagingURL, to: temporary)
+                try materialization.copyItem(
+                    at: stagingURL,
+                    to: temporary,
+                    kind: .file
+                )
                 try establishBaseline(at: temporary, isDirectory: false)
                 try await requireAvailable()
                 let committedURL: URL
@@ -2022,11 +2034,9 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     try requireSafeForMutation(paths: [path])
                     try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
-                    _ = try FileManager.default.replaceItemAt(
-                        existing.url,
-                        withItemAt: temporary,
-                        backupItemName: nil,
-                        options: [.usingNewMetadataOnly]
+                    try materialization.replaceItem(
+                        at: existing.url,
+                        withItemAt: temporary
                     )
                     committedURL = existing.url
                     committedPath = existing.observation.path
@@ -2214,7 +2224,15 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                     try await requireCurrentRootIdentity()
                     physicalCommitMayHaveApplied = true
                     do {
-                        try relocation.copyItem(at: source, to: destination)
+                        try relocation.copyItem(
+                            at: source,
+                            to: destination,
+                            kind: current.kind == .folder ? .directoryTree : .file
+                        )
+                        try establishBaselineRecursively(
+                            at: destination,
+                            isDirectory: current.kind == .folder
+                        )
                     } catch {
                         try await restoreUnappliedCrossVolumeRelocation(
                             source: current,
@@ -2833,6 +2851,11 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
         }
 
         private func establishBaseline(at url: URL, isDirectory: Bool) throws {
+            let initialMetadata = try safetyInspector.metadata(at: url)
+            guard (initialMetadata.isRegularFile || initialMetadata.isDirectory),
+                  initialMetadata.isDirectory == isDirectory else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
             let required: UInt16 = isDirectory ? 0o755 : 0o644
 #if canImport(Darwin)
             let modeResult = url.withUnsafeFileSystemRepresentation { path in
@@ -2864,6 +2887,36 @@ public actor LocalFolderStorageProvider: IndeterminateMutationRecovering {
                 for: .root,
                 metadata: metadata
             ) == nil else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
+        }
+
+        private func establishBaselineRecursively(
+            at root: URL,
+            isDirectory: Bool
+        ) throws {
+            try establishBaseline(at: root, isDirectory: isDirectory)
+            guard isDirectory else { return }
+            var enumerationError: Error?
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [],
+                errorHandler: { _, error in
+                    enumerationError = error
+                    return false
+                }
+            ) else {
+                throw ProviderError.itemUnavailable(provider: locationID, path: .root)
+            }
+            while let item = enumerator.nextObject() as? URL {
+                let values = try item.resourceValues(forKeys: [.isDirectoryKey])
+                try establishBaseline(
+                    at: item,
+                    isDirectory: values.isDirectory == true
+                )
+            }
+            if enumerationError != nil {
                 throw ProviderError.itemUnavailable(provider: locationID, path: .root)
             }
         }
@@ -3357,8 +3410,14 @@ struct SystemLocalFileHasher: LocalFileHashing {
 }
 
 struct SystemLocalFetchPerformer: LocalFetchPerforming {
+    private let copier: any LocalDataForkCopying
+
+    init(copier: any LocalDataForkCopying = SystemLocalDataForkCopier()) {
+        self.copier = copier
+    }
+
     func copyItem(at source: URL, to destination: URL) throws {
-        try FileManager.default.copyItem(at: source, to: destination)
+        try copier.copyItem(at: source, to: destination, kind: .file)
     }
 }
 
@@ -3437,7 +3496,11 @@ private enum SystemLocalRecoveryArtifactInspector {
 }
 
 protocol LocalRelocationPerforming: Sendable {
-    func copyItem(at source: URL, to destination: URL) throws
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind: LocalDataForkCopyKind
+    ) throws
     func beforeSourceTrash(at source: URL) throws
     func moveItemToRecovery(at source: URL, to destination: URL) throws
     func artifactState(at url: URL) -> LocalRecoveryArtifactState
@@ -3454,8 +3517,18 @@ extension LocalRelocationPerforming {
 }
 
 struct SystemLocalRelocationPerformer: LocalRelocationPerforming {
-    func copyItem(at source: URL, to destination: URL) throws {
-        try FileManager.default.copyItem(at: source, to: destination)
+    private let copier: any LocalDataForkCopying
+
+    init(copier: any LocalDataForkCopying = SystemLocalDataForkCopier()) {
+        self.copier = copier
+    }
+
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind: LocalDataForkCopyKind
+    ) throws {
+        try copier.copyItem(at: source, to: destination, kind: kind)
     }
 
     func beforeSourceTrash(at _: URL) throws {}
