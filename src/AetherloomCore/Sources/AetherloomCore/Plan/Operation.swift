@@ -186,6 +186,7 @@ public struct OperationSchedule: Codable, Hashable, Sendable {
 
     public func validate(decisions: [ItemDecision] = []) throws {
         try validateUniqueIDs()
+        try validateUniqueDecisionIDs(decisions)
         try validateDecisionOwnership(decisions: decisions)
         try validateDependenciesPrecedeOperations()
         try validateParentsBeforeChildren()
@@ -193,6 +194,17 @@ public struct OperationSchedule: Codable, Hashable, Sendable {
         try validateDescendantsBeforeDirectoryTrash()
         try validatePerItemChains(decisions: decisions)
         try validateCaseFoldedTargetCollisions()
+    }
+
+    private func validateUniqueDecisionIDs(_ decisions: [ItemDecision]) throws {
+        var seen: Set<UUID> = []
+        for decision in decisions {
+            guard seen.insert(decision.id).inserted else {
+                throw OperationScheduleValidationError.duplicateDecisionID(
+                    decision.id
+                )
+            }
+        }
     }
 
     private func validateDecisionOwnership(decisions: [ItemDecision]) throws {
@@ -427,6 +439,7 @@ extension ProviderClassificationRequest {
 
 public enum OperationScheduleValidationError: Error, Equatable, Sendable {
     case duplicateOperationID(OperationID)
+    case duplicateDecisionID(UUID)
     case unknownDependency(operation: OperationID, dependency: OperationID)
     case dependencyAfterOperation(operation: OperationID, dependency: OperationID)
     case parentAfterChild(parent: SyncPath, child: SyncPath, location: LocationID)

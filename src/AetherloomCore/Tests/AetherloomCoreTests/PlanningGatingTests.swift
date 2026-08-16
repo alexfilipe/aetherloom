@@ -421,6 +421,34 @@ import Testing
     }
 }
 
+@Test func scheduleValidatorRejectsDuplicateDecisionIDs() throws {
+    let duplicateID = testUUID("000000000010")
+    let decisions = [
+        ItemDecision(
+            id: duplicateID,
+            path: "/One.txt",
+            verdict: .inSync,
+            operations: [],
+            explanation: "In sync."
+        ),
+        ItemDecision(
+            id: duplicateID,
+            path: "/Two.txt",
+            verdict: .inSync,
+            operations: [],
+            explanation: "In sync."
+        ),
+    ]
+
+    #expect(
+        throws: OperationScheduleValidationError.duplicateDecisionID(
+            duplicateID
+        )
+    ) {
+        try OperationSchedule().validate(decisions: decisions)
+    }
+}
+
 @Test func scheduleValidatorRejectsDirectoryTrashBeforeDescendant() throws {
     let parentID = testOperationID("000000000011")
     let childID = testOperationID("000000000012")

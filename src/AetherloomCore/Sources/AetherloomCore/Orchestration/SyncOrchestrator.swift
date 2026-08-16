@@ -59,7 +59,7 @@ public actor SyncOrchestrator {
     private let adviceValidator = AdviceValidator()
     private let renderer = ChangePreviewRenderer()
     private var activeSyncSets: Set<UUID> = []
-    private var currentPreparationRunIDs: [UUID: UUID] = [:]
+    private var currentPreparations: [UUID: SyncPreparation] = [:]
 
     public init(
         locations: LocationDirectory,
@@ -84,8 +84,8 @@ public actor SyncOrchestrator {
         defer { finishRun(syncSet.id) }
 
         // Starting a new preparation invalidates every older preparation for
-        // this sync set without retaining an unbounded history of run IDs.
-        currentPreparationRunIDs.removeValue(forKey: syncSet.id)
+        // this sync set while retaining only one exact authority value.
+        currentPreparations.removeValue(forKey: syncSet.id)
         let runID = environment.makeID()
         await appendActivity(
             syncSetID: syncSet.id,
@@ -158,7 +158,12 @@ public actor SyncOrchestrator {
 
     public func execute(_ preparation: SyncPreparation, approval: PlanApproval? = nil) async throws -> SyncRunSummary {
         let syncSetID = preparation.outcome.syncSetID
-        guard currentPreparationRunIDs[syncSetID] == preparation.runID else {
+        // Public preparation values are descriptive, not bearer authority.
+        // Authenticate the complete value against actor-retained prepared truth
+        // before gate admission, provider classification, executor construction,
+        // WAL creation, or approval consumption. This still accepts an exactly
+        // value-identical copy while rejecting caller mutation/reconstruction.
+        guard currentPreparations[syncSetID] == preparation else {
             throw SyncOrchestratorError.freshPreparationRequired(
                 preparation.runID
             )
@@ -213,8 +218,8 @@ public actor SyncOrchestrator {
                 )
             } catch let error as ScheduleExecutionError
                 where error.requiresFreshPreparation {
-                if currentPreparationRunIDs[syncSetID] == preparation.runID {
-                    currentPreparationRunIDs.removeValue(forKey: syncSetID)
+                if currentPreparations[syncSetID] == preparation {
+                    currentPreparations.removeValue(forKey: syncSetID)
                 }
                 throw error
             }
@@ -294,7 +299,7 @@ public actor SyncOrchestrator {
             runID: runID,
             syncSetName: syncSet.name
         )
-        currentPreparationRunIDs[syncSet.id] = runID
+        currentPreparations[syncSet.id] = preparation
         return preparation
     }
 

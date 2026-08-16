@@ -909,6 +909,45 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
 
     await leftProvider.clearCallLog()
     await rightProvider.clearCallLog()
+    let injectedOperationID = OperationID(UUID())
+    var injectedPlan = deletionPlan
+    injectedPlan.schedule.operations.append(
+        Operation(
+            id: injectedOperationID,
+            location: right,
+            kind: .makeFolder(at: "/Independent"),
+            precondition: .pathAbsent
+        )
+    )
+    injectedPlan.decisions.append(
+        ItemDecision(
+            id: UUID(),
+            path: "/Independent",
+            verdict: .propagateCreation(from: left, to: Set([right])),
+            operations: [injectedOperationID],
+            explanation: "Caller-injected operation."
+        )
+    )
+    #expect(injectedPlan.fingerprint == deletionPlan.fingerprint)
+    guard case .safeSubset = injectedPlan.executionAdmission else {
+        Issue.record("Expected the forged plan to pass pure safe-subset proof")
+        return
+    }
+    var injectedPreparation = preparation
+    injectedPreparation.outcome = .plan(injectedPlan)
+    await #expect(
+        throws: SyncOrchestratorError.freshPreparationRequired(
+            preparation.runID
+        )
+    ) {
+        try await orchestrator.execute(injectedPreparation)
+    }
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+    #expect(await rightProvider.item(at: "/Independent") == nil)
+    #expect(try await stores.baseRecords.records(for: syncSet.id) == records)
+    #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
+
     let approval = PlanApproval(
         planFingerprint: deletionPlan.fingerprint,
         approvedAt: l2Date,
@@ -967,6 +1006,9 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
         id: UUID(),
         name: "Independent opaque work",
         locations: [left, right],
+        settings: SyncSettings(
+            thresholds: SafetyThresholds(massEditAbsolute: 1)
+        ),
         createdAt: l2Date,
         updatedAt: l2Date
     )
@@ -1069,8 +1111,107 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     }
     #expect(proof.heldDecisionIDs.count == 1)
     #expect(proof.scheduledOperationIDs.count == 3)
+    #expect(plan.nonOpaqueHoldReasons.contains { reason in
+        if case .massEdit = reason { return true }
+        return false
+    })
 
-    let summary = try await orchestrator.execute(preparation)
+    let approval = PlanApproval(
+        planFingerprint: plan.fingerprint,
+        approvedAt: l2Date,
+        acknowledgedTrashCount: plan.approvalTrashCount,
+        acknowledgedConflictCount: plan.approvalConflictCount
+    )
+    await leftProvider.clearCallLog()
+    await rightProvider.clearCallLog()
+
+    var changedSchedule = plan
+    changedSchedule.schedule.operations[0].precondition = .folderPresent
+    var changedOwnership = plan
+    let heldIndex = try #require(
+        changedOwnership.decisions.firstIndex { $0.path == deletedPath }
+    )
+    changedOwnership.decisions[heldIndex].operations = [
+        plan.schedule.operations[0].id
+    ]
+    var changedMembership = plan
+    changedMembership.participatingLocations.removeLast()
+    let opaqueEvidence = try #require(
+        plan.gate.holdReasons.compactMap { reason -> OpaqueRelocationEvidence? in
+            if case let .opaqueRelocation(evidence) = reason { return evidence }
+            return nil
+        }.first
+    )
+    let changedGate = plan.addingHolds([
+        .opaqueRelocation(
+            OpaqueRelocationEvidence(
+                trackedPath: "/Caller/Changed.txt",
+                exclusions: opaqueEvidence.exclusions
+            )
+        ),
+    ])
+
+    for changedPlan in [
+        changedSchedule,
+        changedOwnership,
+        changedMembership,
+        changedGate,
+    ] {
+        var changedPreparation = preparation
+        changedPreparation.outcome = .plan(changedPlan)
+        #expect(changedPlan.fingerprint == plan.fingerprint)
+        await #expect(
+            throws: SyncOrchestratorError.freshPreparationRequired(
+                preparation.runID
+            )
+        ) {
+            try await orchestrator.execute(
+                changedPreparation,
+                approval: approval
+            )
+        }
+    }
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+    #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
+
+    var changedPreview = preparation
+    changedPreview.preview.headline = "Caller-mutated preview"
+    await #expect(
+        throws: SyncOrchestratorError.freshPreparationRequired(
+            preparation.runID
+        )
+    ) {
+        try await orchestrator.execute(changedPreview, approval: approval)
+    }
+
+    var changedFingerprintPlan = plan
+    changedFingerprintPlan.fingerprint = PlanFingerprint(
+        rawValue: "caller-mutated-fingerprint"
+    )
+    var changedFingerprint = preparation
+    changedFingerprint.outcome = .plan(changedFingerprintPlan)
+    await #expect(
+        throws: SyncOrchestratorError.freshPreparationRequired(
+            preparation.runID
+        )
+    ) {
+        try await orchestrator.execute(
+            changedFingerprint,
+            approval: approval
+        )
+    }
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+    #expect(try await stores.journal.unfinishedRun(for: syncSet.id) == nil)
+
+    // A value-identical copy remains executable; authority is retained truth,
+    // not object identity.
+    let identicalCopy = preparation
+    let summary = try await orchestrator.execute(
+        identicalCopy,
+        approval: approval
+    )
     #expect(summary.outcome == .completedWithExclusions)
     #expect(summary.appliedOperations.count == 3)
     #expect(summary.failedOperations.isEmpty)
@@ -1218,6 +1359,10 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
     var duplicateHeldPath = valid
     duplicateHeldPath.decisions[1].path = "/documents/DELETED.txt"
     #expect(duplicateHeldPath.executionAdmission == .blocked)
+
+    var duplicateDecisionID = valid
+    duplicateDecisionID.decisions[1].id = heldID
+    #expect(duplicateDecisionID.executionAdmission == .blocked)
 
     var trackedOverlap = valid
     trackedOverlap.schedule.operations[0].kind = .makeFolder(
@@ -1411,6 +1556,20 @@ func realisticDocumentsProjectsVolumeHasBoundedExactRootEvidence() async throws 
         ),
         environment: ExecutionEnvironment(now: { l2Date })
     )
+    var duplicateDecisionPlan = plan
+    let duplicateDecisionID = duplicateDecisionPlan.decisions[0].id
+    duplicateDecisionPlan.decisions[1].id = duplicateDecisionID
+    #expect(duplicateDecisionPlan.executionAdmission == .blocked)
+    await #expect(throws: ScheduleExecutionError.planNeedsReview) {
+        try await executor.execute(
+            duplicateDecisionPlan,
+            approval: approval
+        )
+    }
+    #expect(await leftProvider.callLog().isEmpty)
+    #expect(await rightProvider.callLog().isEmpty)
+    #expect(try await stores.journal.unfinishedRun(for: plan.syncSetID) == nil)
+
     await #expect(throws: ScheduleExecutionError.planNeedsReview) {
         try await executor.execute(plan)
     }
