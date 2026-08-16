@@ -430,6 +430,7 @@ struct SyncSetDetailView: View {
         if let run = state.lastRun, run.runID == group.runID {
             switch run.outcome {
             case .completed: return "Completed"
+            case .completedWithExclusions: return "Some items are waiting"
             case .held: return "Needs review"
             case .refused: return "Paused for safety"
             case .stoppedForReplan: return "Stopped to replan"

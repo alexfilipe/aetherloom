@@ -268,7 +268,9 @@ struct RunResultToast: View {
 
         init(summary: SyncRunSummary) {
             runID = summary.runID
-            if case .mutationIndeterminate = summary.outcome {
+            if case .completedWithExclusions = summary.outcome {
+                detail = "\(summary.appliedOperations.count) applied · \(summary.skippedOperations.count) skipped. Excluded items were not changed and remain waiting."
+            } else if case .mutationIndeterminate = summary.outcome {
                 detail = "A filesystem operation is finishing safely — Aetherloom will reconcile it before the next preview"
             } else if !summary.failedOperations.isEmpty || summary.outcome.isFailure {
                 detail = "\(summary.appliedOperations.count) applied, \(summary.failedOperations.count) failed — see Activity"
@@ -279,6 +281,9 @@ struct RunResultToast: View {
             case .completed:
                 title = "Sync complete"
                 tone = summary.failedOperations.isEmpty ? .healthy : .attention
+            case .completedWithExclusions:
+                title = "Some items are waiting"
+                tone = .attention
             case .held:
                 title = "Needs review"
                 tone = .attention

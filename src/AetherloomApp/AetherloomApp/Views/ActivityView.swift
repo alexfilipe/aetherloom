@@ -271,6 +271,8 @@ struct ActivityView: View {
         switch digest.outcome {
         case .completed:
             return ActivityOutcomeBadge(text: "Completed", tone: .healthy)
+        case .completedWithExclusions:
+            return ActivityOutcomeBadge(text: "Some items are waiting", tone: .attention)
         case .held:
             return ActivityOutcomeBadge(text: "Held", tone: .paused)
         case .refused:
