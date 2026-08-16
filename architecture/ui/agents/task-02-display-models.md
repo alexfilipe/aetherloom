@@ -1,5 +1,7 @@
 # UI Task 02 — Display Models
 
+> **Historical work order — do not dispatch:** the L4 Local Workspace protocol migration supersedes its `ApprovalRequirement`/`makeApproval` seam with `ConfirmationRequirement`/`makeConfirmation`. The detail below records the pre-L4 implementation only.
+
 ## Role
 Senior Swift engineer. You give the bridge its presentation vocabulary: pure, tested mappings from engine values to display values. Still no UI code.
 

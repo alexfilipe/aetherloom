@@ -14,7 +14,7 @@ Settings moves out of the sidebar into the standard macOS `Settings` scene (`⌘
 
 ### Safety ✅ (defaults) / per-set overrides live in the sync set detail [06 §2]
 
-- **Default thresholds for new sync sets**: mass-delete count/ratio, mass-edit count/ratio — real `SafetyThresholds`, stored as the bridge's `SyncSetDraft` defaults. Editor copy explains each: "Pause and ask when more than N files would be deleted at once."
+- **Default thresholds for new sync sets**: mass-delete count/ratio, mass-edit count/ratio — real normalized `SafetyThresholds`, stored as the bridge's `SyncSetDraft` defaults. Controls are limited to delete `1...25` / `1...25%` and edit `1...50` / `1...50%`; defaults are those maxima, and users may only make them stricter. Editor copy explains each: "Pause and ask when N files would change at once. Larger intentional deletions use a separate review."
 - **Non-negotiables section** — rendered as informational rows with lock glyphs, not toggles: "Deletes always go to each provider's trash" · "Conflicting versions are always preserved" · "An unreachable provider never causes deletions". These are engine invariants; presenting them as un-toggleable settings is deliberate trust UI. ✅ (statements are true of the real engine)
 
 ### Suggestions (AI) ✅
@@ -61,5 +61,5 @@ No fake success state exists: the sheet cannot end in "Connected". Honesty rule 
 
 - Settings opens via `⌘,` and the sidebar item; every pane renders in both appearances.
 - Advice toggle off → conflict cards and preview rows show no `AdviceChip`s; back on → they return after the next prepare. ✅
-- Editing default thresholds affects the next *created* sync set's plan gating (bridge test), and existing sets are untouched.
+- Editing default thresholds within the safe ranges affects the next *created* sync set's plan gating (bridge test), and existing sets are untouched. Construction, preference decoding, and updates all normalize out-of-range values to the same hard limits; no persisted preference can exceed the default maxima.
 - Every 🎭 control is disabled or ends in labeled inert states; nothing mutates engine state from a placeholder path (assert via fake call logs).

@@ -20,4 +20,4 @@ Messages render verbatim; advisory entries always visibly attributed; category/s
 Only `ActivityView.swift` + minimal `AppModel` glue; no bespoke category→color logic in the view (display map only); no engine-source edits.
 
 ## Acceptance
-`ui/09 §5` in full — bootstrap history visible with working conflict deep link and attributed advisory entry; an approved Documents run renders as one complete group reachable from its toast; interrupted-run recovery entry appears under Safety; filters round-trip through `ActivityQuery`. Suite + build green. Report per `agents/README.md`.
+`ui/09 §5` in full — bootstrap history visible with working conflict deep link and attributed advisory entry; a confirmed Documents run renders as one complete group reachable from its toast; interrupted-run recovery entry appears under Safety; filters round-trip through `ActivityQuery`. Suite + build green. Report per `agents/README.md`.

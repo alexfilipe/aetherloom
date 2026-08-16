@@ -1,5 +1,7 @@
 # Task 01 — Provider Conformance Suite (Milestone M1)
 
+> **Historical work order:** this milestone is implemented. Do not dispatch this prompt. Current work starts from [the Local Workspace MVP map](local-workspace-mvp.md).
+
 ## Role
 Senior Swift engineer on `AetherloomCore`. You extract the provider contract from the existing fake-only tests into one parameterized suite that any `StorageProvider` must pass, and prove the harness by running the fakes through it. **No new provider is implemented in this task.**
 

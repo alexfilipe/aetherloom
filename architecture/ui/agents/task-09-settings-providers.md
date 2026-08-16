@@ -11,7 +11,7 @@ No placeholder path may call an `EngineSession` mutation or end in a success sta
 
 ## Deliverables
 1. Panes per `ui/10 §1`: General (launch-at-login 🎭, menu-bar toggle ✅ via `@AppStorage`), Safety (default `SafetyThresholds` editor ✅ backed by `BridgePreferences`; non-negotiables section with lock glyphs), Suggestions (advice toggle ✅ — session rebuilds orchestrator config; backend rows: Heuristic ✅ label, Apple Intelligence 🎭 disabled), Providers (rows per `ProviderKind` with exact statuses from the spec table), Demo (demo-session-only ✅, top banner).
-2. `BridgePreferences` actor in `AetherloomBridge` (UserDefaults-backed, JSON-encoded core types) + tests: threshold defaults round-trip; new-set drafts consume them; existing sets untouched. (This is the one sanctioned bridge addition in an app task.)
+2. `BridgePreferences` actor in `AetherloomBridge` (UserDefaults-backed, JSON-encoded core types) + tests: threshold defaults round-trip; construction/decoding clamps delete to `1...25`/`0.01...0.25` and edit to `1...50`/`0.01...0.50`; new-set drafts consume only normalized values; existing sets remain untouched. (This is the one sanctioned bridge addition in an app task.)
 3. Connect-provider sheet per `ui/10 §3`: step rail, honesty copy, `PlaceholderChip`, Cancel/Learn More — cannot end "Connected".
 4. Sidebar Settings item opens the scene; old in-window `SettingsView` destination removed.
 5. `#Preview`s per pane + connect sheet (two providers).
