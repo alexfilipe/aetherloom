@@ -72,6 +72,11 @@ public struct SyncPlanner: Sendable {
                 locationIDs: locationIDs
             )
         )
+        let locatedExclusions = input.snapshots.flatMap { snapshot in
+            snapshot.exclusions.map {
+                LocatedScanExclusion(location: snapshot.location, exclusion: $0)
+            }
+        }.sorted()
         let builder = PlanLowerer(
             syncSet: syncSet,
             settings: input.settings,
@@ -79,13 +84,15 @@ public struct SyncPlanner: Sendable {
             locationsByID: locationsByID,
             environment: environment
         )
-        let lowered = builder.lower(reconciled)
+        let lowered = builder.lower(reconciled, exclusions: locatedExclusions)
         let trackedCount = max(input.records.filter { !input.settings.isExcluded(path: $0.path, kind: $0.kind) }.count, 1)
         let gate = ExecutionGate.evaluate(
             decisions: lowered.decisions,
             trackedCount: trackedCount,
             settings: input.settings,
             mode: syncSet.mode
+        ).addingHolds(
+            lowered.opaqueRelocationEvidence.map(HoldReason.opaqueRelocation)
         )
         let fingerprint = PlanFingerprint.compute(
             syncSetID: syncSet.id,
@@ -98,11 +105,13 @@ public struct SyncPlanner: Sendable {
         return .plan(
             SyncPlan(
                 syncSetID: syncSet.id,
+                participatingLocations: locationIDs,
                 generatedAt: environment.now,
                 decisions: lowered.decisions,
                 schedule: lowered.schedule,
                 conflicts: lowered.conflicts,
                 waiting: lowered.waiting,
+                exclusions: lowered.exclusions,
                 gate: gate,
                 fingerprint: fingerprint
             )
@@ -175,6 +184,8 @@ private struct LoweredPlan {
     var schedule: OperationSchedule
     var conflicts: [ConflictDecision]
     var waiting: [WaitingItem]
+    var exclusions: [LocatedScanExclusion]
+    var opaqueRelocationEvidence: [OpaqueRelocationEvidence]
 }
 
 private struct PlanLowerer {
@@ -200,20 +211,25 @@ private struct PlanLowerer {
         self.resolver = ConflictResolver(environment: environment)
     }
 
-    func lower(_ reconciled: [ReconciledItem]) -> LoweredPlan {
-        if reconciled.allSatisfy(\.verdict.isInSync) {
+    func lower(
+        _ reconciled: [ReconciledItem],
+        exclusions: [LocatedScanExclusion]
+    ) -> LoweredPlan {
+        if reconciled.allSatisfy(\.verdict.needsNoDecisionRow) {
             return LoweredPlan(
                 decisions: [],
                 schedule: OperationSchedule(),
                 conflicts: [],
-                waiting: []
+                waiting: exclusionWaitingItems(exclusions),
+                exclusions: exclusions,
+                opaqueRelocationEvidence: []
             )
         }
 
         var state = LoweringState(existingPathsByLocation: existingPaths(from: reconciled))
 
         for (index, reconciledItem) in reconciled.sorted(by: reconciledSort).enumerated() {
-            guard !reconciledItem.verdict.isInSync else { continue }
+            guard !reconciledItem.verdict.needsNoDecisionRow else { continue }
             let decisionID = decisionID(for: reconciledItem, index: index)
             let startOperationCount = state.operations.count
             lower(
@@ -253,7 +269,9 @@ private struct PlanLowerer {
             decisions: state.decisions,
             schedule: schedule,
             conflicts: state.conflicts,
-            waiting: state.waiting
+            waiting: state.waiting + exclusionWaitingItems(exclusions),
+            exclusions: exclusions,
+            opaqueRelocationEvidence: state.opaqueRelocationEvidence
         )
     }
 
@@ -345,12 +363,30 @@ private struct PlanLowerer {
         case let .waiting(reason, locations):
             state.waiting.append(
                 WaitingItem(
-                    id: DeterministicID.uuid("waiting", item.primaryPath.rawValue, locations.map { $0.rawValue.uuidString }.joined()),
+                    id: DeterministicID.uuid(
+                        "waiting",
+                        item.primaryPath.rawValue,
+                        locations.sorted().map { $0.rawValue.uuidString }.joined()
+                    ),
                     path: item.primaryPath,
                     reason: reason,
                     locations: locations.sorted()
                 )
             )
+            if !item.blockingExclusions.isEmpty {
+                state.opaqueRelocationEvidence.append(
+                    OpaqueRelocationEvidence(
+                        trackedPath: item.primaryPath,
+                        exclusions: item.blockingExclusions
+                    )
+                )
+            }
+
+        case .excluded:
+            // Exact root evidence is carried once in SyncPlan.exclusions.
+            // Covered tracked descendants already derived the exclusion
+            // verdict, but do not become synthetic preview/activity rows.
+            return
 
         case let .compound(verdicts):
             for child in verdicts {
@@ -434,8 +470,7 @@ private struct PlanLowerer {
             "decision",
             syncSet.id.uuidString,
             String(index),
-            reconciledItem.item.primaryPath.rawValue,
-            String(describing: reconciledItem.verdict)
+            reconciledItem.item.primaryPath.rawValue
         )
     }
 
@@ -480,7 +515,17 @@ private struct PlanLowerer {
             return "Deleted from \(locationName(initiatedBy)) since last sync."
         case let .conflict(conflict):
             return conflict.message
-        case .waiting:
+        case let .waiting(reason, _):
+            switch reason {
+            case .contentNotMaterialized:
+                return "Waiting for this item to download."
+            case .unsupportedItem:
+                let evidence = item.blockingExclusions.map { located in
+                    "\(located.exclusion.path.rawValue) at \(locationName(located.location)) (\(located.exclusion.reason.message))"
+                }.joined(separator: "; ")
+                return "Deletion needs review because excluded subtree evidence could contain this item: \(evidence)"
+            }
+        case .excluded:
             return "Provider unavailable"
         case let .compound(verdicts):
             return verdicts.map { explanation(for: $0, item: item) }.joined(separator: " ")
@@ -489,6 +534,24 @@ private struct PlanLowerer {
 
     private func locationName(_ id: LocationID) -> String {
         environment.locationNames[id] ?? locationsByID[id]?.displayName ?? id.displayName
+    }
+
+    private func exclusionWaitingItems(
+        _ exclusions: [LocatedScanExclusion]
+    ) -> [WaitingItem] {
+        let allLocations = locationIDs.sorted()
+        return exclusions.sorted().map { located in
+            WaitingItem(
+                id: DeterministicID.uuid(
+                    "scan-exclusion",
+                    located.location.rawValue.uuidString,
+                    located.exclusion.stableKey
+                ),
+                path: located.exclusion.path,
+                reason: .unsupportedItem,
+                locations: allLocations
+            )
+        }
     }
 
     private func matchingContent(_ lhs: ItemObservation, _ rhs: ItemObservation) -> Bool {
@@ -515,14 +578,17 @@ private struct LoweringState {
     var operationDecisionIDs: [OperationID: UUID] = [:]
     var conflicts: [ConflictDecision] = []
     var waiting: [WaitingItem] = []
+    var opaqueRelocationEvidence: [OpaqueRelocationEvidence] = []
     var existingPathsByLocation: [LocationID: Set<SyncPath>]
 }
 
 private extension ItemVerdict {
-    var isInSync: Bool {
-        if case .inSync = self {
+    var needsNoDecisionRow: Bool {
+        switch self {
+        case .inSync, .excluded:
             return true
+        default:
+            return false
         }
-        return false
     }
 }

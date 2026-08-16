@@ -421,6 +421,34 @@ import Testing
     }
 }
 
+@Test func scheduleValidatorRejectsDuplicateDecisionIDs() throws {
+    let duplicateID = testUUID("000000000010")
+    let decisions = [
+        ItemDecision(
+            id: duplicateID,
+            path: "/One.txt",
+            verdict: .inSync,
+            operations: [],
+            explanation: "In sync."
+        ),
+        ItemDecision(
+            id: duplicateID,
+            path: "/Two.txt",
+            verdict: .inSync,
+            operations: [],
+            explanation: "In sync."
+        ),
+    ]
+
+    #expect(
+        throws: OperationScheduleValidationError.duplicateDecisionID(
+            duplicateID
+        )
+    ) {
+        try OperationSchedule().validate(decisions: decisions)
+    }
+}
+
 @Test func scheduleValidatorRejectsDirectoryTrashBeforeDescendant() throws {
     let parentID = testOperationID("000000000011")
     let childID = testOperationID("000000000012")
@@ -776,7 +804,11 @@ import Testing
         kind: .file,
         version: ItemVersion(contentHash: "hash", size: 4, modifiedAt: fixedDate, revisionToken: "rev-1"),
         perLocation: [
-            .localFolder: LocationMemory(itemID: "local-1", revisionToken: "rev-1", lastSeenAt: fixedDate),
+            .localFolder: LocationMemory(
+                itemID: "local-1",
+                revisionToken: "rev-1",
+                lastSeenAt: fixedDate
+            ),
             .nasFolder: LocationMemory(itemID: "nas-1", revisionToken: "rev-1", lastSeenAt: fixedDate)
         ],
         tombstone: Tombstone(deletedAt: fixedDate, initiatedBy: .localFolder),

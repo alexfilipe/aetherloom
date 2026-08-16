@@ -138,7 +138,13 @@ public struct ActivityMessageCatalog: Sendable {
     public static let mutationDeadlineExpiredBeforeStart = "Sync stopped because a filesystem operation did not start before its deadline. No filesystem change was made by that attempt."
     public static let mutationIndeterminate = "Sync paused while a filesystem operation finishes. Aetherloom will reconcile its result before scanning or applying more changes."
     public static let verificationFailed = "Sync could not verify a completed write."
+    public static let runHeld = "Sync remains paused for safety. No changes were applied."
+    public static let independentChangesApplied = "Aetherloom applied independent changes. Some items remain paused for safety."
+    public static let runStopped = "Sync stopped. Preview changes again before continuing."
+    public static let runCancelled = "Sync was cancelled. Some planned changes were not applied."
+    public static let runFailed = "Sync stopped because an operation failed."
     public static let runFinished = "Sync finished."
+    public static let runFinishedWithExclusions = "Sync finished with excluded items still waiting."
 
     public static func runStarted(locationCount: Int) -> String {
         "Sync started for \(locationCount) locations."

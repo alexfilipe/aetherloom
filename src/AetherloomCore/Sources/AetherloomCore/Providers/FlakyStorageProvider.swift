@@ -54,6 +54,17 @@ public actor FlakyStorageProvider: StorageProvider {
         return try await base.changedSubtrees(in: scope, since: cursor)
     }
 
+    public func classify(
+        _ requests: [ProviderClassificationRequest]
+    ) async -> ProviderPathClassification {
+        do {
+            try await prepare(for: .classify)
+        } catch {
+            return .ambiguous(detail: String(describing: error))
+        }
+        return await base.classify(requests)
+    }
+
     public func fetch(_ observation: ItemObservation, to stagingURL: URL) async throws {
         try await prepare(for: .fetch)
         try await base.fetch(observation, to: stagingURL)

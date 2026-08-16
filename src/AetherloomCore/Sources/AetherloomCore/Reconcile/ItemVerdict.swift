@@ -2,6 +2,7 @@ import Foundation
 
 public enum WaitingReason: String, Codable, Hashable, Sendable {
     case contentNotMaterialized
+    case unsupportedItem
 }
 
 public enum ConflictKind: String, Codable, Hashable, Sendable {
@@ -74,6 +75,7 @@ public enum ItemVerdict: Codable, Hashable, Sendable {
     case propagateDeletion(to: Set<LocationID>, initiatedBy: LocationID)
     case conflict(ConflictDecision)
     case waiting(WaitingReason, locations: Set<LocationID>)
+    case excluded([LocatedScanExclusion], locations: Set<LocationID>)
     case compound([ItemVerdict])
 }
 

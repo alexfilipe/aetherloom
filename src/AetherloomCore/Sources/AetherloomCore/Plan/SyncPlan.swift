@@ -2,30 +2,36 @@ import Foundation
 
 public struct SyncPlan: Codable, Hashable, Sendable {
     public var syncSetID: UUID
+    public var participatingLocations: [LocationID]
     public var generatedAt: Date
     public var decisions: [ItemDecision]
     public var schedule: OperationSchedule
     public var conflicts: [ConflictDecision]
     public var waiting: [WaitingItem]
+    public var exclusions: [LocatedScanExclusion]
     public private(set) var gate: ExecutionGate
     public var fingerprint: PlanFingerprint
 
     public init(
         syncSetID: UUID,
+        participatingLocations: [LocationID] = [],
         generatedAt: Date,
         decisions: [ItemDecision],
         schedule: OperationSchedule,
         conflicts: [ConflictDecision] = [],
         waiting: [WaitingItem] = [],
+        exclusions: [LocatedScanExclusion] = [],
         gate: ExecutionGate,
         fingerprint: PlanFingerprint
     ) {
         self.syncSetID = syncSetID
+        self.participatingLocations = participatingLocations.sorted()
         self.generatedAt = generatedAt
         self.decisions = decisions
         self.schedule = schedule
         self.conflicts = conflicts
         self.waiting = waiting
+        self.exclusions = exclusions.sorted()
         self.gate = gate
         self.fingerprint = fingerprint
 

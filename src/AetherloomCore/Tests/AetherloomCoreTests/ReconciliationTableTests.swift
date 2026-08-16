@@ -420,6 +420,8 @@ private func observations(from facts: [LocationID: LocationFact]) -> [LocationID
             return (location, item(location, path: "/Tracked.txt", hash: "base", isPlaceholder: true))
         case .missing:
             return nil
+        case .excluded:
+            return nil
         }
     })
 }
@@ -540,7 +542,7 @@ private func conflictKind(_ verdict: ItemVerdict) -> ConflictKind? {
         return conflict.kind
     case let .compound(children):
         return children.compactMap(conflictKind).first
-    case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .waiting:
+    case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .waiting, .excluded:
         return nil
     }
 }
@@ -616,7 +618,7 @@ private func deletionMetaPropertyHolds(
         if case .propagateDeletion = $0 {
             return !(hasBase && facts.values.allSatisfy { fact in
                 switch fact {
-                case .matchesBase, .missing, .waiting:
+                case .matchesBase, .missing, .waiting, .excluded:
                     return true
                 case .changed, .relocated, .changedAndRelocated, .appeared:
                     return false

@@ -186,12 +186,48 @@ public struct OperationSchedule: Codable, Hashable, Sendable {
 
     public func validate(decisions: [ItemDecision] = []) throws {
         try validateUniqueIDs()
+        try validateUniqueDecisionIDs(decisions)
+        try validateDecisionOwnership(decisions: decisions)
         try validateDependenciesPrecedeOperations()
         try validateParentsBeforeChildren()
         try validateTransfersBeforeTrash()
         try validateDescendantsBeforeDirectoryTrash()
         try validatePerItemChains(decisions: decisions)
         try validateCaseFoldedTargetCollisions()
+    }
+
+    private func validateUniqueDecisionIDs(_ decisions: [ItemDecision]) throws {
+        var seen: Set<UUID> = []
+        for decision in decisions {
+            guard seen.insert(decision.id).inserted else {
+                throw OperationScheduleValidationError.duplicateDecisionID(
+                    decision.id
+                )
+            }
+        }
+    }
+
+    private func validateDecisionOwnership(decisions: [ItemDecision]) throws {
+        guard !decisions.isEmpty || operations.isEmpty else { return }
+        let scheduled = Set(operations.map(\.id))
+        var owners: [OperationID: UUID] = [:]
+        for decision in decisions {
+            for operationID in decision.operations {
+                guard scheduled.contains(operationID) else {
+                    throw OperationScheduleValidationError.unknownDecisionOperation(
+                        decision: decision.id
+                    )
+                }
+                guard owners.updateValue(decision.id, forKey: operationID) == nil else {
+                    throw OperationScheduleValidationError.operationOwnedByMultipleDecisions(
+                        operationID
+                    )
+                }
+            }
+        }
+        guard Set(owners.keys) == scheduled else {
+            throw OperationScheduleValidationError.unownedScheduledOperation
+        }
     }
 
     private func validateUniqueIDs() throws {
@@ -309,14 +345,109 @@ public struct OperationSchedule: Codable, Hashable, Sendable {
     }
 }
 
+public struct OperationPathTouch: Codable, Hashable, Sendable, Comparable {
+    public var location: LocationID
+    public var path: SyncPath
+
+    public init(location: LocationID, path: SyncPath) {
+        self.location = location
+        self.path = path
+    }
+
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.location != rhs.location { return lhs.location < rhs.location }
+        return lhs.path < rhs.path
+    }
+
+    public func overlaps(_ other: Self) -> Bool {
+        guard location == other.location else { return false }
+        return path == other.path
+            || path.isDescendant(of: other.path)
+            || other.path.isDescendant(of: path)
+    }
+}
+
+extension Operation {
+    public var pathTouches: [OperationPathTouch] {
+        let values: [OperationPathTouch]
+        switch kind {
+        case let .makeFolder(path):
+            values = [.init(location: location, path: path)]
+        case let .transfer(content, target, _):
+            values = [
+                .init(location: content.sourceLocation, path: content.path),
+                .init(location: location, path: target),
+            ]
+        case let .relocate(itemRef, target):
+            values = [
+                .init(location: itemRef.location, path: itemRef.path),
+                .init(location: location, path: itemRef.path),
+                .init(location: location, path: target),
+            ]
+        case let .trash(itemRef):
+            values = [
+                .init(location: itemRef.location, path: itemRef.path),
+                .init(location: location, path: itemRef.path),
+            ]
+        }
+        return Array(Set(values)).sorted()
+    }
+}
+
+extension ProviderClassificationRequest {
+    static func forOperations(_ operations: [Operation]) -> [Self] {
+        var scopes: [SyncPath: ScanExclusion.Scope] = [:]
+        func add(_ path: SyncPath, scope: ScanExclusion.Scope) {
+            guard !path.isRoot else { return }
+            if scopes[path] != .subtree {
+                scopes[path] = scope
+            }
+            var ancestor = path.parent
+            while !ancestor.isRoot {
+                if scopes[ancestor] == nil {
+                    scopes[ancestor] = .item
+                }
+                ancestor = ancestor.parent
+            }
+        }
+        func scope(for kind: ItemKind) -> ScanExclusion.Scope {
+            kind == .folder ? .subtree : .item
+        }
+
+        for operation in operations {
+            switch operation.kind {
+            case let .makeFolder(path):
+                add(path, scope: .subtree)
+            case let .transfer(content, target, _):
+                let coverage = scope(for: content.kind)
+                add(content.path, scope: coverage)
+                add(target, scope: coverage)
+            case let .relocate(itemRef, target):
+                let coverage = scope(for: itemRef.kind)
+                add(itemRef.path, scope: coverage)
+                add(target, scope: coverage)
+            case let .trash(itemRef):
+                add(itemRef.path, scope: scope(for: itemRef.kind))
+            }
+        }
+
+        return scopes.map { path, scope in
+            Self(path: path, scope: scope)
+        }.sorted()
+    }
+}
+
 public enum OperationScheduleValidationError: Error, Equatable, Sendable {
     case duplicateOperationID(OperationID)
+    case duplicateDecisionID(UUID)
     case unknownDependency(operation: OperationID, dependency: OperationID)
     case dependencyAfterOperation(operation: OperationID, dependency: OperationID)
     case parentAfterChild(parent: SyncPath, child: SyncPath, location: LocationID)
     case transferAfterTrash(OperationID)
     case directoryTrashBeforeDescendant(directory: SyncPath, descendant: SyncPath, location: LocationID)
     case unknownDecisionOperation(decision: UUID)
+    case operationOwnedByMultipleDecisions(OperationID)
+    case unownedScheduledOperation
     case itemChainOutOfOrder(decision: UUID)
     case itemChainMissingDependency(decision: UUID, operation: OperationID)
     case caseFoldedTargetCollision(location: LocationID, path: SyncPath, first: OperationID, second: OperationID)

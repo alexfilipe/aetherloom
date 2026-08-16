@@ -348,7 +348,7 @@ struct LocalFolderStorageProviderTests {
         #expect(try Data(contentsOf: staging) == Data("payload".utf8))
     }
 
-    @Test func scanDoesNotReadRegularFileContents() async throws {
+    @Test func unreadableFileMetadataMakesScanIncompleteWithoutReadingContents() async throws {
         let root = try makeRoot("unreadable-file-scan")
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("MetadataOnly.txt")
@@ -369,9 +369,12 @@ struct LocalFolderStorageProviderTests {
         )
         let snapshot = await provider.scan(.entireDrive)
 
-        #expect(snapshot.status == .complete)
-        #expect(snapshot.observations.byPath["/MetadataOnly.txt"]?.kind == .file)
-        #expect(snapshot.observations.byPath["/MetadataOnly.txt"]?.version.contentHash == nil)
+        guard case .incomplete = snapshot.status else {
+            Issue.record("Unreadable file metadata did not make the scan incomplete.")
+            return
+        }
+        #expect(snapshot.observations.byPath["/MetadataOnly.txt"] == nil)
+        #expect(snapshot.exclusions.isEmpty)
     }
 
     @Test func selectiveEvidenceUsesIncrementalSHA256WithoutChangingScanCapability() async throws {
@@ -977,7 +980,7 @@ struct LocalFolderStorageProviderTests {
         }
     }
 
-    @Test func unreadableSubdirectoryMakesScanIncomplete() async throws {
+    @Test func unreadableSubdirectoryMakesScanIncompleteWithoutDescent() async throws {
         let root = try makeRoot("unreadable")
         defer { try? FileManager.default.removeItem(at: root) }
         let blocked = root.appendingPathComponent("Blocked", isDirectory: true)
@@ -1000,9 +1003,12 @@ struct LocalFolderStorageProviderTests {
         )
         let snapshot = await provider.scan(.entireDrive)
         guard case .incomplete = snapshot.status else {
-            Issue.record("Unreadable directory was reported as \(snapshot.status).")
+            Issue.record("Unreadable directory metadata did not make the scan incomplete.")
             return
         }
+        #expect(snapshot.observations.byPath["/Blocked"] == nil)
+        #expect(snapshot.observations.byPath["/Blocked/Secret.txt"] == nil)
+        #expect(snapshot.exclusions.isEmpty)
     }
 
     @Test func storeIsAtomicIdempotentAndRejectsVersionDrift() async throws {
@@ -1783,7 +1789,7 @@ struct LocalFolderStorageProviderTests {
         #expect(try await journal.unfinishedRun(for: syncSetID) != nil)
         #expect(try await baseRecords.records(for: syncSetID) == [originalRecord])
         #expect(await provider.indeterminateMutationReceipt() == receipt)
-        #expect(await remote.callLog().isEmpty)
+        #expect(await remote.callLog().allSatisfy { $0.operation == .classify })
     }
 
     @Test func systemQuarantineInspectionDistinguishesMissingAndPresent() throws {
@@ -2188,7 +2194,7 @@ struct LocalFolderStorageProviderTests {
         }
         #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
         #expect(await provider.indeterminateMutationReceipt() == receipt)
-        #expect(await remote.callLog().isEmpty)
+        #expect(await remote.callLog().allSatisfy { $0.operation == .classify })
         #expect(hook.kinds() == [.trash])
     }
 
@@ -2536,7 +2542,7 @@ struct LocalFolderStorageProviderTests {
             }
             #expect(try await stores.journal.unfinishedRun(for: syncSetID) != nil)
             #expect(await provider.indeterminateMutationReceipt() == receipt)
-            #expect(await remote.callLog().isEmpty)
+            #expect(await remote.callLog().allSatisfy { $0.operation == .classify })
         }
     }
 
@@ -5396,7 +5402,10 @@ private struct SourceMutatingFetchPerformer: LocalFetchPerforming {
     let replacement: Data
     let modifiedAt: Date
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL
+    ) throws {
         try FileManager.default.copyItem(at: source, to: destination)
         try replacement.write(to: source)
         try FileManager.default.setAttributes(
@@ -5409,7 +5418,10 @@ private struct SourceMutatingFetchPerformer: LocalFetchPerforming {
 private struct CorruptingFetchPerformer: LocalFetchPerforming {
     let replacement: Data
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL
+    ) throws {
         try FileManager.default.copyItem(at: source, to: destination)
         try replacement.write(to: destination)
     }
@@ -5597,7 +5609,11 @@ private final class PartialCopyOnceRelocationPerformer:
     private let lock = NSLock()
     private var shouldFail = true
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind _: LocalDataForkCopyKind
+    ) throws {
         lock.lock()
         let failsThisCall = shouldFail
         shouldFail = false
@@ -5620,7 +5636,11 @@ private final class TrashFailureOnceRelocationPerformer:
     private let lock = NSLock()
     private var shouldFail = true
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind _: LocalDataForkCopyKind
+    ) throws {
         try FileManager.default.copyItem(at: source, to: destination)
     }
 
@@ -5649,7 +5669,11 @@ private final class ScriptedCrossVolumeCopyFailurePerformer:
         self.destination = destination.standardizedFileURL
     }
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind _: LocalDataForkCopyKind
+    ) throws {
         switch mode {
         case .noMutation:
             break
@@ -5699,7 +5723,11 @@ private final class RetargetingBeforeSourceTrashRelocationPerformer:
         self.replacementRoot = replacementRoot
     }
 
-    func copyItem(at source: URL, to destination: URL) throws {
+    func copyItem(
+        at source: URL,
+        to destination: URL,
+        kind _: LocalDataForkCopyKind
+    ) throws {
         try FileManager.default.copyItem(at: source, to: destination)
     }
 

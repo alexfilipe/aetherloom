@@ -111,6 +111,8 @@ private func sweepObservations(from facts: [LocationID: LocationFact]) -> [Locat
             return (location, sweepItem(location, path: "/Tracked.txt", version: sweepVersion("base"), isPlaceholder: true))
         case .missing:
             return nil
+        case .excluded:
+            return nil
         }
     })
 }
@@ -162,7 +164,7 @@ private func sweepDeletionMetaPropertyHolds(
         if case .propagateDeletion = $0 {
             return !(hasBase && facts.values.allSatisfy { fact in
                 switch fact {
-                case .matchesBase, .missing, .waiting:
+                case .matchesBase, .missing, .waiting, .excluded:
                     return true
                 case .changed, .relocated, .changedAndRelocated, .appeared:
                     return false

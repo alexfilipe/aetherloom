@@ -26,6 +26,7 @@ public enum LocationFact: Hashable, Sendable {
     case changedAndRelocated(ItemVersion, to: SyncPath)
     case missing
     case waiting
+    case excluded([LocatedScanExclusion])
     case appeared(ItemObservation)
 
     public var isMissing: Bool {
@@ -34,8 +35,10 @@ public enum LocationFact: Hashable, Sendable {
     }
 
     public var isWaiting: Bool {
-        if case .waiting = self { return true }
-        return false
+        switch self {
+        case .waiting, .excluded: return true
+        default: return false
+        }
     }
 
     public var isPresent: Bool {
@@ -49,7 +52,7 @@ public enum LocationFact: Hashable, Sendable {
             version
         case let .appeared(observation):
             observation.version
-        case .matchesBase, .relocated, .missing, .waiting:
+        case .matchesBase, .relocated, .missing, .waiting, .excluded:
             nil
         }
     }
@@ -59,7 +62,7 @@ public enum LocationFact: Hashable, Sendable {
         case let .relocated(path),
              let .changedAndRelocated(_, path):
             path
-        case .matchesBase, .changed, .missing, .waiting, .appeared:
+        case .matchesBase, .changed, .missing, .waiting, .excluded, .appeared:
             nil
         }
     }
@@ -71,19 +74,22 @@ public struct ReconciliationItem: Hashable, Sendable {
     public var observations: [LocationID: ItemObservation]
     public var locations: [LocationID]
     public var primaryPath: SyncPath
+    public var blockingExclusions: [LocatedScanExclusion]
 
     public init(
         base: BaseRecord?,
         facts: [LocationID: LocationFact],
         observations: [LocationID: ItemObservation],
         locations: [LocationID],
-        primaryPath: SyncPath
+        primaryPath: SyncPath,
+        blockingExclusions: [LocatedScanExclusion] = []
     ) {
         self.base = base
         self.facts = facts
         self.observations = observations
         self.locations = locations
         self.primaryPath = primaryPath
+        self.blockingExclusions = blockingExclusions.sorted()
     }
 }
 
@@ -114,6 +120,32 @@ public func deriveFacts(_ input: ReconciliationInput) -> [ReconciliationItem] {
     for record in records {
         var facts: [LocationID: LocationFact] = [:]
         var observations: [LocationID: ItemObservation] = [:]
+        let blockingExclusions = locatedExclusions(
+            covering: record.path,
+            snapshots: input.snapshots,
+            locations: locations
+        )
+
+        if !blockingExclusions.isEmpty {
+            for location in locations {
+                if let observation = indexes.observation(for: record, at: location) {
+                    consumed.insert(token(for: observation))
+                    observations[location] = observation
+                }
+                facts[location] = .excluded(blockingExclusions)
+            }
+            items.append(
+                ReconciliationItem(
+                    base: record,
+                    facts: facts,
+                    observations: observations,
+                    locations: locations,
+                    primaryPath: record.path,
+                    blockingExclusions: blockingExclusions
+                )
+            )
+            continue
+        }
 
         for location in locations {
             if let observation = indexes.observation(for: record, at: location) {
@@ -150,18 +182,85 @@ public func deriveFacts(_ input: ReconciliationInput) -> [ReconciliationItem] {
         }
 
         let primaryPath = observations.map(\.path).sorted().first ?? .root
+        let blockingExclusions = Array(Set(observations.flatMap {
+            locatedExclusions(
+                covering: $0.path,
+                snapshots: input.snapshots,
+                locations: locations
+            )
+        })).sorted()
+        if !blockingExclusions.isEmpty {
+            facts = Dictionary(uniqueKeysWithValues: locations.map {
+                ($0, LocationFact.excluded(blockingExclusions))
+            })
+        }
         items.append(
             ReconciliationItem(
                 base: nil,
                 facts: facts,
                 observations: observationsByLocation,
                 locations: locations,
-                primaryPath: primaryPath
+                primaryPath: primaryPath,
+                blockingExclusions: blockingExclusions
             )
         )
     }
 
-    return applyHashBasedMoveMatching(to: items)
+    return applyOpaqueSubtreeRelocationSafety(
+        to: applyHashBasedMoveMatching(to: items),
+        snapshots: input.snapshots
+    )
+}
+
+/// A complete snapshot containing an opaque subtree cannot prove that a
+/// tracked item still missing after ordinary observation and move matching was
+/// deleted rather than relocated into that subtree. Every such ambiguity is a
+/// visible, non-approvable, non-mutating wait with the exact current roots.
+private func applyOpaqueSubtreeRelocationSafety(
+    to items: [ReconciliationItem],
+    snapshots: [LocationID: LocationSnapshot]
+) -> [ReconciliationItem] {
+    items.map { item in
+        guard item.base != nil else { return item }
+        var evidence: [LocatedScanExclusion] = []
+        var heldLocations: Set<LocationID> = []
+
+        for location in item.locations where item.facts[location]?.isMissing == true {
+            let subtreeExclusions = (snapshots[location]?.exclusions ?? [])
+                .filter { $0.scope == .subtree }
+            guard !subtreeExclusions.isEmpty else {
+                continue
+            }
+            for exclusion in subtreeExclusions {
+                evidence.append(
+                    LocatedScanExclusion(location: location, exclusion: exclusion)
+                )
+                heldLocations.insert(location)
+            }
+        }
+
+        guard !evidence.isEmpty else { return item }
+        var updated = item
+        for location in heldLocations {
+            updated.facts[location] = .waiting
+        }
+        updated.blockingExclusions = Array(Set(evidence)).sorted()
+        return updated
+    }
+}
+
+private func locatedExclusions(
+    covering path: SyncPath,
+    snapshots: [LocationID: LocationSnapshot],
+    locations: [LocationID]
+) -> [LocatedScanExclusion] {
+    locations.flatMap { location in
+        (snapshots[location]?.exclusions ?? []).compactMap { exclusion in
+            exclusion.covers(path)
+                ? LocatedScanExclusion(location: location, exclusion: exclusion)
+                : nil
+        }
+    }.sorted()
 }
 
 public func applyHashBasedMoveMatching(to items: [ReconciliationItem]) -> [ReconciliationItem] {

@@ -20,9 +20,9 @@ public enum ExecutionGate: Codable, Hashable, Sendable {
 
     /// Whether a reviewed plan may proceed with a time-limited approval.
     ///
-    /// A mass-deletion threshold is a safety stop, not an approval prompt. The
-    /// operator must first change the underlying files or sync configuration so
-    /// that a fresh plan no longer contains the hold.
+    /// A mass-deletion threshold or opaque-relocation ambiguity is a safety
+    /// stop, not an approval prompt. Fresh filesystem/configuration truth must
+    /// produce a plan without the hold before execution can continue.
     public var permitsApproval: Bool {
         !isClear && holdReasons.allSatisfy(\.permitsApproval)
     }
@@ -98,6 +98,7 @@ public enum HoldReason: Codable, Hashable, Sendable {
     case massDeletion(MassChangeEvidence)
     case massEdit(MassChangeEvidence)
     case deletionsNeedReview(count: Int)
+    case opaqueRelocation(OpaqueRelocationEvidence)
 
     public var message: String {
         switch self {
@@ -109,16 +110,202 @@ public enum HoldReason: Codable, Hashable, Sendable {
             return ActivityMessageCatalog.manyEdits
         case .deletionsNeedReview:
             return ActivityMessageCatalog.deletionsNeedReview
+        case let .opaqueRelocation(evidence):
+            return "Deletion of \(evidence.trackedPath.rawValue) needs review because an excluded subtree could contain this item."
         }
     }
 
     public var permitsApproval: Bool {
         switch self {
-        case .massDeletion:
+        case .massDeletion, .opaqueRelocation:
             return false
         case .conflicts, .massEdit, .deletionsNeedReview:
             return true
         }
+    }
+
+    public var isOpaqueRelocation: Bool {
+        if case .opaqueRelocation = self { return true }
+        return false
+    }
+}
+
+public struct OpaqueRelocationEvidence: Codable, Hashable, Sendable {
+    public var trackedPath: SyncPath
+    public var exclusions: [LocatedScanExclusion]
+
+    public init(
+        trackedPath: SyncPath,
+        exclusions: [LocatedScanExclusion]
+    ) {
+        self.trackedPath = trackedPath
+        self.exclusions = Array(Set(exclusions)).sorted()
+    }
+}
+
+/// The executor admission selected from a fully planned, fingerprinted value.
+/// Item-local opaque holds never become approvable; a plan may nevertheless
+/// expose a separately proven schedule whose operations cannot affect them.
+public enum PlanExecutionAdmission: Hashable, Sendable {
+    case standard
+    case safeSubset(SafeSubsetExecution)
+    case blocked
+}
+
+public struct SafeSubsetExecution: Codable, Hashable, Sendable {
+    public var heldDecisionIDs: [UUID]
+    public var scheduledOperationIDs: [OperationID]
+    public var protectedTouches: [OperationPathTouch]
+
+    public init(
+        heldDecisionIDs: [UUID],
+        scheduledOperationIDs: [OperationID],
+        protectedTouches: [OperationPathTouch]
+    ) {
+        self.heldDecisionIDs = heldDecisionIDs.sorted {
+            $0.uuidString < $1.uuidString
+        }
+        self.scheduledOperationIDs = scheduledOperationIDs.sorted()
+        self.protectedTouches = Array(Set(protectedTouches)).sorted()
+    }
+}
+
+extension SyncPlan {
+    public var executionAdmission: PlanExecutionAdmission {
+        let opaque = gate.holdReasons.compactMap { reason -> OpaqueRelocationEvidence? in
+            guard case let .opaqueRelocation(evidence) = reason else { return nil }
+            return evidence
+        }
+        guard !opaque.isEmpty else { return .standard }
+
+        // Every other non-approvable hold remains global. In particular, this
+        // path never weakens mass deletion or turns opaque evidence into an
+        // approval prompt.
+        if gate.holdReasons.contains(where: {
+            !$0.isOpaqueRelocation && !$0.permitsApproval
+        }) {
+            return .blocked
+        }
+        guard let proof = safeSubsetProof(for: opaque) else { return .blocked }
+        return .safeSubset(proof)
+    }
+
+    public var nonOpaqueHoldReasons: [HoldReason] {
+        gate.holdReasons.filter { !$0.isOpaqueRelocation }
+    }
+
+    private func safeSubsetProof(
+        for evidence: [OpaqueRelocationEvidence]
+    ) -> SafeSubsetExecution? {
+        guard (try? schedule.validate(decisions: decisions)) != nil else {
+            return nil
+        }
+        guard !participatingLocations.isEmpty,
+              Set(participatingLocations).count == participatingLocations.count,
+              !schedule.operations.isEmpty else {
+            return nil
+        }
+        let participating = Set(participatingLocations)
+        guard Set(exclusions).count == exclusions.count else { return nil }
+        let planExclusions = Set(exclusions)
+
+        var heldDecisionIDs: Set<UUID> = []
+        var protectedTouches: Set<OperationPathTouch> = []
+        for hold in evidence {
+            guard !hold.exclusions.isEmpty,
+                  Set(hold.exclusions).count == hold.exclusions.count,
+                  hold.exclusions.allSatisfy({ located in
+                      participating.contains(located.location)
+                          && located.exclusion.scope == .subtree
+                          && planExclusions.contains(located)
+                  }) else {
+                return nil
+            }
+            let evidenceLocations = Set(hold.exclusions.map(\.location))
+            let exactOpaqueRoots = Set(planExclusions.filter {
+                evidenceLocations.contains($0.location)
+                    && $0.exclusion.scope == .subtree
+            })
+            guard Set(hold.exclusions) == exactOpaqueRoots else { return nil }
+            let matching = decisions.filter {
+                $0.path.caseInsensitiveKey == hold.trackedPath.caseInsensitiveKey
+            }
+            guard matching.count == 1, let decision = matching.first,
+                  decision.verdict.isOpaqueRelocationWait(
+                      participatingLocations: participating
+                  ),
+                  decision.operations.isEmpty,
+                  heldDecisionIDs.insert(decision.id).inserted else {
+                return nil
+            }
+            for location in participatingLocations {
+                protectedTouches.insert(
+                    OperationPathTouch(location: location, path: hold.trackedPath)
+                )
+            }
+            for located in hold.exclusions {
+                protectedTouches.insert(
+                    OperationPathTouch(
+                        location: located.location,
+                        path: located.exclusion.path
+                    )
+                )
+            }
+        }
+
+        var ownerByOperation: [OperationID: UUID] = [:]
+        for decision in decisions {
+            for operationID in decision.operations {
+                guard ownerByOperation.updateValue(
+                    decision.id,
+                    forKey: operationID
+                ) == nil else {
+                    return nil
+                }
+            }
+        }
+        let scheduledIDs = Set(schedule.operations.map(\.id))
+        guard Set(ownerByOperation.keys) == scheduledIDs else { return nil }
+
+        for operation in schedule.operations {
+            guard let owner = ownerByOperation[operation.id],
+                  !heldDecisionIDs.contains(owner) else {
+                return nil
+            }
+            guard operation.pathTouches.allSatisfy({
+                participating.contains($0.location)
+            }) else {
+                return nil
+            }
+            for dependency in operation.dependsOn {
+                guard let dependencyOwner = ownerByOperation[dependency],
+                      !heldDecisionIDs.contains(dependencyOwner) else {
+                    return nil
+                }
+            }
+            if operation.pathTouches.contains(where: { touch in
+                protectedTouches.contains(where: { touch.overlaps($0) })
+            }) {
+                return nil
+            }
+        }
+
+        return SafeSubsetExecution(
+            heldDecisionIDs: Array(heldDecisionIDs),
+            scheduledOperationIDs: Array(scheduledIDs),
+            protectedTouches: Array(protectedTouches)
+        )
+    }
+}
+
+private extension ItemVerdict {
+    func isOpaqueRelocationWait(
+        participatingLocations: Set<LocationID>
+    ) -> Bool {
+        if case let .waiting(.unsupportedItem, locations) = self {
+            return locations == participatingLocations
+        }
+        return false
     }
 }
 
@@ -185,7 +372,7 @@ extension ItemVerdict {
             return true
         case let .compound(verdicts):
             return verdicts.contains(where: \.containsDeletionIntent)
-        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .conflict, .waiting:
+        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .conflict, .waiting, .excluded:
             return false
         }
     }
@@ -196,7 +383,7 @@ extension ItemVerdict {
             return true
         case let .compound(verdicts):
             return verdicts.contains(where: \.containsEditIntent)
-        case .inSync, .propagateCreation, .propagatePath, .propagateDeletion, .conflict, .waiting:
+        case .inSync, .propagateCreation, .propagatePath, .propagateDeletion, .conflict, .waiting, .excluded:
             return false
         }
     }
@@ -207,7 +394,7 @@ extension ItemVerdict {
             return true
         case let .compound(verdicts):
             return verdicts.contains(where: \.containsConflictIntent)
-        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .waiting:
+        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .waiting, .excluded:
             return false
         }
     }

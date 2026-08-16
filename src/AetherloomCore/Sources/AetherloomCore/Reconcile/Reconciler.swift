@@ -12,7 +12,14 @@ public struct Reconciler: Sendable {
     }
 
     public func reconcile(_ item: ReconciliationItem) -> ItemVerdict {
-        reconcile(
+        if !item.blockingExclusions.isEmpty,
+           item.facts.values.contains(where: { fact in
+               if case .waiting = fact { return true }
+               return false
+           }) {
+            return .waiting(.unsupportedItem, locations: Set(item.locations))
+        }
+        return reconcile(
             base: item.base,
             facts: item.facts,
             observations: item.observations,
@@ -52,6 +59,14 @@ public struct Reconciler: Sendable {
         locations: [LocationID],
         primaryPath: SyncPath
     ) -> ItemVerdict {
+        let blockingExclusions = Array(Set(facts.values.flatMap { fact -> [LocatedScanExclusion] in
+            if case let .excluded(values) = fact { return values }
+            return []
+        })).sorted()
+        if !blockingExclusions.isEmpty {
+            return .excluded(blockingExclusions, locations: Set(locations))
+        }
+
         if hasTypeClash(base: base, observations: observations) {
             return conflict(.typeClash, path: primaryPath, observations: observations)
         }
@@ -270,7 +285,8 @@ private func compound(_ verdicts: [ItemVerdict]) -> ItemVerdict {
              let .propagateCreation(_, targets),
              let .propagatePath(targets, _),
              let .propagateDeletion(targets, _),
-             let .waiting(_, targets):
+             let .waiting(_, targets),
+             let .excluded(_, targets):
             return !targets.isEmpty
         case .inSync:
             return false
@@ -292,7 +308,7 @@ private func isChanged(_ fact: LocationFact?) -> Bool {
     switch fact {
     case .changed, .changedAndRelocated:
         return true
-    case .matchesBase, .relocated, .missing, .waiting, .appeared, nil:
+    case .matchesBase, .relocated, .missing, .waiting, .excluded, .appeared, nil:
         return false
     }
 }
@@ -301,7 +317,7 @@ private func isChangedAndRelocated(_ fact: LocationFact?) -> Bool {
     switch fact {
     case .changedAndRelocated:
         return true
-    case .matchesBase, .changed, .relocated, .missing, .waiting, .appeared, nil:
+    case .matchesBase, .changed, .relocated, .missing, .waiting, .excluded, .appeared, nil:
         return false
     }
 }
@@ -310,7 +326,7 @@ private func isUnchangedPresence(_ fact: LocationFact?) -> Bool {
     switch fact {
     case .matchesBase, .waiting:
         return true
-    case .changed, .relocated, .changedAndRelocated, .missing, .appeared, nil:
+    case .changed, .relocated, .changedAndRelocated, .missing, .excluded, .appeared, nil:
         return false
     }
 }
@@ -389,7 +405,7 @@ private func appearedObservation(
     switch fact {
     case let .appeared(observation):
         return observation
-    case .matchesBase, .changed, .relocated, .changedAndRelocated, .missing, .waiting, nil:
+    case .matchesBase, .changed, .relocated, .changedAndRelocated, .missing, .waiting, .excluded, nil:
         return observations[location]
     }
 }

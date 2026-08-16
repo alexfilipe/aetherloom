@@ -9,6 +9,8 @@ public struct ChangePreview: Codable, Hashable, Sendable {
     public var sections: [PreviewSection]
     public var conflicts: [ConflictDecision]
     public var advice: [ConflictAdvice]
+    public var exclusions: [ExclusionPreviewEntry]
+    public var exclusionGroups: [ExclusionDisplayGroup]
     public var generatedAt: Date
 
     public init(
@@ -20,6 +22,8 @@ public struct ChangePreview: Codable, Hashable, Sendable {
         sections: [PreviewSection] = [],
         conflicts: [ConflictDecision] = [],
         advice: [ConflictAdvice] = [],
+        exclusions: [ExclusionPreviewEntry] = [],
+        exclusionGroups: [ExclusionDisplayGroup] = [],
         generatedAt: Date
     ) {
         self.syncSetID = syncSetID
@@ -30,7 +34,49 @@ public struct ChangePreview: Codable, Hashable, Sendable {
         self.sections = sections
         self.conflicts = conflicts
         self.advice = advice
+        self.exclusions = exclusions
+        self.exclusionGroups = exclusionGroups
         self.generatedAt = generatedAt
+    }
+}
+
+public struct ExclusionPreviewEntry: Codable, Hashable, Sendable, Identifiable {
+    public var id: UUID
+    public var location: LocationID
+    public var path: SyncPath
+    public var scope: ScanExclusion.Scope
+    public var reason: ScanExclusion.Reason
+    public var message: String
+
+    public init(_ located: LocatedScanExclusion) {
+        location = located.location
+        path = located.exclusion.path
+        scope = located.exclusion.scope
+        reason = located.exclusion.reason
+        message = located.exclusion.reason.message
+        id = DeterministicID.uuid(
+            "exclusion-preview",
+            located.location.rawValue.uuidString,
+            located.exclusion.stableKey
+        )
+    }
+}
+
+public struct ExclusionDisplayGroup: Codable, Hashable, Sendable, Identifiable {
+    public var id: UUID
+    public var scope: ScanExclusion.Scope
+    public var reason: ScanExclusion.Reason
+    public var rootCount: Int
+
+    public init(scope: ScanExclusion.Scope, reason: ScanExclusion.Reason, rootCount: Int) {
+        self.scope = scope
+        self.reason = reason
+        self.rootCount = rootCount
+        self.id = DeterministicID.uuid(
+            "exclusion-group",
+            scope.rawValue,
+            reason.stableKey
+        )
     }
 }
 
@@ -174,6 +220,7 @@ public struct ChangePreviewRenderer: Sendable {
                 PreviewSection(kind: kind, entries: sectionEntries[kind] ?? [])
             }
             let notesByHold = Dictionary(uniqueKeysWithValues: triageNotes.map { ($0.holdReason, $0) })
+            let exclusionEntries = plan.exclusions.sorted().map(ExclusionPreviewEntry.init)
             return ChangePreview(
                 syncSetID: plan.syncSetID,
                 planFingerprint: plan.fingerprint,
@@ -190,6 +237,8 @@ public struct ChangePreviewRenderer: Sendable {
                 sections: sections,
                 conflicts: plan.conflicts,
                 advice: advice.sorted(by: adviceSort),
+                exclusions: exclusionEntries,
+                exclusionGroups: exclusionGroups(plan.exclusions),
                 generatedAt: generatedAt
             )
         }
@@ -198,6 +247,9 @@ public struct ChangePreviewRenderer: Sendable {
     private func headline(for plan: SyncPlan) -> String {
         if !plan.gate.isClear {
             return plan.gate.permitsApproval ? "Needs review" : "Paused for safety"
+        }
+        if !plan.exclusions.isEmpty {
+            return "Some items are waiting"
         }
         let count = plan.decisions.count
         return count == 1 ? "1 change ready to sync" : "\(count) changes ready to sync"
@@ -227,7 +279,48 @@ public struct ChangePreviewRenderer: Sendable {
             )
         }
 
+        for located in plan.exclusions.sorted() {
+            let exclusion = located.exclusion
+            let id = DeterministicID.uuid(
+                "exclusion-row",
+                located.location.rawValue.uuidString,
+                exclusion.stableKey
+            )
+            result[.waiting, default: []].append(
+                PreviewEntry(
+                    decisionID: id,
+                    path: exclusion.path,
+                    summary: exclusion.reason.message,
+                    causality: "Excluded \(exclusion.scope.rawValue) at \(locationName(located.location, locations: locations)); no covered content will be changed.",
+                    destinations: Array(locations.keys).sorted(),
+                    isTrash: false
+                )
+            )
+        }
+
         return result
+    }
+
+    private func exclusionGroups(
+        _ values: [LocatedScanExclusion]
+    ) -> [ExclusionDisplayGroup] {
+        struct Key: Hashable {
+            var scope: ScanExclusion.Scope
+            var reason: ScanExclusion.Reason
+        }
+        let grouped = Dictionary(grouping: values) {
+            Key(scope: $0.exclusion.scope, reason: $0.exclusion.reason)
+        }
+        return grouped.map { key, members in
+            ExclusionDisplayGroup(
+                scope: key.scope,
+                reason: key.reason,
+                rootCount: members.count
+            )
+        }.sorted { lhs, rhs in
+            if lhs.scope != rhs.scope { return lhs.scope.rawValue < rhs.scope.rawValue }
+            return lhs.reason.stableKey < rhs.reason.stableKey
+        }
     }
 
     private func sectionKind(for decision: ItemDecision, operations: [Operation]) -> PreviewSectionKind {
@@ -263,6 +356,9 @@ public struct ChangePreviewRenderer: Sendable {
 
     private func summary(for decision: ItemDecision, operations: [Operation], locations: LocationDirectory) -> String {
         if isWaiting(decision.verdict) {
+            if waitingReasons(decision.verdict).contains(.unsupportedItem) {
+                return decision.explanation
+            }
             let names = waitingLocations(decision.verdict).map { locationName($0, locations: locations) }.joined(separator: ", ")
             return "Waiting for \"\(decision.path.name)\" to download from \(names)."
         }
@@ -383,10 +479,11 @@ private extension HoldReason {
         switch self {
         case let .massDeletion(evidence), let .massEdit(evidence):
             return evidence
-        case .conflicts, .deletionsNeedReview:
+        case .conflicts, .deletionsNeedReview, .opaqueRelocation:
             return nil
         }
     }
+
 }
 
 private extension ItemVerdict {
@@ -396,7 +493,7 @@ private extension ItemVerdict {
             return initiatedBy
         case let .compound(verdicts):
             return verdicts.compactMap(\.deletionInitiator).first
-        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .conflict, .waiting:
+        case .inSync, .propagateContent, .propagateCreation, .propagatePath, .conflict, .waiting, .excluded:
             return nil
         }
     }
@@ -408,7 +505,7 @@ private func isWaiting(_ verdict: ItemVerdict) -> Bool {
         return true
     case let .compound(verdicts):
         return verdicts.contains(where: isWaiting)
-    case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .conflict:
+    case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .conflict, .excluded:
         return false
     }
 }
@@ -419,7 +516,19 @@ private func waitingLocations(_ verdict: ItemVerdict) -> [LocationID] {
         return locations.sorted()
     case let .compound(verdicts):
         return Array(Set(verdicts.flatMap(waitingLocations))).sorted()
-    case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .conflict:
+    case .inSync, .propagateContent, .propagateCreation, .propagatePath, .propagateDeletion, .conflict, .excluded:
+        return []
+    }
+}
+
+private func waitingReasons(_ verdict: ItemVerdict) -> Set<WaitingReason> {
+    switch verdict {
+    case let .waiting(reason, _):
+        return [reason]
+    case let .compound(verdicts):
+        return Set(verdicts.flatMap { waitingReasons($0) })
+    case .inSync, .propagateContent, .propagateCreation, .propagatePath,
+         .propagateDeletion, .conflict, .excluded:
         return []
     }
 }

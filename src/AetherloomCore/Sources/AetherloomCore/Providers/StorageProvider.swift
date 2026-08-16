@@ -16,9 +16,19 @@ public protocol StorageProvider: Sendable {
     func trash(_ observation: ItemObservation) async throws
     func currentState(of observation: ItemObservation) async throws -> ItemObservation
     func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation
+
+    /// Fail-closed, non-mutating classification used by the all-location
+    /// execution barrier. Providers whose fidelity is complete for their
+    /// ordinary item model may use the default implementation; filesystem
+    /// providers override it to inspect package and metadata state.
+    func classify(_ requests: [ProviderClassificationRequest]) async -> ProviderPathClassification
 }
 
 public extension StorageProvider {
+    func classify(_: [ProviderClassificationRequest]) async -> ProviderPathClassification {
+        .supported
+    }
+
     func refineEvidence(for observation: ItemObservation) async throws -> ItemObservation {
         let current = try await currentState(of: observation)
         guard current.kind != .file || current.version.hasStrongEvidence else {
@@ -210,6 +220,13 @@ public protocol IndeterminateMutationRecovering: StorageProvider {
         claim: ProviderMutationRecoveryClaim
     ) async throws -> ItemObservation
 
+    /// Classification under the same exclusive recovery claim. Ordinary
+    /// provider reads remain barred while an indeterminate receipt is owned.
+    func classifyForRecovery(
+        _ requests: [ProviderClassificationRequest],
+        claim: ProviderMutationRecoveryClaim
+    ) async -> ProviderPathClassification
+
     /// Returns true only when this provider can perform a recovery read under
     /// the exact claim's ownership domain. Local aliases use this to reconcile
     /// one WAL prefix without opening ordinary read admission; unrelated
@@ -238,6 +255,13 @@ public extension IndeterminateMutationRecovering {
         with claim: ProviderMutationRecoveryClaim
     ) async -> Bool {
         claim.receipt.provider == locationID
+    }
+
+    func classifyForRecovery(
+        _: [ProviderClassificationRequest],
+        claim _: ProviderMutationRecoveryClaim
+    ) async -> ProviderPathClassification {
+        .supported
     }
 }
 

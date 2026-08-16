@@ -45,6 +45,7 @@ public struct EngineEnvironment: Sendable {
 
 public enum SyncOrchestratorError: Error, Equatable, Sendable {
     case runAlreadyInProgress(UUID)
+    case freshPreparationRequired(UUID)
 }
 
 public actor SyncOrchestrator {
@@ -58,6 +59,7 @@ public actor SyncOrchestrator {
     private let adviceValidator = AdviceValidator()
     private let renderer = ChangePreviewRenderer()
     private var activeSyncSets: Set<UUID> = []
+    private var currentPreparations: [UUID: SyncPreparation] = [:]
 
     public init(
         locations: LocationDirectory,
@@ -81,6 +83,9 @@ public actor SyncOrchestrator {
         try beginRun(syncSet.id)
         defer { finishRun(syncSet.id) }
 
+        // Starting a new preparation invalidates every older preparation for
+        // this sync set while retaining only one exact authority value.
+        currentPreparations.removeValue(forKey: syncSet.id)
         let runID = environment.makeID()
         await appendActivity(
             syncSetID: syncSet.id,
@@ -153,6 +158,16 @@ public actor SyncOrchestrator {
 
     public func execute(_ preparation: SyncPreparation, approval: PlanApproval? = nil) async throws -> SyncRunSummary {
         let syncSetID = preparation.outcome.syncSetID
+        // Public preparation values are descriptive, not bearer authority.
+        // Authenticate the complete value against actor-retained prepared truth
+        // before gate admission, provider classification, executor construction,
+        // WAL creation, or approval consumption. This still accepts an exactly
+        // value-identical copy while rejecting caller mutation/reconstruction.
+        guard currentPreparations[syncSetID] == preparation else {
+            throw SyncOrchestratorError.freshPreparationRequired(
+                preparation.runID
+            )
+        }
         try beginRun(syncSetID)
         defer { finishRun(syncSetID) }
 
@@ -161,20 +176,25 @@ public actor SyncOrchestrator {
             await appendActivity(
                 syncSetID: syncSetID,
                 runID: preparation.runID,
-                category: .sync,
-                message: ActivityMessageCatalog.runFinished,
+                category: .safety,
+                message: ActivityMessageCatalog.runHeld,
                 detail: SyncRunOutcome.refused.detail
             )
             return SyncRunSummary(runID: preparation.runID, syncSetID: syncSetID, outcome: .refused)
 
         case let .plan(plan):
-            if !plan.gate.isClear, approval == nil || !plan.gate.permitsApproval {
+            let admission = plan.executionAdmission
+            if executionIsHeld(
+                plan: plan,
+                admission: admission,
+                approval: approval
+            ) {
                 await logHolds(plan.gate.holdReasons, syncSetID: syncSetID, runID: preparation.runID)
                 await appendActivity(
                     syncSetID: syncSetID,
                     runID: preparation.runID,
-                    category: .sync,
-                    message: ActivityMessageCatalog.runFinished,
+                    category: .safety,
+                    message: ActivityMessageCatalog.runHeld,
                     detail: SyncRunOutcome.held.detail
                 )
                 return SyncRunSummary(runID: preparation.runID, syncSetID: syncSetID, outcome: .held)
@@ -187,13 +207,22 @@ public actor SyncOrchestrator {
                 stage: contentStage,
                 environment: executionEnvironment()
             )
-            let summary = try await executor.execute(
-                plan,
-                runID: preparation.runID,
-                approval: approval,
-                syncSetName: preparation.syncSetName,
-                logRunBoundaryActivity: false
-            )
+            let summary: SyncRunSummary
+            do {
+                summary = try await executor.execute(
+                    plan,
+                    runID: preparation.runID,
+                    approval: approval,
+                    syncSetName: preparation.syncSetName,
+                    logRunBoundaryActivity: false
+                )
+            } catch let error as ScheduleExecutionError
+                where error.requiresFreshPreparation {
+                if currentPreparations[syncSetID] == preparation {
+                    currentPreparations.removeValue(forKey: syncSetID)
+                }
+                throw error
+            }
             await appendStage("Execute", syncSetID: syncSetID, runID: preparation.runID, started: false)
             if case .mutationIndeterminate = summary.outcome {
                 // The caller-visible execution phase returned, but the run is
@@ -204,11 +233,31 @@ public actor SyncOrchestrator {
                     syncSetID: syncSetID,
                     runID: preparation.runID,
                     category: .sync,
-                    message: ActivityMessageCatalog.runFinished,
+                    message: summary.outcome.activityMessage(
+                        admission: admission
+                    ),
                     detail: summary.outcome.detail
                 )
             }
             return summary
+        }
+    }
+
+    private func executionIsHeld(
+        plan: SyncPlan,
+        admission: PlanExecutionAdmission,
+        approval: PlanApproval?
+    ) -> Bool {
+        switch admission {
+        case .blocked:
+            return true
+        case .standard:
+            return !plan.gate.isClear
+                && (approval == nil || !plan.gate.permitsApproval)
+        case .safeSubset:
+            let remaining = plan.nonOpaqueHoldReasons
+            return remaining.contains(where: { !$0.permitsApproval })
+                || (!remaining.isEmpty && approval == nil)
         }
     }
 
@@ -236,19 +285,22 @@ public actor SyncOrchestrator {
             })
             await logHolds(plan.gate.holdReasons, syncSetID: syncSet.id, runID: runID)
             await logConflicts(plan.conflicts, syncSetID: syncSet.id, runID: runID)
+            await logExclusions(plan.exclusions, syncSetID: syncSet.id, runID: runID)
         } else if case let .refusal(refusal) = outcome {
             await logRefusals(refusal.reasons, syncSetID: syncSet.id, runID: runID)
         }
         await logPreparationSummary(preview, syncSetID: syncSet.id, runID: runID)
         await appendStage("Preview", syncSetID: syncSet.id, runID: runID, started: false)
 
-        return SyncPreparation(
+        let preparation = SyncPreparation(
             outcome: outcome,
             preview: preview,
             advice: annotations.advice,
             runID: runID,
             syncSetName: syncSet.name
         )
+        currentPreparations[syncSet.id] = preparation
+        return preparation
     }
 
     private func recoverIfNeeded(syncSetID: UUID, runID: UUID) async throws {
@@ -677,6 +729,24 @@ public actor SyncOrchestrator {
         }
     }
 
+    private func logExclusions(
+        _ exclusions: [LocatedScanExclusion],
+        syncSetID: UUID,
+        runID: UUID
+    ) async {
+        for located in exclusions.sorted() {
+            await appendActivity(
+                syncSetID: syncSetID,
+                runID: runID,
+                category: .safety,
+                locationID: located.location,
+                path: located.exclusion.path,
+                message: located.exclusion.reason.message,
+                detail: "\(located.exclusion.scope.rawValue)|\(located.exclusion.reason.stableKey)"
+            )
+        }
+    }
+
     private func logAdviceShown(_ advice: ConflictAdvice, syncSetID: UUID, runID: UUID) async {
         await appendActivity(
             syncSetID: syncSetID,
@@ -849,6 +919,7 @@ private func replacingObservation(
             location: snapshot.location,
             scope: snapshot.scope,
             observations: observations,
+            exclusions: snapshot.exclusions,
             status: snapshot.status,
             scannedAt: snapshot.scannedAt
         )
@@ -1015,6 +1086,11 @@ private extension HoldReason {
             return evidence.groups.map { group in
                 "all \(group.intentCount) under \(group.ancestor.rawValue)"
             }.joined(separator: ", ")
+        case let .opaqueRelocation(evidence):
+            let roots = evidence.exclusions.map { located in
+                "\(located.location.rawValue.uuidString):\(located.exclusion.path.rawValue)|\(located.exclusion.scope.rawValue)|\(located.exclusion.reason.stableKey)"
+            }.joined(separator: ", ")
+            return "\(evidence.trackedPath.rawValue) may be inside \(roots)"
         }
     }
 }

@@ -172,6 +172,8 @@ private func simulationRunToFixedPoint(
                     return true
                 case let .massDeletion(evidence), let .massEdit(evidence):
                     return evidence.intentCount > 0
+                case let .opaqueRelocation(evidence):
+                    return !evidence.exclusions.isEmpty
                 }
             })
         }
